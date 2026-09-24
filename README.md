@@ -32,3 +32,5 @@ rtk node scripts/sync-plugins.mjs
 ```
 
 That command refreshes the checked-in copy of the canonical `src/` client in each plugin's `vendor/` directory. It also includes the `ws` dependency for Hermes, whose plugin installer does not install Node dependencies. OpenClaw, DSH, and WorkBuddy install `ws` from their package manifests. See [plugins/README.md](plugins/README.md) for host configuration.
+
+For an agent-oriented installation and pairing procedure, see [AGENT_INSTALL.md](AGENT_INSTALL.md).

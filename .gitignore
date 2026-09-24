@@ -1,0 +1,16 @@
+# Go build outputs
+/a2a-connector
+*.exe
+*.test
+*.out
+coverage.out
+
+# Local environment and credentials
+.env
+.env.*
+!.env.example
+
+# Editor and OS files
+.DS_Store
+.idea/
+.vscode/

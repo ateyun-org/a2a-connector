@@ -16,11 +16,11 @@ The local Agent must expose `/.well-known/agent-card.json` and an A2A endpoint. 
 ```bash
 export A2A_PAIR_CODE=YOUR_PAIR_CODE
 rtk node src/cli.js -enroll-only \
-  -relay wss://relay.example.com/connect \
+  -relay wss://dsh-relay.chuanbota.com/connect \
   -local http://127.0.0.1:9900
 unset A2A_PAIR_CODE
 rtk node src/cli.js \
-  -relay wss://relay.example.com/connect \
+  -relay wss://dsh-relay.chuanbota.com/connect \
   -local http://127.0.0.1:9900
 ```
 

@@ -12,6 +12,7 @@
     "properties": {
       "relay": { "type": "string", "description": "WSS Relay /connect URL" },
       "local": { "type": "string", "description": "Local A2A HTTP origin" },
+      "agentId": { "type": "string", "description": "Optional stable Agent ID" },
       "binary": { "type": "string", "description": "Optional Node.js executable path" },
       "state": { "type": "string", "description": "Private credential file path" },
       "localTokenEnv": { "type": "string", "description": "Environment variable holding local A2A bearer token" },

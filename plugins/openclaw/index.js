@@ -1,5 +1,4 @@
 import { spawn, execFile } from 'node:child_process';
-import { access } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -17,14 +16,14 @@ export default definePluginEntry({
     const binary = config.binary || process.execPath;
     const state = config.state || join(homedir(), '.config', 'a2a-connector', 'openclaw.json');
     const args = [script, '-relay', config.relay, '-local', config.local, '-state', state];
+    if (config.agentId) args.push('-agent-id', config.agentId);
     if (config.allowInsecure) args.push('-allow-insecure');
     const env = { ...process.env };
     if (config.localTokenEnv) env.A2A_LOCAL_TOKEN = process.env[config.localTokenEnv] || '';
     let child;
     const start = async () => {
       if (child) return;
-      try { await access(state); } catch { return; }
-      child = spawn(binary, args, { stdio: 'ignore', env });
+      child = spawn(binary, [...args, '-auto-pair'], { stdio: 'ignore', env });
       child.once('error', error => { api.logger?.error?.(`A2A Connector failed: ${error.message}`); child = undefined; });
       child.once('exit', () => { child = undefined; });
     };
@@ -35,14 +34,22 @@ export default definePluginEntry({
     });
     api.registerTool({
       name: 'a2a_connector_pair',
-      description: 'Pair this OpenClaw agent with an A2A Relay. Ask the operator for a one-time pairing code issued by the Relay administrator.',
-      parameters: Type.Object({ code: Type.String({ description: 'One-time pair_ code' }) }),
+      description: 'Show this Agent’s pending pairing request and approval code. An optional one-time pair_ code supports manual pairing.',
+      parameters: Type.Object({ code: Type.Optional(Type.String({ description: 'Optional one-time pair_ code' })) }),
       async execute(_id, params) {
-        if (!params.code.startsWith('pair_')) throw new Error('A Relay pairing code is required');
-        await run(binary, [...args, '-enroll-only'], { timeout: 20000, env: { ...env, A2A_PAIR_CODE: params.code } });
-        child?.kill('SIGTERM'); child = undefined;
+        if (params.code) {
+          if (!params.code.startsWith('pair_')) throw new Error('Invalid pairing code');
+          child?.kill('SIGTERM'); child = undefined;
+          await run(binary, [...args, '-enroll-only'], { timeout: 20000, env: { ...env, A2A_PAIR_CODE: params.code } });
+          await start();
+          return { content: [{ type: 'text', text: 'A2A Connector paired and started.' }] };
+        }
+        const { stdout } = await run(binary, [...args, '-request-only'], { timeout: 20000, env });
         await start();
-        return { content: [{ type: 'text', text: 'A2A Connector paired and started.' }] };
+        const status = JSON.parse(stdout);
+        return { content: [{ type: 'text', text: status.status === 'paired'
+          ? `Already paired: ${status.agentId}`
+          : `Approve ${status.agentId} at ${status.approvalURL}. Confirmation code: ${status.confirmationCode}` }] };
       },
     });
   },

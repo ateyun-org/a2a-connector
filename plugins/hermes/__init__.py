@@ -22,14 +22,21 @@ def _args():
     if not relay or not local:
         raise ValueError("Set A2A_RELAY_URL and A2A_LOCAL_URL before pairing")
     args = [binary, script, "-relay", relay, "-local", local, "-state", str(state)]
+    if os.environ.get("A2A_AGENT_ID"):
+        args.extend(["-agent-id", os.environ["A2A_AGENT_ID"]])
     if os.environ.get("A2A_ALLOW_INSECURE") == "1":
         args.append("-allow-insecure")
     return args
 
 
 def _pair(code):
+    if not code:
+        result = subprocess.run(_args() + ["-request-only"], check=True,
+                                capture_output=True, text=True, timeout=20)
+        _start()
+        return result.stdout.strip()
     if not code.startswith("pair_"):
-        raise ValueError("Ask the Relay administrator for a pair_ code")
+        raise ValueError("Invalid pairing code")
     _, _, _, _, state = _settings()
     env = dict(os.environ, A2A_PAIR_CODE=code)
     subprocess.run(_args() + ["-enroll-only"], check=True, env=env,
@@ -41,8 +48,6 @@ def _pair(code):
 
 def _start():
     _, _, _, _, state = _settings()
-    if not state.exists():
-        raise ValueError("Pair this Agent first")
     pid_path = state.with_suffix(".pid")
     if pid_path.exists():
         try:
@@ -50,7 +55,7 @@ def _start():
             return
         except (ProcessLookupError, ValueError):
             pass
-    process = subprocess.Popen(_args(), stdin=subprocess.DEVNULL,
+    process = subprocess.Popen(_args() + ["-auto-pair"], stdin=subprocess.DEVNULL,
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                start_new_session=True)
     pid_path.write_text(str(process.pid))
@@ -78,31 +83,30 @@ def _tool(args, **kwargs):
 def _command(raw_args):
     parts = raw_args.strip().split(maxsplit=1)
     try:
-        if parts and parts[0] == "pair" and len(parts) == 2:
-            return _pair(parts[1])
+        if parts and parts[0] == "pair":
+            return _pair(parts[1] if len(parts) == 2 else "")
         if parts == ["start"]:
             _start()
             return "A2A Connector started"
         if parts == ["stop"]:
             _stop()
             return "A2A Connector stopped"
-        return "Usage: /a2a_connector pair <pair_code> | start | stop"
+        return "Usage: /a2a_connector pair [pair_code] | start | stop"
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         return f"A2A Connector error: {error}"
 
 
 def register(ctx):
     schema = {"name": "a2a_connector_pair",
-              "description": "Pair this Hermes agent to an A2A Relay. Ask the operator for a one-time pair_ code first.",
-              "parameters": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}}
+              "description": "Show the pending pairing approval link and confirmation code. Optionally redeem a manual pair_ code.",
+              "parameters": {"type": "object", "properties": {"code": {"type": "string"}}}}
     ctx.register_tool(name="a2a_connector_pair", toolset="a2a_connector",
                       schema=schema, handler=_tool)
     ctx.register_command("a2a_connector", handler=_command,
                          description="Pair, start, or stop the outbound A2A Connector")
     def on_session_start(**kwargs):
-        if _settings()[4].exists():
-            try:
-                _start()
-            except (OSError, ValueError) as error:
-                logging.getLogger(__name__).warning("A2A Connector start failed: %s", error)
+        try:
+            _start()
+        except (OSError, ValueError) as error:
+            logging.getLogger(__name__).warning("A2A Connector start failed: %s", error)
     ctx.register_hook("on_session_start", on_session_start)

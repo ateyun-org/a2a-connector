@@ -17,10 +17,11 @@ const binary = process.env.A2A_NODE_BINARY || process.execPath;
 const script = join(dirname(fileURLToPath(import.meta.url)), 'vendor', 'connector', 'cli.js');
 
 async function config() { return JSON.parse(await readFile(settings, 'utf8')); }
-function args(c) { return [script, '-relay', c.relay, '-local', c.local, '-state', state, ...(c.allowInsecure ? ['-allow-insecure'] : [])]; }
+function args(c) { return [script, '-relay', c.relay, '-local', c.local, '-state', state,
+  ...(c.agentId ? ['-agent-id', c.agentId] : []), ...(c.allowInsecure ? ['-allow-insecure'] : [])]; }
 async function start() {
   const c = await config();
-  const child = spawn(binary, args(c), { detached: true, stdio: 'ignore', env: process.env });
+  const child = spawn(binary, [...args(c), '-auto-pair'], { detached: true, stdio: 'ignore', env: process.env });
   await new Promise((resolve, reject) => {
     child.once('spawn', resolve);
     child.once('error', reject);
@@ -41,25 +42,31 @@ async function status() {
     const pid = Number(await readFile(join(dir, 'workbuddy.pid'), 'utf8'));
     process.kill(pid, 0);
     console.log(`Logged in: ${enrollment.agentId}`);
-  } catch { console.log('Not logged in'); process.exitCode = 1; }
+  } catch {
+    try {
+      const pending = JSON.parse(await readFile(state + '.pending', 'utf8'));
+      const c = await config();
+      const url = new URL(c.relay); url.protocol = url.protocol === 'wss:' ? 'https:' : 'http:'; url.pathname = '/pair';
+      console.log(`Awaiting approval: ${url} | Agent: ${pending.agentId} | Confirmation: ${pending.confirmationCode}`);
+    } catch { console.log('Not logged in'); process.exitCode = 1; }
+  }
 }
 async function login() {
   const input = createInterface({ input: stdin, output: stdout });
-  let relay, local, code;
+  let relay, local;
   try {
     relay = await input.question('Relay WSS /connect URL: ');
     local = await input.question('Local A2A HTTP origin: ');
-    code = await input.question('One-time pairing code: ');
   } finally { input.close(); }
-  if (!code.startsWith('pair_')) throw new Error('Ask the Relay administrator for a pair_ code');
   const c = { relay, local, allowInsecure: false };
   await mkdir(dir, { recursive: true, mode: 0o700 });
-  await run(binary, [...args(c), '-enroll-only'], { timeout: 20000,
-    env: { ...process.env, A2A_PAIR_CODE: code } });
+  const { stdout: result } = await run(binary, [...args(c), '-request-only'], { timeout: 20000, env: process.env });
   await writeFile(settings, JSON.stringify(c), { mode: 0o600 });
   await stop();
   await start();
-  console.log('Logged in');
+  const pairing = JSON.parse(result);
+  console.log(pairing.status === 'paired' ? `Already paired: ${pairing.agentId}`
+    : `Open ${pairing.approvalURL} and ask the administrator to confirm ${pairing.confirmationCode}. Connection starts automatically after approval.`);
 }
 
 const command = process.argv.slice(2).join(' ');
@@ -68,7 +75,7 @@ try {
   else if (command === 'auth status') await status();
   else if (command === 'auth logout') {
     await stop();
-    await Promise.all([state, settings].map(file => unlink(file).catch(error => { if (error.code !== 'ENOENT') throw error; })));
+    await Promise.all([state, state + '.pending', settings].map(file => unlink(file).catch(error => { if (error.code !== 'ENOENT') throw error; })));
     console.log('Logged out');
   } else if (command === 'start') { await start(); console.log('Connector started'); }
   else if (command === 'stop') { await stop(); console.log('Connector stopped'); }

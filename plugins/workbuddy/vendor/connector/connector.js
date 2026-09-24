@@ -20,6 +20,19 @@ function assertURL(value, schemes, path, name) {
   return parsed;
 }
 
+function relayHTTPURL(relay, path, allowInsecure) {
+  const url = assertURL(relay, ['wss:', 'ws:'], '/connect', 'relay');
+  if (url.protocol === 'ws:' && !allowInsecure) throw new Error('relay requires WSS');
+  url.protocol = url.protocol === 'wss:' ? 'https:' : 'http:';
+  url.pathname = path;
+  return url;
+}
+
+function boundedSignal(signal, milliseconds) {
+  const timeout = AbortSignal.timeout(milliseconds);
+  return signal ? AbortSignal.any([signal, timeout]) : timeout;
+}
+
 export function validateConfig(config) {
   const relay = assertURL(config.relay, ['wss:', 'ws:'], '/connect', 'relay');
   if (relay.protocol === 'ws:' && !config.allowInsecure) throw new Error('relay requires WSS');
@@ -36,17 +49,55 @@ export function statePath() {
 }
 
 export async function register({ relay, code, allowInsecure = false, signal }) {
-  const url = assertURL(relay, ['wss:', 'ws:'], '/connect', 'relay');
-  if (url.protocol === 'ws:' && !allowInsecure) throw new Error('relay requires WSS');
+  const url = relayHTTPURL(relay, '/register', allowInsecure);
   if (!/^pair_[0-9a-f]{48}$/.test(code || '')) throw new Error('pairing code is required');
-  url.protocol = url.protocol === 'wss:' ? 'https:' : 'http:';
-  url.pathname = '/register';
-  const response = await fetch(url, { method: 'POST', redirect: 'manual', signal: signal || AbortSignal.timeout(15000),
+  const response = await fetch(url, { method: 'POST', redirect: 'manual', signal: boundedSignal(signal, 15000),
     headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code }) });
   if (response.status !== 201) throw new Error(`relay registration status ${response.status}`);
   const enrollment = await response.json();
   if (!enrollment.agentId || !enrollment.token) throw new Error('relay registration response missing identity');
   return { agentId: enrollment.agentId, token: enrollment.token, card: enrollment.card };
+}
+
+export async function requestPairing({ relay, agentId, name, allowInsecure = false, signal }) {
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(agentId || '') || !name || name.length > 120) {
+    throw new Error('valid Agent ID and name are required');
+  }
+  const url = relayHTTPURL(relay, '/pairing/requests', allowInsecure);
+  const response = await fetch(url, { method: 'POST', redirect: 'manual', signal: boundedSignal(signal, 15000),
+    headers: { 'content-type': 'application/json' }, body: JSON.stringify({ agentId, name }) });
+  if (response.status !== 201) throw new Error(`pairing request status ${response.status}`);
+  const request = await response.json();
+  if (!/^[0-9a-f]{64}$/.test(request.requestId || '') || !/^[0-9A-F]{6}$/.test(request.confirmationCode || '')) {
+    throw new Error('relay pairing response is incomplete');
+  }
+  return request;
+}
+
+export async function pairingStatus({ relay, requestId, allowInsecure = false, signal }) {
+  if (!/^[0-9a-f]{64}$/.test(requestId || '')) throw new Error('invalid pairing request ID');
+  const url = relayHTTPURL(relay, '/pairing/status', allowInsecure);
+  const response = await fetch(url, { method: 'POST', redirect: 'manual', signal: boundedSignal(signal, 15000),
+    headers: { 'content-type': 'application/json' }, body: JSON.stringify({ requestId }) });
+  if (response.status === 404) return { status: 'expired' };
+  if (response.status !== 200) throw new Error(`pairing status ${response.status}`);
+  const status = await response.json();
+  if (status.status === 'approved' && /^pair_[0-9a-f]{48}$/.test(status.code || '')) return status;
+  if (status.status === 'pending') return status;
+  throw new Error('invalid relay pairing status');
+}
+
+export async function waitForPairing({ relay, requestId, allowInsecure = false, signal, interval = 3000 }) {
+  for (;;) {
+    const status = await pairingStatus({ relay, requestId, allowInsecure, signal });
+    if (status.status !== 'pending') return status;
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { signal?.removeEventListener('abort', onAbort); resolve(); }, interval);
+      function onAbort() { clearTimeout(timer); reject(signal.reason || new Error('aborted')); }
+      if (signal?.aborted) onAbort();
+      else signal?.addEventListener('abort', onAbort, { once: true });
+    });
+  }
 }
 
 export async function saveEnrollment(path, enrollment) {
@@ -58,6 +109,15 @@ export async function saveEnrollment(path, enrollment) {
     await file.sync();
   } finally { await file.close(); }
   try { await rename(temporary, path); } finally { await rm(temporary, { force: true }); }
+}
+
+export async function loadPendingPairing(path) {
+  const info = await stat(path);
+  if (platform() !== 'win32' && (info.mode & 0o077)) throw new Error('pending pairing file must be private (0600)');
+  const value = JSON.parse(await readFile(path, 'utf8'));
+  if (!/^[0-9a-f]{64}$/.test(value.requestId || '') || !/^[0-9A-F]{6}$/.test(value.confirmationCode || '') ||
+      !/^[A-Za-z0-9_-]{1,64}$/.test(value.agentId || '')) throw new Error('pending pairing file is invalid');
+  return value;
 }
 
 export async function loadEnrollment(path) {
@@ -118,7 +178,7 @@ export class Connector {
   async discover(signal) {
     const url = new URL('/.well-known/agent-card.json', this.config.local);
     const headers = this.config.localToken ? { authorization: `Bearer ${this.config.localToken}` } : {};
-    const response = await fetch(url, { headers, redirect: 'manual', signal: signal || AbortSignal.timeout(60000) });
+    const response = await fetch(url, { headers, redirect: 'manual', signal: boundedSignal(signal, 60000) });
     if (response.status !== 200) throw new Error(`Agent Card status ${response.status}`);
     const card = JSON.parse((await limitedBody(response, 1 << 20)).toString());
     if (!card?.name) throw new Error('Agent Card has no name');

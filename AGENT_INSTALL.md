@@ -6,7 +6,7 @@
 
 开始前从现有配置或用户处确认：
 
-- **Relay URL**：完整的 WSS 连接地址，例如 `wss://relay.example.com/connect`。
+- **Relay URL**：`wss://dsh-relay.chuanbota.com/connect`。配对审批页是 `https://dsh-relay.chuanbota.com/pair`。
 - **本机 A2A origin**：Agent Card 和 A2A HTTP 服务所在的 origin，例如 `http://127.0.0.1:9900`。不要附加路径、查询参数或尾部端点路径。
 - **宿主类型**：OpenClaw、Hermes、DSH 或 WorkBuddy。先用已安装的宿主，不要同时安装多个插件。
 - **本机认证**：若本机 Agent Card/A2A 接口要求 Bearer token，确认 token 已存在于宿主进程环境的哪个变量中；不要把 token 写入命令历史、配置明文或对话。
@@ -48,7 +48,7 @@
          "a2a-connector": {
            enabled: true,
            config: {
-             relay: "wss://relay.example.com/connect",
+             relay: "wss://dsh-relay.chuanbota.com/connect",
              local: "http://127.0.0.1:9900",
              // 仅在本机 Agent 需要认证时配置：
              // localTokenEnv: "MY_LOCAL_AGENT_TOKEN",
@@ -84,7 +84,7 @@
 2. 在启动 Hermes 的服务环境中设置：
 
    ```text
-   A2A_RELAY_URL=wss://relay.example.com/connect
+   A2A_RELAY_URL=wss://dsh-relay.chuanbota.com/connect
    A2A_LOCAL_URL=http://127.0.0.1:9900
    ```
 
@@ -109,7 +109,7 @@
        - id: a2a-connector
          name: a2a-connector
          config:
-           relay: wss://relay.example.com/connect
+           relay: wss://dsh-relay.chuanbota.com/connect
            local: http://127.0.0.1:9900
            # 本机 Agent 要求认证时可设置：
            # localTokenEnv: MY_LOCAL_AGENT_TOKEN

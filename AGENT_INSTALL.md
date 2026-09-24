@@ -10,7 +10,7 @@
 - **本机 A2A origin**：Agent Card 和 A2A HTTP 服务所在的 origin，例如 `http://127.0.0.1:9900`。不要附加路径、查询参数或尾部端点路径。
 - **宿主类型**：OpenClaw、Hermes、DSH 或 WorkBuddy。先用已安装的宿主，不要同时安装多个插件。
 - **本机认证**：若本机 Agent Card/A2A 接口要求 Bearer token，确认 token 已存在于宿主进程环境的哪个变量中；不要把 token 写入命令历史、配置明文或对话。
-- **Agent ID**：通常留空，让 Connector 从 Agent Card 名称生成。如果用户给了稳定 ID，再配置 `agentId`。
+- **Agent ID**：通常留空。Connector 首次配对时会根据 Agent Card 名称生成 ID，并保存在状态文件里；单纯重启不需要固定 ID。只有在状态文件会重建、部署系统要预先引用固定 ID，或有明确的身份迁移需求时才配置。OpenClaw/DSH 使用 `agentId`，Hermes 使用 `A2A_AGENT_ID`，独立 CLI 使用 `-agent-id`；WorkBuddy 当前没有 ID 覆盖项。复用已有 ID 重新配对会轮换它的凭据。
 - **DSH profile**：宿主是 DSH 时，确认目标 profile 名称；不要默认安装到别的 profile。
 
 不要猜 Relay 地址或本机端口。缺少必需参数时，只向用户询问缺少的值，先不要申请配对。
@@ -21,8 +21,15 @@
 2. 确认本机 Agent Card 中的 A2A 接口地址确实可由 Relay 所在的 Connector 进程访问。若 Agent 还没有本机 A2A HTTP endpoint，先停止；需要先安装或配置 A2A adapter。
 3. 确认 Relay URL 使用 `wss://` 且路径为 `/connect`。生产环境不要启用 `allowInsecure`。
 4. 优先复用已安装的 Connector 插件和现有配对身份。不要为了重试而重复配对；批准已有 Agent ID 会轮换该 Agent 的凭据。
-5. 只安装与当前宿主对应的插件目录。插件包含 `vendor/connector`，不要删掉或只拷贝入口文件。
+5. 只安装与当前宿主对应的插件目录。`vendor/connector` 是随插件分发的 Connector 客户端副本，不要删掉或只拷贝入口文件。依赖安装方式因宿主不同，见下表。
 6. OpenClaw、Hermes 和 DSH 使用 Node.js 运行 Connector；确认宿主进程使用 Node.js 22 或更新版本。WorkBuddy 插件声明了 Node.js 22 runtime。
+
+| 宿主 | Connector 依赖 | 安装时如何处理 |
+| --- | --- | --- |
+| OpenClaw | `typebox`、`ws` | 从源码目录安装时执行 `rtk npm ci`。 |
+| DSH | DSH SDK、`ws` | 用 `rtk dsh plugin --profile <profile> add file:<path>` 安装到目标 profile；该命令会按 package manifest 安装依赖，不必另外运行 `rtk npm ci`。 |
+| Hermes | `ws` 已包含在 `plugins/hermes/vendor/connector/node_modules/` | 不要对 Hermes 目录执行 `rtk npm ci`；确认 Node.js 22+ 可用即可。 |
+| WorkBuddy | `ws` 由 package manifest 声明，Node.js 22 runtime 由宿主提供 | 使用 WorkBuddy 插件安装入口处理依赖。 |
 
 ## 按宿主安装
 
@@ -61,48 +68,100 @@
    }
    ```
 
-3. 启用插件并按宿主要求 reload/restart Gateway：
+3. 启用插件并验证 Gateway 中的运行态：
 
    ```bash
    rtk openclaw plugins enable a2a-connector
    rtk openclaw plugins inspect a2a-connector --runtime --json
    ```
 
-   运行态信息应包含工具 `a2a_connector_pair`。Gateway 启动后 Connector 会自动创建或继续等待配对。
+   成功的插件安装/启用会通过本地 Gateway 应用；默认配置支持热加载，不要求固定执行重启。`inspect --runtime` 在检查 CLI 进程中载入插件，不单独证明正在服务的 Gateway 已加载。进入目标 Agent 实际调用 `a2a_connector_pair`；如果 Gateway 未注册该工具，执行 `rtk openclaw plugins reload a2a-connector` 后再检查。Gateway 停止时，启动它后插件才会加载。见 [OpenClaw 插件生效与验证文档](https://docs.openclaw.ai/plugins)。
 
 ### Hermes
 
 1. 确认 Hermes 进程可用 Node.js 22 或更新版本。安装完整插件目录：
 
    ```bash
-   rtk mkdir -p "$HOME/.hermes/plugins/a2a-connector"
-   rtk cp -R "/absolute/path/to/repository/a2a-connector/plugins/hermes/." "$HOME/.hermes/plugins/a2a-connector/"
+   rtk mkdir -p "${HERMES_HOME:-$HOME/.hermes}/plugins/a2a-connector"
+   rtk cp -R "/absolute/path/to/repository/a2a-connector/plugins/hermes/." "${HERMES_HOME:-$HOME/.hermes}/plugins/a2a-connector/"
    ```
 
-   将示例路径替换为仓库所在主机上的实际绝对路径。
+   将示例仓库路径替换为仓库所在主机上的实际绝对路径；若启用了 `HERMES_HOME`，上面的命令会把插件安装到该 home。
 
-2. 在启动 Hermes 的服务环境中设置：
+2. 这是 Hermes 的普通工具/Hook 插件，不是 Gateway platform 插件。先查看现有插件，再在目标 Hermes profile 中启用；不要把它配置到 `platforms.*.enabled`：
+
+   ```bash
+   rtk hermes plugins list
+   rtk hermes plugins enable a2a-connector
+   ```
+
+   上述命令操作默认 profile。目标是命名的独立 profile 时，给两个命令都加同一个 `-p`，例如 `rtk hermes -p "coder" plugins list` 和 `rtk hermes -p "coder" plugins enable a2a-connector`。multiplex Gateway 只启用启动该共享 Gateway 的 profile。Hermes 的通用用户插件默认需要加入 `plugins.enabled`；`rtk hermes plugins enable` 会更新该配置。见 [Hermes 插件文档](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/features/plugins.md)。
+
+3. 在该 Hermes 实例读取的环境文件中配置：默认安装使用 `~/.hermes/.env`；若设置了 `HERMES_HOME`，使用对应 home 下的 `.env`。独立命名 profile 使用它自己的 `~/.hermes/profiles/<profile>/.env`。保留原文件内容并将权限设为 `0600`。多 profile multiplex Gateway 是一个共享进程，而 Connector 直接读取进程环境；此时把 Connector 参数放入启动该 Gateway 的 home 环境中，不要假设它会按每个 profile 单独启动。
 
    ```text
    A2A_RELAY_URL=wss://dsh-relay.chuanbota.com/connect
    A2A_LOCAL_URL=http://127.0.0.1:9900
+   # 如果本机 Agent 要求 Bearer token，填入 token 值，不是变量名：
+   A2A_LOCAL_TOKEN=replace-with-local-agent-token
+   # 服务 PATH 找不到 node 时，填写 Node.js 22+ 的绝对路径：
+   A2A_NODE_BINARY=/absolute/path/to/node
+   # 多个 Connector 实例时，为每个实例指定不同状态文件：
+   A2A_CONNECTOR_STATE=/absolute/path/to/private/hermes-connector.json
    ```
 
-   可选变量：`A2A_AGENT_ID`、`A2A_NODE_BINARY`、`A2A_CONNECTOR_STATE`、`A2A_LOCAL_TOKEN`、`A2A_ALLOW_INSECURE`。不要将凭据写入共享 shell profile；使用该 Hermes 服务专属的环境配置。`A2A_ALLOW_INSECURE=1` 仅用于本地测试。
+   `A2A_LOCAL_TOKEN` 的值会作为 Bearer token 发送到本机 Agent Card 和 A2A endpoint。OpenClaw/DSH 的 `localTokenEnv` 则填写**已有环境变量的名字**；插件会从该变量取值，例如 `localTokenEnv: "MY_LOCAL_AGENT_TOKEN"`。不要把真实 token 写进命令参数、配置示例或对话。
 
-3. 重新加载 Hermes 插件或重启 Hermes。插件注册 `a2a_connector_pair` 工具和 `/a2a_connector pair|start|stop` 命令。
+   其他可选变量：`A2A_AGENT_ID`、`A2A_ALLOW_INSECURE=1`。生产环境不要设置 `A2A_ALLOW_INSECURE`；固定 Agent ID 的使用场景见上面的参数说明。
+
+   `A2A_NODE_BINARY` 默认是 `node`，要求 Connector 子进程的 PATH 能找到 Node.js。交互终端中的 `rtk node --version` 成功不代表 systemd/launchd 服务也能找到它；给服务设置绝对路径更可靠。
+
+   Hermes Connector 的状态文件默认是 `~/.config/a2a-connector/hermes.json`，待审批请求写入该路径加 `.pending`，PID 文件是 `~/.config/a2a-connector/hermes.pid`。多个独立 Hermes/Connector 实例应设置不同的 `A2A_CONNECTOR_STATE`，避免共用身份文件。`A2A_ALLOW_INSECURE=1` 仅用于本地测试。
+
+4. 让配置生效：
+
+   ```bash
+   rtk hermes gateway restart
+   rtk hermes gateway status
+   ```
+
+   目标是命名的独立 profile 时，两个命令都使用同一个 profile，例如 `rtk hermes -p "coder" gateway restart` 和 `rtk hermes -p "coder" gateway status`。若该 profile 由 multiplex Gateway 服务，只重启共享的默认 Gateway：`rtk hermes gateway restart`。Hermes Gateway 在进程启动时加载插件和环境；只运行 `rtk hermes plugins enable` 不会让已经运行的 Gateway 立即加载它。普通 `.env` 内容变更后重启即可，不需要 `daemon-reload`。
+
+   不要直接编辑 Hermes 生成的 systemd unit 中的 `Environment=` 行；Gateway 管理命令可能重新生成 unit 并覆盖该改动。默认优先用上述 `.env`。Linux systemd 用户服务如需独立环境文件，将变量放入 `~/.hermes/a2a-connector.env` 并设为 `0600`，然后给服务加 drop-in：
+
+   ```bash
+   rtk systemctl --user edit hermes-gateway.service
+   ```
+
+   在编辑器中写入：
+
+   ```ini
+   [Service]
+   EnvironmentFile=%h/.hermes/a2a-connector.env
+   ```
+
+   保存后执行（命名 profile 或 system service 请替换为实际 unit 和 scope）：
+
+   ```bash
+   rtk systemctl --user daemon-reload
+   rtk systemctl --user restart hermes-gateway.service
+   rtk systemctl --user status hermes-gateway.service --no-pager
+   ```
+
+   以上是默认 profile 的 user service 示例。用 `rtk hermes gateway status` 和 `rtk systemctl --user list-units 'hermes-gateway*'` 确认服务范围和 unit 名称；命名 profile 的独立 service 使用它自己的 unit，multiplex Gateway 使用默认 Gateway 的 unit。若安装为默认 profile 的 system service，执行 `rtk sudo systemctl edit hermes-gateway.service`，再按同样顺序运行 `rtk sudo systemctl daemon-reload`、`rtk sudo systemctl restart hermes-gateway.service` 和 `rtk sudo systemctl status hermes-gateway.service --no-pager`。命名 profile 请替换为实际 unit。不要把 `Environment=` 直接写回生成的主 unit。Hermes 的 Gateway 管理方式见[官方文档](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/messaging/index.md)。
+
+   重启后在同一 profile 运行 `rtk hermes plugins list`，确认 `a2a-connector` 已启用；再在 Agent 中确认 `a2a_connector_pair` 工具和 `/a2a_connector pair|start|stop` 命令已注册。
 
 ### DSH
 
 1. 在目标 DSH Agent 主机安装 `plugins/dsh`，作为独立插件与 `dsh-a2a` 一起使用。不要把该插件装到中央 `dsh-a2a` Orchestrator 上。
-2. 如果从源码目录安装，先在 `a2a-connector/plugins/dsh/` 安装依赖，再通过 DSH CLI 注册整个插件目录：
+2. 用 DSH CLI 将本地插件目录作为目标 profile 的依赖安装：
 
    ```bash
-   rtk npm --prefix "/absolute/path/to/repository/a2a-connector/plugins/dsh" ci
    rtk dsh plugin --profile "web" add "file:/absolute/path/to/repository/a2a-connector/plugins/dsh"
    ```
 
-   替换示例仓库路径和 `web` profile 为目标主机上的实际值。在 `~/.dsh/profiles/<profile>/cordis.patch.yml` 合并以下 Cordis 条目，不要覆盖其他插件：
+   替换示例仓库路径和 `web` profile 为目标主机上的实际值。这个包没有 `dsh.bundle` 声明，CLI 只会把它安装为 profile 依赖；还必须在 `~/.dsh/profiles/<profile>/cordis.patch.yml` 合并以下 Cordis 条目，才能激活插件。先检查已有 patch，避免插入重复的 `id`：
 
    ```yaml
    - insert:
@@ -118,7 +177,7 @@
    ```
 
    配置键还支持 `binary`、`state`、`allowInsecure`。保持 `allowInsecure` 为 `false`。
-4. 按该 DSH 实例的插件管理方式 reload/restart；确认插件加载且 `a2a_connector_pair` 工具可调用。
+4. 如果 profile 已启用 `dsh-hmr`，Cordis patch 变更会被监听并热加载；否则重启运行该 profile 的 DSH 进程。启动前可检查最终组合，运行 CLI profile 则用 `rtk dsh --profile "web" --dump-config`；确认只出现一个 `a2a-connector` 条目，再通过 DSH 平常的启动入口重启同一 profile。启动后确认插件加载且 `a2a_connector_pair` 工具可调用。DSH profile patch 与 HMR 行为见[官方 loader 文档](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/boot/app-boot/README.md)。
 
 ### Tencent WorkBuddy
 
@@ -135,13 +194,20 @@
 ## 配对与授权边界
 
 1. Connector 首次启动后，会显示 Relay `/pair` 审批页、Agent ID 和六位确认码。Agent 可调用 `a2a_connector_pair` 或对应宿主命令查看待审批信息。
-2. 将审批 URL、Agent ID 和确认码交给用户/Relay 管理员。**不要索取或输入 Relay 管理员 token，也不要代替管理员批准配对。** 管理员应在 Relay 页面核对 Agent ID 和确认码后批准。
+2. 对当前 Relay，把审批 URL、Agent ID 和确认码一并交给用户/Relay 管理员。URL 用来打开页面；管理员应在页面中核对 Agent ID 与六位确认码，确认两者匹配后再批准。**不要索取或输入 Relay 管理员 token，也不要代替管理员批准配对。**
 3. 获批后 Connector 会自行注册、保存 Agent 专属凭据并连接。凭据默认保存在用户配置目录下的 `a2a-connector` 私有状态文件中，权限为 `0600`；不要读取、打印、复制或提交该文件。
-4. 管理员确认码不是 Connector 凭据。等待审批期间不要创建第二个请求；待请求会持久化并在十分钟后过期。
+4. 管理员确认码不是 Connector 凭据。等待审批期间不要创建第二个请求；待请求会持久化并在十分钟后过期。过期后 Connector 的自动配对循环会清理旧请求并重新申请；若后台进程已停止，重新调用 `a2a_connector_pair` 或 `/a2a_connector pair` 会检查并创建新请求。不要手动删除状态文件。
+
+## 按顺序验证与排错
+
+按依赖顺序检查，前一项未通过时先修复再继续：
+
+1. **运行时**：确认 Connector 实际使用的 Node.js 为 22+。Hermes 默认执行 `node`；如果服务 PATH 不包含 Node，设置 `A2A_NODE_BINARY` 为绝对路径，并在 Hermes 服务环境中重启后验证。
+2. **本机 Agent**：从 Connector 主机请求 `<local origin>/.well-known/agent-card.json`，确认返回 200 且 JSON 有 `name`。如需本机认证，Hermes 用 `A2A_LOCAL_TOKEN` 传入 token 值；OpenClaw/DSH 用 `localTokenEnv` 指定已有环境变量名。
+3. **插件加载**：确认宿主插件已启用并且 `a2a_connector_pair` 工具可调用。Hermes 需要执行 `rtk hermes plugins enable a2a-connector`，然后重启目标 Gateway；该命令本身不会重启已运行的 Gateway。
+4. **配对申请**：调用 `a2a_connector_pair` 获取当前请求的 URL、Agent ID、确认码。确认码过期后再次调用以显示新请求；不要删除 Connector 状态文件。
+5. **管理员批准与运行状态**：管理员核对 Agent ID 和确认码并批准后，再调用 `a2a_connector_pair` 确认已配对。然后检查宿主进程或 Connector 子进程仍在运行。Hermes 子进程退出后运行 `/a2a_connector start`；WorkBuddy 运行 `rtk workbuddy-a2a start`；OpenClaw 执行 `rtk openclaw plugins reload a2a-connector`；DSH 重启运行该 profile 的进程。Connector 自身会处理普通网络断线并自动重连。连接问题优先检查 Relay WSS 地址、本机 Agent 可达性、token 环境变量和 Node 绝对路径；不要直接重配对，因为复用 Agent ID 会轮换凭据。
 
 ## 完成检查
 
-- Agent Card URL 返回 200 且包含 Agent 名称。
-- 宿主已加载插件，`a2a_connector_pair` 工具已注册。
-- 未配对时报告待审批链接、Agent ID 和确认码；已配对时只报告 Agent ID/连接状态，不展示 token。
-- 管理员批准后，重新检查宿主的配对状态并确认 Connector 子进程仍在运行。直接 CLI 模式会输出 `Agent paired`；宿主插件模式以插件状态或 `a2a_connector_pair` 的已配对结果为准。连接故障先检查本机 Agent、Relay WSS 和本机 token 环境变量；不要直接删除状态文件或重新配对。
+按上述 1 到 5 的顺序完成检查。向用户报告当前状态是“等待管理员批准”还是“已配对并运行”，不要展示任何 token。

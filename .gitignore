@@ -1,9 +1,11 @@
-# Go build outputs
-/a2a-connector
-*.exe
-*.test
-*.out
-coverage.out
+# Plugin dependencies and generated packages
+node_modules/
+!/plugins/hermes/vendor/connector/node_modules/
+!/plugins/hermes/vendor/connector/node_modules/ws/
+!/plugins/hermes/vendor/connector/node_modules/ws/**
+*.tgz
+__pycache__/
+*.py[cod]
 
 # Local environment and credentials
 .env

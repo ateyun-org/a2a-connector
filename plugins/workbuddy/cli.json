@@ -1,0 +1,20 @@
+{
+  "runtime": { "type": "node", "version": "22" },
+  "init": {
+    "darwin": "npm install -g .",
+    "linux": "npm install -g ."
+  },
+  "auth": {
+    "darwin": "workbuddy-a2a auth login",
+    "linux": "workbuddy-a2a auth login"
+  },
+  "status": {
+    "darwin": "workbuddy-a2a auth status",
+    "linux": "workbuddy-a2a auth status"
+  },
+  "unAuth": {
+    "darwin": "workbuddy-a2a auth logout",
+    "linux": "workbuddy-a2a auth logout"
+  },
+  "statusMatch": "Logged in"
+}

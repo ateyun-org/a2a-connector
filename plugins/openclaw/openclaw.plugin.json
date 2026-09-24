@@ -1,0 +1,21 @@
+{
+  "id": "a2a-connector",
+  "name": "A2A Connector",
+  "description": "Connect this OpenClaw agent to an A2A Relay",
+  "categories": ["agent-runtimes"],
+  "contracts": { "tools": ["a2a_connector_pair"] },
+  "activation": { "onStartup": true },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["relay", "local"],
+    "properties": {
+      "relay": { "type": "string", "description": "WSS Relay /connect URL" },
+      "local": { "type": "string", "description": "Local A2A HTTP origin" },
+      "binary": { "type": "string", "description": "Optional Node.js executable path" },
+      "state": { "type": "string", "description": "Private credential file path" },
+      "localTokenEnv": { "type": "string", "description": "Environment variable holding local A2A bearer token" },
+      "allowInsecure": { "type": "boolean", "default": false }
+    }
+  }
+}

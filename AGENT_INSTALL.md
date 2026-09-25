@@ -165,7 +165,7 @@
 
 ### DSH
 
-1. 在目标 DSH Agent 主机安装 `plugins/dsh`。被调度节点只需 adapter + Connector，只有需要向其他节点发起调用时才另装 `dsh-a2a` 客户端。当前 Relay 主控认证使用 Connector 身份，因此中央 DSH 采用此认证模式时也需安装并配对，随后由管理员在 `/pair/list` 设为主控。
+1. 在目标 DSH Agent 主机安装 `plugins/dsh`。被调度节点只需 adapter + Connector，只有需要向其他节点发起调用时才另装 `dsh-a2a` 客户端。Relay 主控认证使用 Connector 身份，因此 DSH 采用此认证模式时也需安装并配对，随后由管理员在 `/pair/list` 授权其要调用的目标。
 2. 用 DSH CLI 将本地插件目录作为目标 profile 的依赖安装：
 
    ```bash

@@ -14,3 +14,11 @@ test('host plugins carry the current JavaScript Connector', async () => {
   const hermesWS = JSON.parse(await readFile('plugins/hermes/vendor/connector/node_modules/ws/package.json', 'utf8'));
   assert.equal(hermesWS.name, 'ws');
 });
+
+test('DSH plugin package name matches Cordis patch documentation', async () => {
+  const dshPkg = JSON.parse(await readFile(join('plugins', 'dsh', 'package.json'), 'utf8'));
+  assert.equal(dshPkg.name, 'dsh-a2a-connector');
+  const agentInstall = await readFile('AGENT_INSTALL.md', 'utf8');
+  assert.match(agentInstall, /name:\s*dsh-a2a-connector/);
+});
+

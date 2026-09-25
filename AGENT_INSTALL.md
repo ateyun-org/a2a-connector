@@ -166,7 +166,7 @@
    ```yaml
    - insert:
        - id: a2a-connector
-         name: a2a-connector
+         name: dsh-a2a-connector
          config:
            relay: wss://dsh-relay.chuanbota.com/connect
            local: http://127.0.0.1:9900
@@ -176,8 +176,8 @@
            # agentId: my-agent
    ```
 
-   配置键还支持 `binary`、`state`、`allowInsecure`。保持 `allowInsecure` 为 `false`。
-4. 如果 profile 已启用 `dsh-hmr`，Cordis patch 变更会被监听并热加载；否则重启运行该 profile 的 DSH 进程。启动前可检查最终组合，运行 CLI profile 则用 `rtk dsh --profile "web" --dump-config`；确认只出现一个 `a2a-connector` 条目，再通过 DSH 平常的启动入口重启同一 profile。启动后确认插件加载且 `a2a_connector_pair` 工具可调用。DSH profile patch 与 HMR 行为见[官方 loader 文档](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/boot/app-boot/README.md)。
+   配置键还支持 `binary`、`state`、`allowInsecure`。保持 `allowInsecure` 为 `false`。注意：Cordis loader 根据 `name` 解析并动态 `import()` 依赖包，此处 `name` 必须对应 `package.json` 中的包名 `dsh-a2a-connector`（而非 `a2a-connector`），而 `id` 为该插件条目的唯一标识。
+3. 如果 profile 已启用 `dsh-hmr`，Cordis patch 变更会被监听并热加载；否则重启运行该 profile 的 DSH 进程。启动前可检查最终组合，运行 CLI profile 则用 `rtk dsh --profile "web" --dump-config`；确认只出现一个 `id: a2a-connector`（`name: dsh-a2a-connector`）条目，再通过 DSH 平常的启动入口重启同一 profile。启动后确认插件加载且 `a2a_connector_pair` 工具可调用。DSH profile patch 与 HMR 行为见[官方 loader 文档](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/boot/app-boot/README.md)。
 
 ### Tencent WorkBuddy
 

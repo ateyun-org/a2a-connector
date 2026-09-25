@@ -22,24 +22,24 @@ MY_LOCAL_AGENT_TOKEN='REPLACE_WITH_RANDOM_LOCAL_TOKEN'
 替换 `dsh-a2a.service` 的 `/ABSOLUTE/PATH` 后，将副本放入 `~/.config/systemd/user/dsh-a2a.service`：
 
 ```bash
-rtk systemctl --user daemon-reload
-rtk systemctl --user enable --now dsh-a2a.service
-rtk systemctl --user status dsh-a2a.service --no-pager
+systemctl --user daemon-reload
+systemctl --user enable --now dsh-a2a.service
+systemctl --user status dsh-a2a.service --no-pager
 ```
 
-需要退出登录后仍运行时，按主机管理策略为服务用户启用 lingering。源码升级或环境改变后执行 `rtk systemctl --user restart dsh-a2a.service`；只修改环境文件不需要 daemon-reload，修改 unit 才需要。
+需要退出登录后仍运行时，按主机管理策略为服务用户启用 lingering。源码升级或环境改变后执行 `systemctl --user restart dsh-a2a.service`；只修改环境文件不需要 daemon-reload，修改 unit 才需要。
 
 ## macOS launchd 用户服务
 
 替换 plist 中 `/ABSOLUTE/PATH`，将副本放入 `~/Library/LaunchAgents/com.local.dsh-a2a.plist`。用户 LaunchAgent 随登录启动、注销后停止；仅关闭终端不会停止。
 
 ```bash
-rtk plutil -lint ~/Library/LaunchAgents/com.local.dsh-a2a.plist
-rtk launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.local.dsh-a2a.plist
-rtk launchctl print "gui/$(id -u)/com.local.dsh-a2a"
+plutil -lint ~/Library/LaunchAgents/com.local.dsh-a2a.plist
+launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.local.dsh-a2a.plist
+launchctl print "gui/$(id -u)/com.local.dsh-a2a"
 ```
 
-源码升级或环境改变后执行 `rtk launchctl kickstart -k "gui/$(id -u)/com.local.dsh-a2a"`。修改 plist 后先 bootout 原服务，再 bootstrap 更新的文件。
+源码升级或环境改变后执行 `launchctl kickstart -k "gui/$(id -u)/com.local.dsh-a2a"`。修改 plist 后先 bootout 原服务，再 bootstrap 更新的文件。
 
 ## 验证
 

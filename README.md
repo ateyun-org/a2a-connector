@@ -5,15 +5,15 @@ Node.js 22+ outbound A2A tunnel client. The Connector discovers a local Agent Ca
 ## Install and test
 
 ```bash
-rtk npm ci
-rtk npm test
+npm ci
+npm test
 ```
 
 The default suite needs only root dependencies and is suitable for Hermes/Connector installation checks. It includes the SDK-independent adapter protocol tests and package checks. DSH native driver tests have a separate, mandatory CI step:
 
 ```bash
-rtk npm ci --prefix plugins/dsh
-rtk npm run test:all
+npm ci --prefix plugins/dsh
+npm run test:all
 ```
 
 `test:dsh` runs only the native DSH suite and fails if its SDK dependencies are missing; tests are never silently skipped.
@@ -23,7 +23,7 @@ rtk npm run test:all
 DSH hosts can use the bundled native `dsh-a2a-connector/adapter`; see [installation and service setup](AGENT_INSTALL.md#dsh). The local Agent must expose `/.well-known/agent-card.json` and an A2A endpoint. Start the Connector with automatic pairing:
 
 ```bash
-rtk node src/cli.js -auto-pair \
+node src/cli.js -auto-pair \
   -relay wss://dsh-relay.chuanbota.com/connect \
   -local http://127.0.0.1:9900
 ```
@@ -37,7 +37,7 @@ The credential and pending request ID are stored in private `0600` files under t
 `plugins/openclaw`, `plugins/dsh`, and `plugins/workbuddy` are JavaScript integrations. `plugins/hermes` is a thin Python entry point that launches the same JavaScript client. Before installing or packing a plugin from this source tree, run:
 
 ```bash
-rtk node scripts/sync-plugins.mjs
+node scripts/sync-plugins.mjs
 ```
 
 That command refreshes the checked-in copy of the canonical `src/` client in each plugin's `vendor/` directory. It also includes the `ws` dependency for Hermes, whose plugin installer does not install Node dependencies. OpenClaw, DSH, and WorkBuddy install `ws` from their package manifests. See [plugins/README.md](plugins/README.md) for package maintenance and [AGENT_INSTALL.md](AGENT_INSTALL.md) for host configuration.
@@ -57,8 +57,8 @@ To bump the version across `a2a-connector` and all host plugins in one command:
 ```
 
 You can also run `npm run bump-version -- <version|patch|minor|major>`. This synchronizes:
+
 - `package.json` and `package-lock.json` in root and all plugins (`openclaw`, `dsh`, `workbuddy`)
 - Host metadata files (`plugins/workbuddy/connector-meta.json` and `plugins/hermes/plugin.yaml`)
 
 For an agent-oriented installation and pairing procedure, see [AGENT_INSTALL.md](AGENT_INSTALL.md).
-

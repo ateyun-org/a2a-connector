@@ -20,7 +20,7 @@
 1. 确认目标 Agent 已启动，并从 Connector 所在机器访问本机 origin 下的 `/.well-known/agent-card.json`。HTTP 状态应为 200，响应 JSON 应包含非空 `name`。
 2. 确认本机 Agent Card 中的 A2A 接口地址确实可由 Relay 所在的 Connector 进程访问。若 Agent 还没有本机 A2A HTTP endpoint，先安装或配置 A2A adapter。DSH 使用下方随包提供的 `dsh-a2a-connector/adapter`；其他宿主需使用其自身的 A2A adapter。完成后重新执行这项检查，再配对。
 3. 确认 Relay URL 使用 `wss://` 且路径为 `/connect`。生产环境不要启用 `allowInsecure`。
-4. 优先复用已安装的 Connector 插件和现有配对身份。不要为了重试而重复配对；批准已有 Agent ID 会轮换该 Agent 的凭据。
+4. 优先复用已安装的 Connector 插件和现有配对身份。不要为了重试而重复配对；批准已有 Agent ID 会轮换该 Agent 的凭据。升级 Hermes 插件时，`plugins/` 下只能保留一个声明 `name: a2a-connector` 的目录；把旧目录移到 `plugins/` 外备份，单纯改名仍可能被扫描并注册同名 Hook。
 5. 只安装与当前宿主对应的插件目录。`vendor/connector` 是随插件分发的 Connector 客户端副本，不要删掉或只拷贝入口文件。依赖安装方式因宿主不同，见下表。
 6. OpenClaw、Hermes 和 DSH 使用 Node.js 运行 Connector；确认宿主进程使用 Node.js 22 或更新版本。WorkBuddy 插件声明了 Node.js 22 runtime。
 
@@ -81,14 +81,19 @@
 
 从仓库源码安装前，如需测试，在仓库根目录执行 `npm ci` 和 `npm test`。默认测试不需要 DSH SDK；Hermes 插件目录本身仍无需 npm 安装。`npm run test:dsh` / `test:all` 是维护者验证 DSH 原生 adapter 的入口，需先安装 `plugins/dsh` 开发依赖。若旧版本默认测试报缺少 `@deepseek-ai/schemastery`，更新到拆分测试后的版本再验证；不要将失败当作已通过，也无需为 Hermes 安装 DSH SDK。同步脚本只更新 vendor 文件，不能修复测试依赖问题。
 
-1. 确认 Hermes 进程可用 Node.js 22 或更新版本。安装完整插件目录：
+1. 确认 Hermes 进程可用 Node.js 22 或更新版本。升级已有安装时，先在旧插件仍可用的目标 Agent 中执行 `/a2a_connector stop`；Connector 是独立启动的子进程，Gateway 重启不保证它退出。随后将旧插件目录备份到 `plugins/` 外，再安装完整插件目录：
 
    ```bash
-   mkdir -p "${HERMES_HOME:-$HOME/.hermes}/plugins/a2a-connector"
-   cp -R "/absolute/path/to/repository/a2a-connector/plugins/hermes/." "${HERMES_HOME:-$HOME/.hermes}/plugins/a2a-connector/"
+   hermes_root="${HERMES_HOME:-$HOME/.hermes}"
+   mkdir -p "$hermes_root/plugins"
+   if [ -e "$hermes_root/plugins/a2a-connector" ]; then
+     mv "$hermes_root/plugins/a2a-connector" "$hermes_root/a2a-connector.backup-$(date +%Y%m%d-%H%M%S)"
+   fi
+   mkdir -p "$hermes_root/plugins/a2a-connector"
+   cp -R "/absolute/path/to/repository/a2a-connector/plugins/hermes/." "$hermes_root/plugins/a2a-connector/"
    ```
 
-   将示例仓库路径替换为仓库所在主机上的实际绝对路径；若启用了 `HERMES_HOME`，上面的命令会把插件安装到该 home。
+   将示例仓库路径替换为仓库所在主机上的实际绝对路径；若启用了 `HERMES_HOME`，上面的命令会把插件安装到该 home。检查 `plugins/` 下其他备份目录的 `plugin.yaml`；凡是也声明 `name: a2a-connector` 的，都移到 `plugins/` 外。Hermes 随包已包含 `ws`，无需再执行 `npm install ws`；不要删除原有 Connector 状态文件。若旧插件已不可用，先按下文核对 PID 与命令行，只终止确认属于旧 Connector 的进程，再处理对应 PID 文件。
 
 2. 这是 Hermes 的普通工具/Hook 插件，不是 Gateway platform 插件。先查看现有插件，再在目标 Hermes profile 中启用；不要把它配置到 `platforms.*.enabled`：
 
@@ -99,7 +104,7 @@
 
    上述命令操作默认 profile。目标是命名的独立 profile 时，给两个命令都加同一个 `-p`，例如 `hermes -p "coder" plugins list` 和 `hermes -p "coder" plugins enable a2a-connector`。multiplex Gateway 只启用启动该共享 Gateway 的 profile。Hermes 的通用用户插件默认需要加入 `plugins.enabled`；`hermes plugins enable` 会更新该配置。见 [Hermes 插件文档](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/features/plugins.md)。
 
-3. 在该 Hermes 实例读取的环境文件中配置：默认安装使用 `~/.hermes/.env`；若设置了 `HERMES_HOME`，使用对应 home 下的 `.env`。独立命名 profile 使用它自己的 `~/.hermes/profiles/<profile>/.env`。保留原文件内容并将权限设为 `0600`。多 profile multiplex Gateway 是一个共享进程，而 Connector 直接读取进程环境；此时把 Connector 参数放入启动该 Gateway 的 home 环境中，不要假设它会按每个 profile 单独启动。
+3. 在该 Hermes 实例读取的环境文件中配置：默认安装使用 `~/.hermes/.env`；若设置了 `HERMES_HOME`，使用对应 home 下的 `.env`。独立命名 profile 使用它自己的 `~/.hermes/profiles/<profile>/.env`。保留原文件内容并将权限设为 `0600`。多 profile multiplex Gateway 是一个共享进程，而 Connector 直接读取进程环境；此时把 Connector 参数放入启动该 Gateway 的 home 环境中，不要假设它会按每个 profile 单独启动。`.env` 由宿主加载时，`/proc/<Gateway PID>/environ` 不一定反映加载后的 Python 进程环境，也不会自动给当前交互 shell 导出这些变量。
 
    ```text
    A2A_RELAY_URL=wss://dsh-relay.chuanbota.com/connect
@@ -156,7 +161,7 @@
 
    以上是默认 profile 的 user service 示例。用 `hermes gateway status` 和 `systemctl --user list-units 'hermes-gateway*'` 确认服务范围和 unit 名称；命名 profile 的独立 service 使用它自己的 unit，multiplex Gateway 使用默认 Gateway 的 unit。若安装为默认 profile 的 system service，执行 `sudo systemctl edit hermes-gateway.service`，再按同样顺序运行 `sudo systemctl daemon-reload`、`sudo systemctl restart hermes-gateway.service` 和 `sudo systemctl status hermes-gateway.service --no-pager`。命名 profile 请替换为实际 unit。不要把 `Environment=` 直接写回生成的主 unit。Hermes 的 Gateway 管理方式见[官方文档](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/messaging/index.md)。
 
-   重启后在同一 profile 运行 `hermes plugins list`，确认 `a2a-connector` 已启用；再在 Agent 中确认 `a2a_connector_pair` 工具和 `/a2a_connector pair|start|stop` 命令已注册。
+   重启后在同一 profile 运行 `hermes plugins list`，确认 `a2a-connector` 已启用；再在 Agent 中确认 `a2a_connector_pair` 工具和 `/a2a_connector pair|start|stop` 命令已注册。Connector 的启动 Hook 是 `on_session_start`，重启 Gateway 本身不会触发它；如需立即启动，在目标 Agent 中执行 `/a2a_connector start`，或者开始一个会话触发 Hook。不要仅凭 Gateway 已监听本机端口判断 Connector 已启动。
 
 ### DSH
 
@@ -227,7 +232,7 @@ adapter 与 Connector 都随 DSH profile 生命周期启动。仓库提供 [常�
 2. **本机 Agent**：从 Connector 主机请求 `<local origin>/.well-known/agent-card.json`，确认返回 200 且 JSON 有 `name`。如需本机认证，Hermes 用 `A2A_LOCAL_TOKEN` 传入 token 值；OpenClaw/DSH 用 `localTokenEnv` 指定已有环境变量名。
 3. **插件加载**：确认宿主插件已启用并且 `a2a_connector_pair` 工具可调用。Hermes 需要执行 `hermes plugins enable a2a-connector`，然后重启目标 Gateway；该命令本身不会重启已运行的 Gateway。
 4. **配对申请**：调用 `a2a_connector_pair` 获取当前请求的 URL、Agent ID、确认码。确认码过期后再次调用以显示新请求；不要删除 Connector 状态文件。
-5. **管理员批准与运行状态**：管理员核对 Agent ID 和确认码并批准后，再调用 `a2a_connector_pair` 确认已配对。然后检查宿主进程或 Connector 子进程仍在运行。Hermes 子进程退出后运行 `/a2a_connector start`；WorkBuddy 运行 `workbuddy-a2a start`；OpenClaw 执行 `openclaw plugins reload a2a-connector`；DSH 重启运行该 profile 的进程。Connector 自身会处理普通网络断线并自动重连。连接问题优先检查 Relay WSS 地址、本机 Agent 可达性、token 环境变量和 Node 绝对路径；不要直接重配对，因为复用 Agent ID 会轮换凭据。
+5. **管理员批准与运行状态**：管理员核对 Agent ID 和确认码并批准后，再调用 `a2a_connector_pair` 确认已配对。该工具返回 `status: paired` 只证明本地有配对凭据，不能证明子进程或 Relay 连接仍活跃。Hermes 用 `pgrep -af 'vendor/connector/cli.js'` 查看实际进程，并核对命令行中的 vendor 路径是当前插件目录；再读取状态文件旁的 `.pid`，用 `ps -p <PID> -o pid=,args=` 确认 PID 与进程一致。自定义 `A2A_CONNECTOR_STATE` 时 PID 文件也随之改变。Hermes 子进程退出后运行 `/a2a_connector start`；WorkBuddy 运行 `workbuddy-a2a start`；OpenClaw 执行 `openclaw plugins reload a2a-connector`；DSH 重启运行该 profile 的进程。Connector 自身会处理普通网络断线并自动重连。连接问题优先检查 Relay WSS 地址、本机 Agent 可达性、token 环境变量和 Node 绝对路径；不要直接重配对，因为复用 Agent ID 会轮换凭据。
 
 ### `file:` 路径失效
 

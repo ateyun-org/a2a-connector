@@ -8,10 +8,18 @@
   },
   "peerDependencies": {
     "@deepseek-ai/dsh-tools": "^0.1.5-rc.3",
-    "@deepseek-ai/schemastery": "^3.18.2"
+    "@deepseek-ai/schemastery": "^3.18.2",
+    "@deepseek-ai/dsh-agent": "^0.1.5-rc.3",
+    "@deepseek-ai/dsh-llm": "^0.1.5-rc.3"
   },
   "devDependencies": {
     "@deepseek-ai/dsh-tools": "0.1.5-rc.3",
-    "@deepseek-ai/schemastery": "3.18.2"
+    "@deepseek-ai/schemastery": "3.18.2",
+    "@deepseek-ai/dsh-agent": "0.1.5-rc.3",
+    "@deepseek-ai/dsh-llm": "0.1.5-rc.3"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./adapter": "./adapter.js"
   }
 }

@@ -6,12 +6,13 @@ Node.js 22+ outbound A2A tunnel client. The Connector discovers a local Agent Ca
 
 ```bash
 rtk npm ci
+rtk npm ci --prefix plugins/dsh
 rtk npm test
 ```
 
 ## Pair and run
 
-The local Agent must expose `/.well-known/agent-card.json` and an A2A endpoint. Start the Connector with automatic pairing:
+DSH hosts can use the bundled native `dsh-a2a-connector/adapter`; see [installation and service setup](AGENT_INSTALL.md#dsh). The local Agent must expose `/.well-known/agent-card.json` and an A2A endpoint. Start the Connector with automatic pairing:
 
 ```bash
 rtk node src/cli.js -auto-pair \
@@ -31,6 +32,6 @@ The credential and pending request ID are stored in private `0600` files under t
 rtk node scripts/sync-plugins.mjs
 ```
 
-That command refreshes the checked-in copy of the canonical `src/` client in each plugin's `vendor/` directory. It also includes the `ws` dependency for Hermes, whose plugin installer does not install Node dependencies. OpenClaw, DSH, and WorkBuddy install `ws` from their package manifests. See [plugins/README.md](plugins/README.md) for host configuration.
+That command refreshes the checked-in copy of the canonical `src/` client in each plugin's `vendor/` directory. It also includes the `ws` dependency for Hermes, whose plugin installer does not install Node dependencies. OpenClaw, DSH, and WorkBuddy install `ws` from their package manifests. See [plugins/README.md](plugins/README.md) for package maintenance and [AGENT_INSTALL.md](AGENT_INSTALL.md) for host configuration.
 
 For an agent-oriented installation and pairing procedure, see [AGENT_INSTALL.md](AGENT_INSTALL.md).

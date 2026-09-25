@@ -18,7 +18,7 @@
 ## 安装前检查
 
 1. 确认目标 Agent 已启动，并从 Connector 所在机器访问本机 origin 下的 `/.well-known/agent-card.json`。HTTP 状态应为 200，响应 JSON 应包含非空 `name`。
-2. 确认本机 Agent Card 中的 A2A 接口地址确实可由 Relay 所在的 Connector 进程访问。若 Agent 还没有本机 A2A HTTP endpoint，先停止；需要先安装或配置 A2A adapter。
+2. 确认本机 Agent Card 中的 A2A 接口地址确实可由 Relay 所在的 Connector 进程访问。若 Agent 还没有本机 A2A HTTP endpoint，先安装或配置 A2A adapter。DSH 使用下方随包提供的 `dsh-a2a-connector/adapter`；其他宿主需使用其自身的 A2A adapter。完成后重新执行这项检查，再配对。
 3. 确认 Relay URL 使用 `wss://` 且路径为 `/connect`。生产环境不要启用 `allowInsecure`。
 4. 优先复用已安装的 Connector 插件和现有配对身份。不要为了重试而重复配对；批准已有 Agent ID 会轮换该 Agent 的凭据。
 5. 只安装与当前宿主对应的插件目录。`vendor/connector` 是随插件分发的 Connector 客户端副本，不要删掉或只拷贝入口文件。依赖安装方式因宿主不同，见下表。
@@ -154,7 +154,7 @@
 
 ### DSH
 
-1. 在目标 DSH Agent 主机安装 `plugins/dsh`，作为独立插件与 `dsh-a2a` 一起使用。不要把该插件装到中央 `dsh-a2a` Orchestrator 上。
+1. 在目标 DSH Agent 主机安装 `plugins/dsh`。被调度节点只需 adapter + Connector，只有需要向其他节点发起调用时才另装 `dsh-a2a` 客户端。当前 Relay 主控认证使用 Connector 身份，因此中央 DSH 采用此认证模式时也需安装并配对，随后由管理员在 `/pair/list` 设为主控。
 2. 用 DSH CLI 将本地插件目录作为目标 profile 的依赖安装：
 
    ```bash
@@ -165,19 +165,32 @@
 
    ```yaml
    - insert:
+       - id: dsh-a2a-adapter
+         name: dsh-a2a-connector/adapter
+         config:
+           port: 9900
+           name: DSH Agent
+           tokenEnv: MY_LOCAL_AGENT_TOKEN
        - id: a2a-connector
          name: dsh-a2a-connector
          config:
            relay: wss://dsh-relay.chuanbota.com/connect
            local: http://127.0.0.1:9900
-           # 本机 Agent 要求认证时可设置：
-           # localTokenEnv: MY_LOCAL_AGENT_TOKEN
+           localTokenEnv: MY_LOCAL_AGENT_TOKEN
            # 可选稳定 ID：
            # agentId: my-agent
    ```
 
-   配置键还支持 `binary`、`state`、`allowInsecure`。保持 `allowInsecure` 为 `false`。注意：Cordis loader 根据 `name` 解析并动态 `import()` 依赖包，此处 `name` 必须对应 `package.json` 中的包名 `dsh-a2a-connector`（而非 `a2a-connector`），而 `id` 为该插件条目的唯一标识。
-3. 如果 profile 已启用 `dsh-hmr`，Cordis patch 变更会被监听并热加载；否则重启运行该 profile 的 DSH 进程。启动前可检查最终组合，运行 CLI profile 则用 `rtk dsh --profile "web" --dump-config`；确认只出现一个 `id: a2a-connector`（`name: dsh-a2a-connector`）条目，再通过 DSH 平常的启动入口重启同一 profile。启动后确认插件加载且 `a2a_connector_pair` 工具可调用。DSH profile patch 与 HMR 行为见[官方 loader 文档](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/boot/app-boot/README.md)。
+   adapter 在同一 DSH 进程内调用原生 Agent/session API，提供 `/.well-known/agent-card.json` 和 `/rpc`（A2A v1.0 JSON-RPC）。它仅监听 `127.0.0.1`，必须配置不少于 32 字符的随机 token。把 token 安全写入宿主进程环境中的 `MY_LOCAL_AGENT_TOKEN`，adapter 和 Connector 引用同一变量名；不要写入 patch 或打印到对话。使用已配置模型的常驻 profile（如 `web`），不要使用自动退出的 `headless` profile。
+
+   同一 `contextId` 复用原生 DSH session，完成后追问只携带 `contextId`。支持文本发送、查询、取消和任务列表，不支持流式、推送及暂停任务续传。同会话只允许一个任务运行。最多保留 128 个上下文、4096 个任务；空闲 1 小时释放会话及任务索引。DSH 会 flush 会话日志，但当前 adapter 的 A2A ID 映射仅在内存：重启或过期后旧 ID 会明确报错，需新建会话，不会悄悄重建空历史。
+
+   Connector 配置键还支持 `binary`、`state`、`allowInsecure`。保持 `allowInsecure` 为 `false`。注意：Cordis loader 根据 `name` 解析并动态 `import()` 依赖包，此处 `name` 必须对应 `package.json` 中的包名 `dsh-a2a-connector`（而非 `a2a-connector`），而 `id` 为该插件条目的唯一标识。
+3. 插件代码或依赖升级后，必须重新安装并重启运行该 profile 的 DSH 进程；HMR 不保证刷新模块缓存。只有配置变更时，如果 profile 已启用 `dsh-hmr`，Cordis patch 变更会被监听并热加载；否则重启运行该 profile 的 DSH 进程。启动前可检查最终组合，运行 CLI profile 则用 `rtk dsh --profile "web" --dump-config`；确认只出现一个 `id: a2a-connector`（`name: dsh-a2a-connector`）条目，再通过 DSH 平常的启动入口重启同一 profile。启动后确认插件加载且 `a2a_connector_pair` 工具可调用。DSH profile patch 与 HMR 行为见[官方 loader 文档](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/boot/app-boot/README.md)。
+
+### DSH 常驻运行（launchd / systemd）
+
+adapter 与 Connector 都随 DSH profile 生命周期启动。仓库提供 [常驻模板与部署步骤](deploy/README.md)：使用已完成模型配置的 profile，在服务环境中提供 Node/DSH 绝对路径、工作目录和本机认证变量。关闭终端后由服务管理器维持进程，异常退出自动重启；不要另起重复实例占用相同端口或状态文件。
 
 ### Tencent WorkBuddy
 
@@ -207,6 +220,10 @@
 3. **插件加载**：确认宿主插件已启用并且 `a2a_connector_pair` 工具可调用。Hermes 需要执行 `rtk hermes plugins enable a2a-connector`，然后重启目标 Gateway；该命令本身不会重启已运行的 Gateway。
 4. **配对申请**：调用 `a2a_connector_pair` 获取当前请求的 URL、Agent ID、确认码。确认码过期后再次调用以显示新请求；不要删除 Connector 状态文件。
 5. **管理员批准与运行状态**：管理员核对 Agent ID 和确认码并批准后，再调用 `a2a_connector_pair` 确认已配对。然后检查宿主进程或 Connector 子进程仍在运行。Hermes 子进程退出后运行 `/a2a_connector start`；WorkBuddy 运行 `rtk workbuddy-a2a start`；OpenClaw 执行 `rtk openclaw plugins reload a2a-connector`；DSH 重启运行该 profile 的进程。Connector 自身会处理普通网络断线并自动重连。连接问题优先检查 Relay WSS 地址、本机 Agent 可达性、token 环境变量和 Node 绝对路径；不要直接重配对，因为复用 Agent ID 会轮换凭据。
+
+### `file:` 路径失效
+
+如果 DSH plugin reconcile 报目录不存在，检查目标 profile `package.json` 的 `file:` 依赖是否指向已移动或删除的目录。恢复原目录，或执行 `rtk dsh plugin --profile <profile> remove dsh-a2a-connector`，再用本机真实绝对路径 add；保留其他依赖和 Cordis patch。CLI 自身的 reconcile 提示/恢复行为属于 DeepSeek 上游，本仓库只提供排错说明，不把该环境问题当作 Connector 缺陷。
 
 ## 完成检查
 

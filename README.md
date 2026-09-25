@@ -6,9 +6,17 @@ Node.js 22+ outbound A2A tunnel client. The Connector discovers a local Agent Ca
 
 ```bash
 rtk npm ci
-rtk npm ci --prefix plugins/dsh
 rtk npm test
 ```
+
+The default suite needs only root dependencies and is suitable for Hermes/Connector installation checks. It includes the SDK-independent adapter protocol tests and package checks. DSH native driver tests have a separate, mandatory CI step:
+
+```bash
+rtk npm ci --prefix plugins/dsh
+rtk npm run test:all
+```
+
+`test:dsh` runs only the native DSH suite and fails if its SDK dependencies are missing; tests are never silently skipped.
 
 ## Pair and run
 

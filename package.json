@@ -2,9 +2,21 @@
   "name": "a2a-connector",
   "version": "0.2.0",
   "type": "module",
-  "engines": { "node": ">=22" },
-  "bin": { "a2a-connector": "./src/cli.js" },
-  "exports": { ".": "./src/connector.js" },
-  "scripts": { "test": "node --test test/*.test.js" },
-  "dependencies": { "ws": "8.21.3" }
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "a2a-connector": "./src/cli.js"
+  },
+  "exports": {
+    ".": "./src/connector.js"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "test:dsh": "node --test test/dsh/*.test.js",
+    "test:all": "npm test && npm run test:dsh"
+  },
+  "dependencies": {
+    "ws": "8.21.3"
+  }
 }

@@ -79,6 +79,8 @@
 
 ### Hermes
 
+从仓库源码安装前，如需测试，在仓库根目录执行 `rtk npm ci` 和 `rtk npm test`。默认测试不需要 DSH SDK；Hermes 插件目录本身仍无需 npm 安装。`rtk npm run test:dsh` / `test:all` 是维护者验证 DSH 原生 adapter 的入口，需先安装 `plugins/dsh` 开发依赖。若旧版本默认测试报缺少 `@deepseek-ai/schemastery`，更新到拆分测试后的版本再验证；不要将失败当作已通过，也无需为 Hermes 安装 DSH SDK。同步脚本只更新 vendor 文件，不能修复测试依赖问题。
+
 1. 确认 Hermes 进程可用 Node.js 22 或更新版本。安装完整插件目录：
 
    ```bash
@@ -115,6 +117,10 @@
    其他可选变量：`A2A_AGENT_ID`、`A2A_ALLOW_INSECURE=1`。生产环境不要设置 `A2A_ALLOW_INSECURE`；固定 Agent ID 的使用场景见上面的参数说明。
 
    `A2A_NODE_BINARY` 默认是 `node`，要求 Connector 子进程的 PATH 能找到 Node.js。交互终端中的 `rtk node --version` 成功不代表 systemd/launchd 服务也能找到它；给服务设置绝对路径更可靠。
+
+   插件注册时会执行一次不发网络请求的自检：缺少必需环境变量、Node 路径或随包 CLI 时记 ERROR；未配对或等待审批会单独提示，但不阻止 session start hook 自动申请/恢复配对。`A2A_LOCAL_TOKEN` 仅在本机接口启用认证时需要，缺失不属于自检错误。
+
+   启动失败在 Gateway 日志中以 ERROR 报告。子进程 stderr 保存在状态文件旁的 `hermes.stderr.log`（自定义 state 时替换其扩展名），权限 `0600`，重启追加写入；排查时检查该文件，不要把原始日志直接贴到对话中。日志不会自动轮转，需按主机日志保留策略管理。启动后立即退出会报退出码及日志路径；稍后发生的错误也会保留在该文件。命令报告“进程启动”不代表已配对或网络连通，仍需按下方步骤验证。
 
    Hermes Connector 的状态文件默认是 `~/.config/a2a-connector/hermes.json`，待审批请求写入该路径加 `.pending`，PID 文件是 `~/.config/a2a-connector/hermes.pid`。多个独立 Hermes/Connector 实例应设置不同的 `A2A_CONNECTOR_STATE`，避免共用身份文件。`A2A_ALLOW_INSECURE=1` 仅用于本地测试。
 

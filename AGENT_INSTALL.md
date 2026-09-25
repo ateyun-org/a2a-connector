@@ -180,7 +180,13 @@
          name: dsh-a2a-connector/adapter
          config:
            port: 9900
-           name: DSH Agent
+           name: DSH Code Reviewer
+           description: 审查 Go 和 JavaScript 代码，给出可验证的修改建议。
+           skills:
+             - id: code-review
+               name: Code review
+               description: 检查代码逻辑、权限边界与回归风险。
+               tags: [code, review]
            tokenEnv: MY_LOCAL_AGENT_TOKEN
        - id: a2a-connector
          name: dsh-a2a-connector
@@ -192,7 +198,7 @@
            # agentId: my-agent
    ```
 
-   adapter 在同一 DSH 进程内调用原生 Agent/session API，提供 `/.well-known/agent-card.json` 和 `/rpc`（A2A v1.0 JSON-RPC）。它仅监听 `127.0.0.1`，必须配置不少于 32 字符的随机 token。把 token 安全写入宿主进程环境中的 `MY_LOCAL_AGENT_TOKEN`，adapter 和 Connector 引用同一变量名；不要写入 patch 或打印到对话。使用已配置模型的常驻 profile（如 `web`），不要使用自动退出的 `headless` profile。
+   adapter 在同一 DSH 进程内调用原生 Agent/session API，提供 `/.well-known/agent-card.json` 和 `/rpc`（A2A v1.0 JSON-RPC）。`name`、`description`、`skills` 会发布到 Agent Card，供主控发现职责；不配置时使用通用 DSH 描述。它仅监听 `127.0.0.1`，必须配置不少于 32 字符的随机 token。把 token 安全写入宿主进程环境中的 `MY_LOCAL_AGENT_TOKEN`，adapter 和 Connector 引用同一变量名；不要写入 patch 或打印到对话。使用已配置模型的常驻 profile（如 `web`），不要使用自动退出的 `headless` profile。
 
    同一 `contextId` 复用原生 DSH session，完成后追问只携带 `contextId`。支持文本发送、查询、取消和任务列表，不支持流式、推送及暂停任务续传。同会话只允许一个任务运行。最多保留 128 个上下文、4096 个任务；空闲 1 小时释放会话及任务索引。DSH 会 flush 会话日志，但当前 adapter 的 A2A ID 映射仅在内存：重启或过期后旧 ID 会明确报错，需新建会话，不会悄悄重建空历史。
 

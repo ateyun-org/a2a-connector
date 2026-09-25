@@ -2,14 +2,25 @@ import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { createServer } from 'node:http';
 
 const WORKING = 'TASK_STATE_WORKING';
+const DEFAULT_DESCRIPTION = 'DSH native session adapter; text tasks and multi-turn contexts.';
+const DEFAULT_SKILLS = [{ id: 'dsh', name: 'DSH tasks',
+  description: 'Execute tasks using the configured DSH profile.', tags: ['dsh'] }];
 const view = task => ({ id: task.id, contextId: task.contextId,
   status: { state: task.state, message: { messageId: task.id, contextId: task.contextId,
     role: 'ROLE_AGENT', parts: [{ text: task.output, mediaType: 'text/plain' }] } }, artifacts: [] });
 
 /** Loopback A2A v1.0 text endpoint. createSession returns { run, cancel, dispose }. */
 export function createAdapterServer({ token, createSession, name = 'DSH Agent',
+  description = DEFAULT_DESCRIPTION, skills = DEFAULT_SKILLS,
   maxContexts = 128, maxTasks = 4096, idleMs = 3600000 }) {
   if (typeof token !== 'string' || token.length < 32) throw new Error('DSH adapter token must contain at least 32 characters');
+  if (typeof description !== 'string' || !description.trim() || !Array.isArray(skills) ||
+      skills.some(skill => !skill || typeof skill.id !== 'string' || !skill.id ||
+        typeof skill.name !== 'string' || !skill.name ||
+        typeof skill.description !== 'string' || !skill.description ||
+        !Array.isArray(skill.tags) || skill.tags.some(tag => typeof tag !== 'string'))) {
+    throw new Error('DSH adapter requires a description and valid Agent Card skills');
+  }
   const contexts = new Map();
   const tasks = new Map();
   let closing = false;
@@ -25,10 +36,10 @@ export function createAdapterServer({ token, createSession, name = 'DSH Agent',
     }
     if (closing) { json(503, { error: 'shutting_down' }); return; }
     if (req.method === 'GET' && req.url === '/.well-known/agent-card.json') {
-      json(200, { name, description: 'DSH native session adapter; text tasks and multi-turn contexts.', version: '1.0.0',
+      json(200, { name, description, version: '1.0.0',
         supportedInterfaces: [{ url: `http://127.0.0.1:${server.address().port}/rpc`, protocolBinding: 'JSONRPC', protocolVersion: '1.0' }],
         capabilities: {}, defaultInputModes: ['text/plain'], defaultOutputModes: ['text/plain'],
-        skills: [{ id: 'dsh', name: 'DSH tasks', description: 'Execute tasks using the configured DSH profile.', tags: ['dsh'] }] });
+        skills });
       return;
     }
     if (req.method !== 'POST' || req.url !== '/rpc') { json(404, { error: 'not_found' }); return; }

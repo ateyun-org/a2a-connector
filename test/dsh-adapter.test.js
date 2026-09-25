@@ -3,8 +3,8 @@ import test from 'node:test';
 import { createAdapterServer } from '../plugins/dsh/adapter-server.js';
 
 const token = 'x'.repeat(32);
-async function fixture(t, createSession) {
-  const adapter = createAdapterServer({ token, createSession });
+async function fixture(t, createSession, card = {}) {
+  const adapter = createAdapterServer({ token, createSession, ...card });
   await new Promise(resolve => adapter.server.listen(0, '127.0.0.1', resolve));
   t.after(() => adapter.close());
   const origin = `http://127.0.0.1:${adapter.server.address().port}`;
@@ -46,6 +46,18 @@ test('adapter authenticates card/RPC and reuses native contexts, with isolated s
   assert.ok((await f.rpc('SendMessage', { message: { role: 'ROLE_USER', parts: [{ raw: 'bytes' }] } })).error);
   assert.equal((await f.rpc('ListTasks', { contextId: first.contextId })).result.tasks.length, 2);
   t.after(() => assert.equal(disposed, 2));
+});
+
+test('adapter publishes its configured purpose and skills in the Agent Card', async t => {
+  const skills = [{ id: 'security-review', name: 'Security review',
+    description: 'Review Go and JavaScript authentication code.', tags: ['security', 'code'] }];
+  const f = await fixture(t, async () => ({ run: async () => ({ text: '', completed: true }),
+    cancel() {}, dispose() {} }), { name: 'Security Reviewer',
+    description: 'Reviews authentication changes; does not deploy services.', skills });
+  const card = await (await fetch(`${f.origin}/.well-known/agent-card.json`, { headers: f.headers })).json();
+  assert.equal(card.name, 'Security Reviewer');
+  assert.equal(card.description, 'Reviews authentication changes; does not deploy services.');
+  assert.deepEqual(card.skills, skills);
 });
 
 test('adapter rejects concurrent turns and cancellation cannot be overwritten by completion', async t => {

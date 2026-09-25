@@ -9,6 +9,11 @@ export const inject = ['agents', 'agentDefaultModel', 'sessions'];
 export const Config = z.object({
   port: z.number().default(9900),
   name: z.string().default('DSH Agent'),
+  description: z.string(),
+  skills: z.array(z.object({
+    id: z.string().required(), name: z.string().required(),
+    description: z.string().required(), tags: z.array(z.string()).default([]),
+  })),
   tokenEnv: z.string().required(),
 });
 
@@ -51,6 +56,7 @@ export function createDSHSessionFactory(ctx) {
 export async function apply(ctx, config) {
   if (!Number.isInteger(config.port) || config.port < 1 || config.port > 65535) throw new Error('Invalid DSH adapter port');
   const adapter = createAdapterServer({ token: process.env[config.tokenEnv], name: config.name,
+    description: config.description, skills: config.skills,
     createSession: createDSHSessionFactory(ctx) });
   ctx.effect(() => () => adapter.close());
   await new Promise((resolve, reject) => {

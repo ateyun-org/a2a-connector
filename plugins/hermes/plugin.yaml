@@ -1,5 +1,5 @@
 name: a2a-connector
-version: 0.2.0
+version: 0.2.1
 description: Pair Hermes with an A2A Relay and run its outbound Connector
 provides_tools:
   - a2a_connector_pair

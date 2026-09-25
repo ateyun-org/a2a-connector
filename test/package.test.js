@@ -32,3 +32,16 @@ test('DSH SDKs remain host-provided peer dependencies', async () => {
     assert.equal(pkg.optionalDependencies?.[dependency], undefined);
   }
 });
+
+test('all package.json versions and plugin manifests match root version', async () => {
+  const rootPkg = JSON.parse(await readFile('package.json', 'utf8'));
+  for (const host of ['openclaw', 'dsh', 'workbuddy']) {
+    const pkg = JSON.parse(await readFile(join('plugins', host, 'package.json'), 'utf8'));
+    assert.equal(pkg.version, rootPkg.version, `${host} package.json version should match root version`);
+  }
+  const workbuddyMeta = JSON.parse(await readFile(join('plugins', 'workbuddy', 'connector-meta.json'), 'utf8'));
+  assert.equal(workbuddyMeta.version, rootPkg.version, 'workbuddy connector-meta.json version should match root version');
+  const hermesYaml = await readFile(join('plugins', 'hermes', 'plugin.yaml'), 'utf8');
+  assert.match(hermesYaml, new RegExp(`^version:\\s*${rootPkg.version}`, 'm'), 'hermes plugin.yaml version should match root version');
+});
+

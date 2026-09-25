@@ -42,4 +42,23 @@ rtk node scripts/sync-plugins.mjs
 
 That command refreshes the checked-in copy of the canonical `src/` client in each plugin's `vendor/` directory. It also includes the `ws` dependency for Hermes, whose plugin installer does not install Node dependencies. OpenClaw, DSH, and WorkBuddy install `ws` from their package manifests. See [plugins/README.md](plugins/README.md) for package maintenance and [AGENT_INSTALL.md](AGENT_INSTALL.md) for host configuration.
 
+## Version management
+
+To bump the version across `a2a-connector` and all host plugins in one command:
+
+```bash
+./bump-version.sh 0.2.2
+# or bump semver automatically:
+./bump-version.sh patch
+./bump-version.sh minor
+./bump-version.sh major
+# preview without writing:
+./bump-version.sh --dry-run patch
+```
+
+You can also run `npm run bump-version -- <version|patch|minor|major>`. This synchronizes:
+- `package.json` and `package-lock.json` in root and all plugins (`openclaw`, `dsh`, `workbuddy`)
+- Host metadata files (`plugins/workbuddy/connector-meta.json` and `plugins/hermes/plugin.yaml`)
+
 For an agent-oriented installation and pairing procedure, see [AGENT_INSTALL.md](AGENT_INSTALL.md).
+

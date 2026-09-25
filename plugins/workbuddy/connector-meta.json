@@ -6,7 +6,7 @@
   "description_zh": "将本机 A2A Agent 接入远程 Relay，供 DSH 调度。",
   "source": "dsh-a2a-connector",
   "type": "cli",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "minWorkbuddyVersion": "4.24.0",
   "examples_zh": ["把这台机器上的 Agent 接入 A2A Relay", "检查 A2A Connector 的连接状态"],
   "examples_en": ["Connect this agent to the A2A Relay", "Check the A2A Connector status"]

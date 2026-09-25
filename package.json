@@ -14,7 +14,9 @@
   "scripts": {
     "test": "node --test test/*.test.js",
     "test:dsh": "node --test test/dsh/*.test.js",
-    "test:all": "npm test && npm run test:dsh"
+    "test:all": "npm test && npm run test:dsh",
+    "bump-version": "./scripts/bump-version.sh",
+    "version:bump": "./scripts/bump-version.sh"
   },
   "dependencies": {
     "ws": "8.21.3"

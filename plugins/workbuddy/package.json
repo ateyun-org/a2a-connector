@@ -1,6 +1,6 @@
 {
   "name": "workbuddy-a2a-connector",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "type": "module",
   "bin": { "workbuddy-a2a": "./cli.js" },
   "dependencies": { "ws": "8.21.3" }

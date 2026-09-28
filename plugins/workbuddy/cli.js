@@ -2,7 +2,7 @@
 import { execFile, spawn } from 'node:child_process';
 import { createInterface } from 'node:readline/promises';
 import { stdin, stdout } from 'node:process';
-import { readFile, writeFile, mkdir, unlink } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, unlink, open } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { dirname } from 'node:path';
@@ -11,8 +11,13 @@ import { promisify } from 'node:util';
 
 const run = promisify(execFile);
 const dir = join(homedir(), '.config', 'a2a-connector');
-const state = join(dir, 'workbuddy.json');
-const settings = join(dir, 'workbuddy-settings.json');
+const instance = process.env.A2A_CONNECTOR_INSTANCE || 'default';
+if (!/^[a-z0-9][a-z0-9_-]{0,31}$/.test(instance)) throw new Error('invalid A2A_CONNECTOR_INSTANCE');
+const prefix = instance === 'default' ? 'workbuddy' : `workbuddy-${instance}`;
+const state = join(dir, `${prefix}.json`);
+const settings = join(dir, `${prefix}-settings.json`);
+const pidFile = join(dir, `${prefix}.pid`);
+const logFile = join(dir, `${prefix}.stderr.log`);
 const binary = process.env.A2A_NODE_BINARY || process.execPath;
 const script = join(dirname(fileURLToPath(import.meta.url)), 'vendor', 'connector', 'cli.js');
 
@@ -21,25 +26,30 @@ function args(c) { return [script, '-relay', c.relay, '-local', c.local, '-state
   ...(c.agentId ? ['-agent-id', c.agentId] : []), ...(c.allowInsecure ? ['-allow-insecure'] : [])]; }
 async function start() {
   const c = await config();
-  const child = spawn(binary, [...args(c), '-auto-pair'], { detached: true, stdio: 'ignore', env: process.env });
-  await new Promise((resolve, reject) => {
-    child.once('spawn', resolve);
-    child.once('error', reject);
-  });
+  const log = await open(logFile, 'a', 0o600);
+  let child;
+  try {
+    child = spawn(binary, [...args(c), '-auto-pair'], { detached: true,
+      stdio: ['ignore', log.fd, log.fd], env: process.env });
+    await new Promise((resolve, reject) => {
+      child.once('spawn', resolve);
+      child.once('error', reject);
+    });
+  } finally { await log.close(); }
   child.unref();
-  await writeFile(join(dir, 'workbuddy.pid'), String(child.pid), { mode: 0o600 });
+  await writeFile(pidFile, String(child.pid), { mode: 0o600 });
 }
 async function stop() {
   try {
-    const pid = Number(await readFile(join(dir, 'workbuddy.pid'), 'utf8'));
+    const pid = Number(await readFile(pidFile, 'utf8'));
     if (Number.isSafeInteger(pid) && pid > 0) process.kill(pid, 'SIGTERM');
   } catch (error) { if (error.code !== 'ENOENT' && error.code !== 'ESRCH') throw error; }
-  await unlink(join(dir, 'workbuddy.pid')).catch(error => { if (error.code !== 'ENOENT') throw error; });
+  await unlink(pidFile).catch(error => { if (error.code !== 'ENOENT') throw error; });
 }
 async function status() {
   try {
     const enrollment = JSON.parse(await readFile(state, 'utf8'));
-    const pid = Number(await readFile(join(dir, 'workbuddy.pid'), 'utf8'));
+    const pid = Number(await readFile(pidFile, 'utf8'));
     process.kill(pid, 0);
     console.log(`Logged in: ${enrollment.agentId}`);
   } catch {

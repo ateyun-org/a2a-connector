@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
 import { createServer } from 'node:http';
-import { mkdtemp, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { once } from 'node:events';
@@ -131,6 +131,229 @@ test('CLI resumes a pending request and connects after approval', async t => {
   assert.ok(enrollment, `automatic enrollment did not complete: ${errors}`);
   assert.equal(enrollment.agentId, 'novice-agent-12345678');
   assert.equal(created, 1, 'the resumed Connector issued a duplicate request');
+});
+
+test('CLI stops after a rejected one-time pairing code and preserves pending state', async t => {
+  const local = createServer((_request, response) => {
+    response.setHeader('content-type', 'application/json');
+    response.end(JSON.stringify({ name: 'Recovery Agent' }));
+  });
+  const localURL = await listen(local);
+  t.after(() => local.close());
+  let registrations = 0;
+  const relay = createServer((request, response) => {
+    response.setHeader('content-type', 'application/json');
+    if (request.url === '/pairing/requests') {
+      response.writeHead(201);
+      response.end(JSON.stringify({ requestId: 'e'.repeat(64), agentId: 'recovery-agent',
+        confirmationCode: 'ABC123' }));
+    } else if (request.url === '/pairing/status') {
+      response.end(JSON.stringify({ status: 'approved', code: 'pair_' + 'f'.repeat(48) }));
+    } else if (request.url === '/register') {
+      registrations++;
+      response.writeHead(401);
+      response.end(JSON.stringify({ error: 'invalid_pairing_code' }));
+    } else { response.writeHead(404); response.end('{}'); }
+  });
+  const relayURL = await listen(relay);
+  t.after(() => relay.close());
+  const state = join(await mkdtemp(join(tmpdir(), 'a2a-rejected-pair-')), 'state.json');
+  await assert.rejects(run(process.execPath, ['src/cli.js', '-relay', `ws://${new URL(relayURL).host}/connect`,
+    '-local', localURL, '-state', state, '-allow-insecure', '-auto-pair'], { timeout: 5000 }),
+  /pairing code rejected \(401\)/);
+  assert.equal(registrations, 1);
+  assert.equal((await loadPendingPairing(state + '.pending')).confirmationCode, 'ABC123');
+});
+
+test('CLI stops on an unmatched pairing conflict instead of retrying forever', async t => {
+  const local = createServer((_request, response) => {
+    response.setHeader('content-type', 'application/json');
+    response.end(JSON.stringify({ name: 'Conflict Agent' }));
+  });
+  const localURL = await listen(local);
+  t.after(() => local.close());
+  let requests = 0;
+  const relay = createServer((request, response) => {
+    requests++;
+    response.writeHead(409, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ error: 'pairing_already_pending' }));
+  });
+  const relayURL = await listen(relay);
+  t.after(() => relay.close());
+  const state = join(await mkdtemp(join(tmpdir(), 'a2a-pair-conflict-')), 'state.json');
+  await assert.rejects(run(process.execPath, ['src/cli.js', '-relay', `ws://${new URL(relayURL).host}/connect`,
+    '-local', localURL, '-state', state, '-allow-insecure', '-auto-pair'], { timeout: 5000 }),
+  /another pairing request already uses this Agent ID/);
+  assert.equal(requests, 1);
+});
+
+test('shell installer preflights the origin and reuses one pending request', async t => {
+  const local = createServer((request, response) => {
+    assert.equal(request.url, '/.well-known/agent-card.json');
+    response.setHeader('content-type', 'application/json');
+    response.end(JSON.stringify({ name: 'Script Agent' }));
+  });
+  const localURL = await listen(local);
+  t.after(() => local.close());
+  let created = 0;
+  const relay = createServer((request, response) => {
+    response.setHeader('content-type', 'application/json');
+    if (request.url === '/pairing/requests') {
+      created++;
+      response.writeHead(201);
+      response.end(JSON.stringify({ requestId: '9'.repeat(64), agentId: 'script-agent-12345678',
+        confirmationCode: 'ABC123' }));
+    } else if (request.url === '/pairing/status') {
+      response.end(JSON.stringify({ status: 'pending' }));
+    } else { response.writeHead(404); response.end('{}'); }
+  });
+  const relayURL = await listen(relay);
+  t.after(() => relay.close());
+  const state = join(await mkdtemp(join(tmpdir(), 'a2a-shell-install-')), 'state.json');
+  const args = ['scripts/install-connector.sh', 'install', '--host', 'openclaw',
+    '--relay', `ws://${new URL(relayURL).host}/connect`, '--local', localURL,
+    '--state', state, '--allow-insecure', '--request-only'];
+  const first = await run('sh', args, { timeout: 5000 });
+  const second = await run('sh', args, { timeout: 5000 });
+  assert.match(first.stdout, /ABC123/);
+  assert.match(second.stdout, /ABC123/);
+  assert.equal(created, 1);
+  assert.equal((await loadPendingPairing(state + '.pending')).agentId, 'script-agent-12345678');
+  const status = await run('sh', ['scripts/install-connector.sh', 'status', '--host', 'openclaw',
+    '--state', state], { timeout: 5000 });
+  assert.match(status.stdout, /Connector 进程：未运行/);
+});
+
+test('shell installer prepares WorkBuddy settings without persisting a local token', async t => {
+  const local = createServer((request, response) => {
+    assert.equal(request.headers.authorization, 'Bearer test-local-token');
+    response.setHeader('content-type', 'application/json');
+    response.end(JSON.stringify({ name: 'WorkBuddy Agent' }));
+  });
+  const localURL = await listen(local);
+  t.after(() => local.close());
+  const relay = createServer((request, response) => {
+    response.setHeader('content-type', 'application/json');
+    if (request.url === '/pairing/requests') {
+      response.writeHead(201);
+      response.end(JSON.stringify({ requestId: '8'.repeat(64), agentId: 'workbuddy-agent-12345678',
+        confirmationCode: 'DEF456' }));
+    } else { response.writeHead(404); response.end('{}'); }
+  });
+  const relayURL = await listen(relay);
+  t.after(() => relay.close());
+  const home = await mkdtemp(join(tmpdir(), 'a2a-workbuddy-shell-'));
+  const { stdout } = await run('sh', ['scripts/install-connector.sh', 'install', '--host', 'workbuddy',
+    '--relay', `ws://${new URL(relayURL).host}/connect`, '--local', localURL,
+    '--allow-insecure', '--request-only'], { timeout: 5000,
+    env: { ...process.env, HOME: home, A2A_LOCAL_TOKEN: 'test-local-token' } });
+  assert.match(stdout, /DEF456/);
+  const settings = JSON.parse(await readFile(
+    join(home, '.config', 'a2a-connector', 'workbuddy-settings.json'), 'utf8'));
+  assert.equal(settings.local, localURL);
+  assert.equal(settings.allowInsecure, true);
+  assert.ok(!JSON.stringify(settings).includes('test-local-token'));
+});
+
+test('shell installer scans occupied A2A ports by exact Agent Card name', async t => {
+  let wrong, target, startPort;
+  const wrongAuth = [], targetAuth = [];
+  for (let attempt = 0; attempt < 10; attempt++) {
+    wrong = createServer((request, response) => {
+      wrongAuth.push(request.headers.authorization);
+      response.setHeader('content-type', 'application/json');
+      response.end(JSON.stringify({ name: 'Other Agent' }));
+    });
+    await listen(wrong);
+    startPort = wrong.address().port;
+    target = createServer((request, response) => {
+      targetAuth.push(request.headers.authorization);
+      response.setHeader('content-type', 'application/json');
+      response.end(JSON.stringify({ name: 'Target Agent' }));
+    });
+    try {
+      await new Promise((resolve, reject) => {
+        target.once('error', reject);
+        target.listen(startPort + 1, '127.0.0.1', resolve);
+      });
+      break;
+    } catch {
+      await new Promise(resolve => wrong.close(resolve));
+      wrong = undefined;
+    }
+  }
+  assert.ok(wrong && target.listening, 'could not reserve adjacent test ports');
+  t.after(() => new Promise(resolve => wrong.close(resolve)));
+  t.after(() => new Promise(resolve => target.close(resolve)));
+  const requests = [];
+  const relay = createServer((request, response) => {
+    requests.push(request.url);
+    response.setHeader('content-type', 'application/json');
+    response.writeHead(201);
+    response.end(JSON.stringify({ requestId: '6'.repeat(64), agentId: 'target-agent-12345678',
+      confirmationCode: 'ABCDEF' }));
+  });
+  const relayURL = await listen(relay);
+  t.after(() => relay.close());
+  const home = await mkdtemp(join(tmpdir(), 'a2a-port-scan-'));
+  const args = ['scripts/install-connector.sh', 'install', '--host', 'workbuddy', '--instance', 'target',
+    '--expect-name', 'Target Agent', '--relay', `ws://${new URL(relayURL).host}/connect`,
+    '--local', 'auto', '--port-start', String(startPort), '--allow-insecure', '--request-only'];
+  const result = await run('sh', args, { timeout: 8000,
+    env: { ...process.env, HOME: home, A2A_LOCAL_TOKEN: 'test-local-token' } });
+  assert.match(result.stdout, new RegExp(`http://127\\.0\\.0\\.1:${startPort + 1}`));
+  assert.deepEqual(wrongAuth, [undefined]);
+  assert.deepEqual(targetAuth, [undefined, 'Bearer test-local-token', 'Bearer test-local-token']);
+  assert.equal(requests.filter(path => path === '/pairing/requests').length, 1);
+  const settings = JSON.parse(await readFile(join(home, '.config', 'a2a-connector',
+    'workbuddy-target-settings.json'), 'utf8'));
+  assert.equal(settings.local, `http://127.0.0.1:${startPort + 1}`);
+});
+
+test('shell installer starts and stops one WorkBuddy Connector process', async t => {
+  const local = createServer((_request, response) => {
+    response.setHeader('content-type', 'application/json');
+    response.end(JSON.stringify({ name: 'Lifecycle Agent' }));
+  });
+  const localURL = await listen(local);
+  t.after(() => local.close());
+  const relay = createServer((request, response) => {
+    response.setHeader('content-type', 'application/json');
+    if (request.url === '/pairing/requests') {
+      response.writeHead(201);
+      response.end(JSON.stringify({ requestId: '7'.repeat(64), agentId: 'lifecycle-agent-12345678',
+        confirmationCode: '789ABC' }));
+    } else if (request.url === '/pairing/status') {
+      response.end(JSON.stringify({ status: 'pending' }));
+    } else { response.writeHead(404); response.end('{}'); }
+  });
+  const relayURL = await listen(relay);
+  t.after(() => relay.close());
+  const home = await mkdtemp(join(tmpdir(), 'a2a-workbuddy-lifecycle-'));
+  const env = { ...process.env, HOME: home };
+  const baseArgs = ['scripts/install-connector.sh'];
+  const pidFile = join(home, '.config', 'a2a-connector', 'workbuddy-reviewer.pid');
+  t.after(async () => {
+    try { process.kill(Number(await readFile(pidFile, 'utf8')), 'SIGTERM'); }
+    catch { /* Already stopped. */ }
+  });
+  const install = await run('sh', [...baseArgs, 'install', '--host', 'workbuddy',
+    '--relay', `ws://${new URL(relayURL).host}/connect`, '--local', localURL,
+    '--instance', 'reviewer', '--expect-name', 'Lifecycle Agent', '--allow-insecure'], { timeout: 8000, env });
+  assert.match(install.stdout, /Connector 已启动/);
+  const status = await run('sh', [...baseArgs, 'status', '--host', 'workbuddy',
+    '--instance', 'reviewer'], { timeout: 5000, env });
+  assert.match(status.stdout, /Connector 进程：运行中/);
+  assert.match(status.stdout, /a2a-[0-9a-f]{8}-workbuddy-reviewer/);
+  const repaired = await run('sh', [...baseArgs, 'repair', '--host', 'workbuddy',
+    '--relay', `ws://${new URL(relayURL).host}/connect`, '--local', localURL,
+    '--instance', 'reviewer', '--expect-name', 'Lifecycle Agent', '--allow-insecure'], { timeout: 10000, env });
+  assert.match(repaired.stdout, /已归档失效的待审批文件/);
+  assert.ok((await readdir(join(home, '.config', 'a2a-connector')))
+    .some(name => name.startsWith('workbuddy-reviewer.json.pending.backup-')));
+  const stopped = await run('sh', [...baseArgs, 'stop', '--host', 'workbuddy',
+    '--instance', 'reviewer'], { timeout: 8000, env });
+  assert.match(stopped.stdout, /已请求 Connector 停止/);
 });
 
 test('discovers a local Agent and forwards HTTP frames without leaking caller auth', async t => {

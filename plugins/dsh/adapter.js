@@ -3,11 +3,14 @@ import z from '@deepseek-ai/schemastery';
 import { installModelSelection } from '@deepseek-ai/dsh-agent';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { createAdapterServer } from './adapter-server.js';
+import { listenWithNextPort, publishAdapterPort } from './adapter-port.js';
 
 export const name = 'dsh-a2a-adapter';
 export const inject = ['agents', 'agentDefaultModel', 'sessions'];
 export const Config = z.object({
   port: z.number().default(9900),
+  portKey: z.string().default('default'),
+  portAttempts: z.number().default(20),
   name: z.string().default('DSH Agent'),
   description: z.string(),
   skills: z.array(z.object({
@@ -54,13 +57,12 @@ export function createDSHSessionFactory(ctx) {
 }
 
 export async function apply(ctx, config) {
-  if (!Number.isInteger(config.port) || config.port < 1 || config.port > 65535) throw new Error('Invalid DSH adapter port');
   const adapter = createAdapterServer({ token: process.env[config.tokenEnv], name: config.name,
     description: config.description, skills: config.skills,
     createSession: createDSHSessionFactory(ctx) });
-  ctx.effect(() => () => adapter.close());
-  await new Promise((resolve, reject) => {
-    adapter.server.once('error', reject);
-    adapter.server.listen(config.port, '127.0.0.1', resolve);
-  });
+  const port = await listenWithNextPort(adapter.server, config.port, config.portAttempts);
+  let unpublish;
+  try { unpublish = publishAdapterPort(config.portKey, port); }
+  catch (error) { await adapter.close(); throw error; }
+  ctx.effect(() => async () => { unpublish(); await adapter.close(); });
 }

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { rm } from 'node:fs/promises';
+import { basename } from 'node:path';
 import { Connector, loadEnrollment, loadPendingPairing, pairingStatus, register, requestPairing,
   saveEnrollment, statePath, waitForPairing } from './connector.js';
 
@@ -62,6 +63,9 @@ async function autoPair(args, path, signal) {
     try { pending = await ensurePairing(args, path, signal, previousAgentId); }
     catch (error) {
       if (signal.aborted) throw error;
+      if (error.message.includes('status 409')) {
+        throw new Error('another pairing request already uses this Agent ID; stop duplicate processes and inspect the pending state');
+      }
       console.error(`Pairing request delayed: ${error.message}`);
       await new Promise(resolve => setTimeout(resolve, 5000));
       continue;
@@ -83,7 +87,9 @@ async function autoPair(args, path, signal) {
       allowInsecure: !!args['allow-insecure'], signal }); }
     catch (error) {
       if (signal.aborted) throw error;
-      if (error.message.includes('status 401')) await rm(path + '.pending', { force: true });
+      if (error.message.includes('status 401')) {
+        throw new Error('pairing code rejected (401); inspect existing enrollment and private .state-* files before repairing the pending request');
+      }
       console.error(`Pairing registration delayed: ${error.message}`);
       await new Promise(resolve => setTimeout(resolve, 5000));
       continue;
@@ -98,6 +104,9 @@ async function autoPair(args, path, signal) {
 async function main() {
   const args = options(process.argv.slice(2));
   const path = args.state || statePath();
+  const fingerprint = createHash('sha256').update(path).digest('hex').slice(0, 8);
+  const label = basename(path).replace(/\.json$/, '').replace(/[^A-Za-z0-9_-]/g, '-').slice(0, 32);
+  process.title = `a2a-${fingerprint}-${label}`;
   const code = args['pair-code'] || process.env.A2A_PAIR_CODE;
   const controller = new AbortController();
   for (const name of ['SIGINT', 'SIGTERM']) process.once(name, () => controller.abort());

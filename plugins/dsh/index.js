@@ -5,12 +5,14 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import z from '@deepseek-ai/schemastery';
 import { defineTool } from '@deepseek-ai/dsh-tools';
+import { getAdapterPort } from './adapter-port.js';
 
 const run = promisify(execFile);
 export const name = 'a2a-connector';
 export const inject = ['tools'];
 export const Config = z.object({
   relay: z.string().required(), local: z.string().required(),
+  adapterKey: z.string().default('default'),
   binary: z.string(), state: z.string(), agentId: z.string(),
   localTokenEnv: z.string(), allowInsecure: z.boolean().default(false),
 });
@@ -19,7 +21,10 @@ export function apply(ctx, config) {
   const state = config.state || join(homedir(), '.config', 'a2a-connector', 'dsh.json');
   const binary = config.binary || process.execPath;
   const script = join(dirname(fileURLToPath(import.meta.url)), 'vendor', 'connector', 'cli.js');
-  const args = [script, '-relay', config.relay, '-local', config.local, '-state', state];
+  const port = config.local === 'auto' ? getAdapterPort(config.adapterKey) : undefined;
+  if (config.local === 'auto' && !port) throw new Error(`DSH adapter ${config.adapterKey} is not listening yet`);
+  const local = port ? `http://127.0.0.1:${port}` : config.local;
+  const args = [script, '-relay', config.relay, '-local', local, '-state', state];
   if (config.agentId) args.push('-agent-id', config.agentId);
   if (config.allowInsecure) args.push('-allow-insecure');
   const env = { ...process.env };

@@ -1,8 +1,28 @@
 import assert from 'node:assert/strict';
+import { createServer } from 'node:net';
 import test from 'node:test';
 import { createAdapterServer } from '../plugins/dsh/adapter-server.js';
+import { getAdapterPort, listenWithNextPort, publishAdapterPort } from '../plugins/dsh/adapter-port.js';
 
 const token = 'x'.repeat(32);
+
+test('DSH adapter increments a busy port and publishes the actual bound port', async t => {
+  const occupied = createServer();
+  await new Promise(resolve => occupied.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => occupied.close(resolve)));
+  const startPort = occupied.address().port;
+  const adapter = createAdapterServer({ token, createSession: async () => ({}) });
+  t.after(() => adapter.close());
+  const actual = await listenWithNextPort(adapter.server, startPort, 20);
+  assert.ok(actual > startPort);
+  assert.ok(actual < startPort + 20);
+  assert.equal(adapter.server.address().port, actual);
+  const unpublish = publishAdapterPort('test-reviewer', actual);
+  assert.equal(getAdapterPort('test-reviewer'), actual);
+  assert.throws(() => publishAdapterPort('test-reviewer', actual), /already in use/);
+  unpublish();
+  assert.equal(getAdapterPort('test-reviewer'), undefined);
+});
 async function fixture(t, createSession, card = {}) {
   const adapter = createAdapterServer({ token, createSession, ...card });
   await new Promise(resolve => adapter.server.listen(0, '127.0.0.1', resolve));

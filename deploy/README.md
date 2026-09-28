@@ -1,6 +1,6 @@
 # DSH adapter + Connector 常驻模板
 
-先按 [安装指南](../AGENT_INSTALL.md#dsh) 配置同一常驻 DSH profile 中的 adapter 与 Connector。使用已配置模型的 `web` 或自定义常驻 profile，不使用一次性 `headless`。不要同时保留手动启动的同端口实例。本文是这两个服务模板的唯一配置说明。
+先按 [DSH 安装指南](../docs/install/dsh.md) 配置同一常驻 DSH profile 中的 adapter 与 Connector。使用已配置模型的 `web` 或自定义常驻 profile，不使用一次性 `headless`。不要同时保留手动启动的同端口实例。本文是这两个服务模板的唯一配置说明。
 
 ## 服务环境
 

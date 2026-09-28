@@ -18,8 +18,8 @@ test('host plugins carry the current JavaScript Connector', async () => {
 test('DSH plugin package name matches Cordis patch documentation', async () => {
   const dshPkg = JSON.parse(await readFile(join('plugins', 'dsh', 'package.json'), 'utf8'));
   assert.equal(dshPkg.name, 'dsh-a2a-connector');
-  const agentInstall = await readFile('AGENT_INSTALL.md', 'utf8');
-  assert.match(agentInstall, /name:\s*dsh-a2a-connector/);
+  const dshInstall = await readFile(join('docs', 'install', 'dsh.md'), 'utf8');
+  assert.match(dshInstall, /name:\s*dsh-a2a-connector/);
 });
 
 
@@ -44,4 +44,3 @@ test('all package.json versions and plugin manifests match root version', async 
   const hermesYaml = await readFile(join('plugins', 'hermes', 'plugin.yaml'), 'utf8');
   assert.match(hermesYaml, new RegExp(`^version:\\s*${rootPkg.version}`, 'm'), 'hermes plugin.yaml version should match root version');
 });
-

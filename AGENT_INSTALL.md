@@ -9,7 +9,7 @@ sh scripts/install-connector.sh install --host workbuddy --relay wss://dsh-relay
 sh scripts/install-connector.sh status --host workbuddy
 ```
 
-同机多个 Agent 使用 `--instance` 隔离状态和进程，再用 `--expect-name` 验证 Agent Card。`--local auto --port-start 9900` 会寻找已启动的目标 A2A 服务；服务自身的监听端口须由宿主配置。DSH adapter 的端口冲突可由[DSH 安装文档](docs/install/dsh.md)中的自动递增配置处理。
+同机多个 Agent 使用 `--instance` 隔离状态和进程，再用 `--expect-name` 验证 Agent Card。独立脚本的 `--local auto --port-start 9900` 会寻找已启动的目标 A2A 服务；服务自身的监听端口须由宿主配置。DSH 的单条目插件会自行启动包内 A2A 服务并自动递增占用的端口，见[DSH 安装文档](docs/install/dsh.md)。
 
 - [OpenClaw](docs/install/openclaw.md)
 - [Hermes](docs/install/hermes.md)

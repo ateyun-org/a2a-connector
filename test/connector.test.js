@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
-import { mkdtemp, readFile, readdir, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { once } from 'node:events';
@@ -214,10 +215,22 @@ test('shell installer preflights the origin and reuses one pending request', asy
     '--relay', `ws://${new URL(relayURL).host}/connect`, '--local', localURL,
     '--state', state, '--allow-insecure', '--request-only'];
   const first = await run('sh', args, { timeout: 5000 });
-  const second = await run('sh', args, { timeout: 5000 });
+  const shimDir = await mkdtemp(join(tmpdir(), 'a2a-pgrep-shim-'));
+  await writeFile(join(shimDir, 'pgrep'), '#!/bin/sh\nprintf "%s\\n" "$FAKE_PGREP_LINE"\n', { mode: 0o755 });
+  const second = await run('sh', args, { timeout: 5000,
+    env: { ...process.env, PATH: `${shimDir}:${process.env.PATH}`,
+      FAKE_PGREP_LINE: `424242 awk -v state=${state} -v signature=a2a-01234567` } });
   assert.match(first.stdout, /ABC123/);
   assert.match(second.stdout, /ABC123/);
   assert.equal(created, 1);
+  const title = `a2a-${createHash('sha256').update(state).digest('hex').slice(0, 8)}-state`;
+  const duplicate = spawn(process.execPath, ['-e',
+    'process.title=process.argv[1]; console.log("ready"); setInterval(() => {}, 1000)', title],
+  { stdio: ['ignore', 'pipe', 'pipe'] });
+  t.after(() => duplicate.kill('SIGTERM'));
+  await once(duplicate.stdout, 'data');
+  await assert.rejects(run('sh', args, { timeout: 5000 }), /另有 Connector 进程使用此状态文件/);
+  assert.equal(created, 1, 'a duplicate process must block a second pairing attempt');
   assert.equal((await loadPendingPairing(state + '.pending')).agentId, 'script-agent-12345678');
   const status = await run('sh', ['scripts/install-connector.sh', 'status', '--host', 'openclaw',
     '--state', state], { timeout: 5000 });
@@ -341,6 +354,10 @@ test('shell installer starts and stops one WorkBuddy Connector process', async t
     '--relay', `ws://${new URL(relayURL).host}/connect`, '--local', localURL,
     '--instance', 'reviewer', '--expect-name', 'Lifecycle Agent', '--allow-insecure'], { timeout: 8000, env });
   assert.match(install.stdout, /Connector 已启动/);
+  const firstPid = await readFile(pidFile, 'utf8');
+  await assert.rejects(run(process.execPath, ['plugins/workbuddy/cli.js', 'start'], { timeout: 5000,
+    env: { ...env, A2A_CONNECTOR_INSTANCE: 'reviewer' } }), /Connector already running/);
+  assert.equal(await readFile(pidFile, 'utf8'), firstPid);
   const status = await run('sh', [...baseArgs, 'status', '--host', 'workbuddy',
     '--instance', 'reviewer'], { timeout: 5000, env });
   assert.match(status.stdout, /Connector 进程：运行中/);

@@ -25,7 +25,7 @@ test('DSH plugin package name matches Cordis patch documentation', async () => {
 
 test('DSH SDKs remain host-provided peer dependencies', async () => {
   const pkg = JSON.parse(await readFile('plugins/dsh/package.json', 'utf8'));
-  for (const name of ['dsh-tools', 'schemastery', 'dsh-agent', 'dsh-llm']) {
+  for (const name of ['dsh-tools', 'schemastery', 'dsh-agent', 'dsh-llm', 'dsh-subagent']) {
     const dependency = `@deepseek-ai/${name}`;
     assert.ok(pkg.peerDependencies[dependency], `${dependency} must be a peer`);
     assert.equal(pkg.dependencies?.[dependency], undefined);

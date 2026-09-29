@@ -168,12 +168,34 @@ live_pid() {
   [ "$PID" -gt 0 ] && kill -0 "$PID" 2>/dev/null
 }
 
+connector_processes() {
+  # macOS pgrep -af prints only PIDs; Linux -af prints PID plus full arguments.
+  # On macOS -fl provides the full command line needed to verify the state.
+  if [ "$(uname -s)" = Darwin ]; then
+    pgrep -fl '[v]endor/connector/cli[.]js|[s]rc/cli[.]js|[a]2a-[0-9a-f]{8}' 2>/dev/null
+  else
+    pgrep -af '[v]endor/connector/cli[.]js|[s]rc/cli[.]js|[a]2a-[0-9a-f]{8}' 2>/dev/null
+  fi
+}
+
 assert_no_other_process() {
   need pgrep
-  OTHERS=$(pgrep -af 'vendor/connector/cli.js|src/cli.js|a2a-[0-9a-f]{8}' 2>/dev/null |
-    awk -v state="$STATE" -v signature="$PROCESS_SIGNATURE" -v self="$$" \
-      '$1 != self && (index($0, state) > 0 || index($0, signature) > 0) { print $1 }' || true)
-  [ -z "$OTHERS" ] || fail "另有 Connector 进程使用此状态文件（PID：$OTHERS）；先停止并核实它，未创建新请求"
+  # Avoid passing the state path to a process in the pgrep pipeline: the
+  # filtering process would itself match pgrep and appear to be a Connector.
+  OTHERS=$(connector_processes |
+    A2A_SCAN_STATE="$STATE" A2A_SCAN_SIGNATURE="$PROCESS_SIGNATURE" \
+    A2A_SCAN_CLI="$CLI" A2A_SCAN_SELF="$$" awk '
+      {
+        pid = $1
+        args = $0
+        sub(/^[0-9]+[[:space:]]+/, "", args)
+        if (pid == ENVIRON["A2A_SCAN_SELF"]) next
+        if (index(args, ENVIRON["A2A_SCAN_SIGNATURE"]) == 1 ||
+            (index(args, ENVIRON["A2A_SCAN_CLI"]) > 0 &&
+             index(args, "-state " ENVIRON["A2A_SCAN_STATE"]) > 0)) print pid
+      }
+    ' || true)
+  [ -z "$OTHERS" ] || fail "另有 Connector 进程使用此状态文件（PID：${OTHERS}）；先停止并核实它，未创建新请求"
 }
 
 show_status() {
@@ -212,7 +234,7 @@ stop_runner() {
   # A PID file alone cannot rule out PID reuse. Prefer ps, then pgrep when ps is filtered.
   ARGS=$(ps -p "$PID" -o args= 2>/dev/null || true)
   if [ -z "$ARGS" ] && command -v pgrep >/dev/null 2>&1; then
-    ARGS=$(pgrep -af 'vendor/connector/cli.js|src/cli.js|a2a-[0-9a-f]{8}' 2>/dev/null | awk -v pid="$PID" '$1 == pid { $1=""; print }' || true)
+    ARGS=$(connector_processes | awk -v pid="$PID" '$1 == pid { $1=""; print }' || true)
   fi
   case "$ARGS" in
     *"$CLI"*"$STATE"*|*"$PROCESS_SIGNATURE"*) ;;
@@ -251,8 +273,13 @@ if (relay.protocol !== 'wss:' && !(allowInsecure && relay.protocol === 'ws:' &&
   throw new Error('Relay 必须是 wss://.../connect');
 const headers = process.env.A2A_LOCAL_TOKEN ? { authorization: `Bearer ${process.env.A2A_LOCAL_TOKEN}` } : {};
 async function cardAt(origin, timeout, requestHeaders = {}) {
-  const response = await fetch(new URL('/.well-known/agent-card.json', origin),
-    { headers: requestHeaders, signal: AbortSignal.timeout(timeout) });
+  let response;
+  try {
+    response = await fetch(new URL('/.well-known/agent-card.json', origin),
+      { headers: requestHeaders, signal: AbortSignal.timeout(timeout) });
+  } catch (error) {
+    throw new Error(`无法连接 ${origin}/.well-known/agent-card.json：${error.message}。先启动真实的本机 A2A 服务；此脚本不会创建 origin`);
+  }
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   const card = await response.json();
   if (typeof card.name !== 'string' || !card.name.trim()) throw new Error('Agent Card 缺少非空 name');
@@ -367,4 +394,4 @@ else
 fi
 sleep 1
 live_pid || fail "Connector 启动后退出；检查私有日志 ${LOG_FILE}，不要直接贴出凭据"
-note "Connector 已启动（PID ${PID}）。审批后运行 status 检查本机状态，并在 Relay 页面确认在线。"
+note "Connector 已启动（PID ${PID}）。审批后检查 status、Relay 在线状态，并以授权调用者测试目标 Agent 的真实任务。"

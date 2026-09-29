@@ -6,7 +6,7 @@
 
 若 DSH 已有可访问的 A2A origin（例如 adapter 已配置），且不需要宿主内的配对工具，可改用[独立 Connector 安装脚本](../../scripts/install-connector.sh)：从仓库根目录执行 `sh scripts/install-connector.sh install --host dsh --instance reviewer --expect-name 'DSH Code Reviewer' --relay wss://dsh-relay.chuanbota.com/connect --local auto --port-start 9900`。脚本会在已启动的本机服务中按 Agent Card `name` 找到实际端口；此路径不会配置 DSH adapter 或下方插件，不要同时运行两种路径连接同一个 Agent。
 
-1. 在目标 DSH Agent 主机安装 `plugins/dsh`。被调度节点只需 adapter + Connector，只有需要向其他节点发起调用时才另装 `dsh-a2a` 客户端。Relay 主控认证使用 Connector 身份，因此 DSH 采用此认证模式时也需安装并配对，随后由管理员在 `/pair/list` 授权其要调用的目标。
+1. 在目标 DSH Agent 主机安装 `plugins/dsh`。这个包只需注册**一个** `dsh-a2a-connector` 条目：未配置已有本机 A2A origin 时，插件自动启动内置服务，再启动 Relay Connector；配置 `agents` 后，同一条目还会注册向外调用 Agent 的工具和 Subagent Provider。Relay 主控认证使用 Connector 身份，管理员须在 `/pair/list` 授权其要调用的目标。
 2. 用 DSH CLI 将本地插件目录作为目标 profile 的依赖安装：
 
    ```bash
@@ -15,14 +15,17 @@
 
    替换示例仓库路径和 `web` profile 为目标主机上的实际值。这个包没有 `dsh.bundle` 声明，CLI 只会把它安装为 profile 依赖；还必须在 `~/.dsh/profiles/<profile>/cordis.patch.yml` 合并以下 Cordis 条目，才能激活插件。先检查已有 patch，避免插入重复的 `id`：
 
+   `pnpm peers check` 在仅把此包列为 profile 直接依赖时可能提示缺少 DSH SDK peer；DSH 的基础 bundle 会提供运行时服务。以目标 profile 的实际启动和 `a2a_connector_pair`、`a2a_agents` 注册结果为准，不要为了消除提示再装一份 SDK 副本。
+
    ```yaml
    - insert:
-       - id: dsh-a2a-adapter
-         name: dsh-a2a-connector/adapter
+       - id: a2a-connector
+         name: dsh-a2a-connector
          config:
+           relay: wss://dsh-relay.chuanbota.com/connect
+           local: auto
            port: 9900
            portAttempts: 20
-           portKey: reviewer
            name: DSH Code Reviewer
            description: 审查 Go 和 JavaScript 代码，给出可验证的修改建议。
            skills:
@@ -30,23 +33,33 @@
                name: Code review
                description: 检查代码逻辑、权限边界与回归风险。
                tags: [code, review]
-           tokenEnv: MY_LOCAL_AGENT_TOKEN
-       - id: a2a-connector
-         name: dsh-a2a-connector
-         config:
-           relay: wss://dsh-relay.chuanbota.com/connect
-           local: auto
-           adapterKey: reviewer
-           localTokenEnv: MY_LOCAL_AGENT_TOKEN
            # 同一进程运行多个 DSH Agent 时，给每个实例不同的绝对路径：
            # state: /absolute/path/to/private/dsh-reviewer.json
            # 可选稳定 ID：
            # agentId: my-agent
    ```
 
-   adapter 在同一 DSH 进程内调用原生 Agent/session API，提供 `/.well-known/agent-card.json` 和 `/rpc`（A2A v1.0 JSON-RPC）。`name`、`description`、`skills` 会发布到 Agent Card，供主控发现职责；不配置时使用通用 DSH 描述。它仅监听 `127.0.0.1`，必须配置不少于 32 字符的随机 token。把 token 安全写入宿主进程环境中的 `MY_LOCAL_AGENT_TOKEN`，adapter 和 Connector 引用同一变量名；不要写入 patch 或打印到对话。使用已配置模型的常驻 profile（如 `web`），不要使用自动退出的 `headless` profile。
+   内置服务在同一 DSH 进程内调用原生 Agent/session API，提供 `/.well-known/agent-card.json` 和 `/rpc`（A2A v1.0 JSON-RPC）。`name`、`description`、`skills` 会发布到 Agent Card，供主控发现职责；不配置时使用通用 DSH 描述。它仅监听 `127.0.0.1`；插件启动时生成私有随机 token，只传给它管理的 Connector 子进程，无需在 patch 或环境文件中配置本机 token。使用已配置模型的常驻 profile（如 `web`），不要使用自动退出的 `headless` profile。
 
-   `port` 是起始监听端口；只有遇到 `EADDRINUSE` 才逐个尝试下一个端口，最多 `portAttempts` 个，默认 20。`local: auto` 让同一包的 Connector 使用 adapter **实际绑定**的端口，因此不用把 `local` 固定写成 9900。`portKey` / `adapterKey` 必须相同，且同一 DSH 进程中的每个 adapter 使用不同的 key；adapter 条目应先于 Connector 条目加载。多个 Agent 还要配置各自的 Connector `state` 绝对路径，否则即使端口分开也会争用配对身份。
+   `local: auto` 是默认值：**启动包内服务**，并把实际绑定端口直接交给同一插件管理的 Connector；不会扫描其他进程或误连别的 Agent。`port` 是起始监听端口；只有遇到 `EADDRINUSE` 才逐个尝试下一个端口，最多 `portAttempts` 个，默认 20。若当前 DSH Agent 已有可信的 A2A HTTP origin，改成明确的 `local: http://127.0.0.1:<port>`，这时不会启动包内服务；该服务要求 Bearer token 时再配置 `localTokenEnv`。多个 Agent 仍须使用各自的 Connector `state` 绝对路径及可区分的 Agent Card `name`，否则端口虽分开，也会争用配对身份。
+
+   **从旧版升级**：删除原来的 `id: dsh-a2a-adapter` / `name: dsh-a2a-connector/adapter` 条目，以及它的 `portKey`、`tokenEnv`；从 Connector 条目删除 `adapterKey`，将 `port`、`portAttempts`、`name`、`description`、`skills` 合并到唯一的 `id: a2a-connector` 条目。旧 `localTokenEnv` 若只供旧 adapter 使用也可删除。保留原有 `state` 文件和配对凭据；重启目标 profile 后只应看到一个对应条目。旧版单独的 `/adapter` 导出已移除。
+
+### 合并原 `dsh-a2a` 出站能力
+
+需要让 DSH 调用其他 Agent 时，在**同一个** `id: a2a-connector` 的 `config` 下加入远端列表和会话存储路径，例如：
+
+```yaml
+storePath: /absolute/path/to/private/a2a-conversations.json
+agents:
+  - id: reviewer
+    card: https://dsh-relay.chuanbota.com/agents/reviewer/.well-known/agent-card.json
+    purpose: 审查代码并给出修改建议
+```
+
+这里的 `storePath`、`agents` 与旧 `dsh-a2a` 配置含义相同；迁移时沿用**原有** `storePath` 可保留会话索引。不填 `storePath` 时，默认写在 Connector `state` 路径旁的 `.conversations.json` 文件。出站访问 Relay 自动读取同一条目的配对状态，若原先显式使用其他状态文件，可设置 `connectorState`。直接访问其他 A2A 服务时，`agents` 项仍可使用旧版 `url`、`tokenEnv`、`apiKeyEnv`、`allowHttp`、`allowedOrigins` 等字段。`agents` 未配置时不注册出站工具。
+
+升级时把旧 `id: subagent-a2a` 条目下的 `storePath`、`agents`、`pollIntervalMs`、`requestTimeoutMs` 等配置移入此条目，然后移除旧条目和 `dsh-a2a` profile 依赖；若仍使用 `@deepseek-ai/dsh-tool-subagent` 包装工具，保留其 `provider: a2a:<agent-id>` 配置。先验证 `a2a_agents`、一次远端任务和续聊，再删除旧项目目录。不要删除原会话存储文件。
 
    同一 `contextId` 复用原生 DSH session，完成后追问只携带 `contextId`。支持文本发送、查询、取消和任务列表，不支持流式、推送及暂停任务续传。同会话只允许一个任务运行。最多保留 128 个上下文、4096 个任务；空闲 1 小时释放会话及任务索引。DSH 会 flush 会话日志，但当前 adapter 的 A2A ID 映射仅在内存：重启或过期后旧 ID 会明确报错，需新建会话，不会悄悄重建空历史。
 
@@ -56,7 +69,7 @@
 
 ### DSH 常驻运行（launchd / systemd）
 
-adapter 与 Connector 都随 DSH profile 生命周期启动。仓库提供 [常驻模板与部署步骤](../../deploy/README.md)：使用已完成模型配置的 profile，在服务环境中提供 Node/DSH 绝对路径、工作目录和本机认证变量。关闭终端后由服务管理器维持进程，异常退出自动重启；不要另起重复实例占用相同端口或状态文件。
+内置服务与 Connector 都随 DSH profile 生命周期启动。仓库提供 [常驻模板与部署步骤](../../deploy/README.md)：使用已完成模型配置的 profile，在服务环境中提供 Node/DSH 绝对路径和工作目录。关闭终端后由服务管理器维持进程，异常退出自动重启；不要另起重复实例占用相同状态文件。
 
 ### `file:` 路径失效
 

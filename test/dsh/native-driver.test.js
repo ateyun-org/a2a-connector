@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createDSHSessionFactory } from '../../plugins/dsh/adapter.js';
+import { createDSHSessionFactory } from '../../plugins/dsh/dsh-session.js';
 
 test('native driver uses the same DSH session and flushes each turn', async () => {
   const events = [];
@@ -24,4 +24,3 @@ test('native driver uses the same DSH session and flushes each turn', async () =
   await session.dispose();
   assert.equal(creates, 1); assert.equal(flushes, 2); assert.equal(disposes, 1);
 });
-

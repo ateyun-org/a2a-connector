@@ -22,7 +22,7 @@ npm run test:all
 
 If a local A2A origin is already running, `sh scripts/install-connector.sh install --host workbuddy --relay wss://dsh-relay.chuanbota.com/connect --local http://127.0.0.1:9900` automates preflight, local CLI dependency setup, pairing request reuse, and process launch. Use `status`, `stop`, or `repair` with the same `--host`; see [the WorkBuddy guide](docs/install/workbuddy.md#自动安装与诊断). For multiple agents, use a distinct `--instance` and `--expect-name`; `--local auto --port-start 9900` scans already running Agent Cards and selects the exact name. The Connector does not change an external agent's listening port. The bundled DSH adapter can increment a busy port and pass the actual port to the DSH Connector. For OpenClaw, Hermes, and DSH, the script can run an isolated standalone Connector after the host's A2A origin is configured; it does not install those host plugins or adapters.
 
-DSH hosts can use the bundled native `dsh-a2a-connector/adapter`; see [DSH installation and service setup](docs/install/dsh.md). The local Agent must expose `/.well-known/agent-card.json` and an A2A endpoint. Start the Connector with automatic pairing:
+DSH hosts can use one `dsh-a2a-connector` entry, which starts its bundled native A2A service and Relay Connector together and registers outbound A2A delegation when `agents` are configured; see [DSH installation and service setup](docs/install/dsh.md). Other hosts still need a real local Agent Card and A2A endpoint. Start the standalone Connector with automatic pairing:
 
 ```bash
 node src/cli.js -auto-pair \

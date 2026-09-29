@@ -2,9 +2,28 @@
 
 开始前阅读[通用准备、配对与验证](shared.md)，然后按以下步骤安装 WorkBuddy 对应的 Connector。包装 CLI 没有公开的 Agent ID 参数；需要固定 ID 时使用原生 CLI 的 `-agent-id`。
 
+本仓库的 `plugins/workbuddy` 包含隧道客户端和管理 CLI，**没有提供把 WorkBuddy 能力暴露为本机 A2A HTTP 服务的 adapter**。全局安装 `workbuddy-a2a` 只注册命令，不能凭此确认 WorkBuddy 已有 `/.well-known/agent-card.json`。若本机没有真正连接到目标 Agent 能力的 A2A origin，先完成该服务端接入，再申请配对。临时 echo/沙箱 origin 只能验证隧道传输，不能算 WorkBuddy Agent 接入成功。
+
+若目标是 **WorkBuddy PC 端本地助理**，腾讯[开放平台文档](https://open.workbuddy.cn/docs/openapi)提供查询在线状态、发送消息和增量读取消息历史的 API。它要求已创建并启用的第三方应用、用户 OAuth 授权，以及 `user.localassistant.invokable` / `user.localassistant.readable` 权限；本仓库尚未实现相应的 A2A 桥接。CodeBuddy Code CLI 的 [`--a2a` stdio 被调模式](https://www.codebuddy.ai/docs/cli/cli-reference)是另一种运行时入口，不能用它代替 WorkBuddy 桌面/沙箱 Agent 的接入验证。
+
+若目标是 **WorkBuddy 云端沙箱里的当前 Agent**，应先验证[云端任务 API 与 ACP 通道](https://open.workbuddy.cn/docs/openapi)：用带 `user.task.readable` 授权的第三方应用查询任务列表，确认当前会话的 `task_id` 出现在列表里，再查询该任务是否返回可用 ACP `link`/`token`，最后验证 `session/load` 能否加载这一已有会话。`user.task.invokable` 可用于新建任务，但新建任务不等于接入当前会话。官方文档列出了这条 API 路径；当前仓库尚未验证该沙箱会话是否可通过这些接口访问，因此不能把它宣称为已接入。不要把 client secret、OAuth token 或 ACP token 放进安装包或对话。
+
+### 开放平台 OAuth 回调
+
+在 Buddy 应用中登记 `https://dsh-relay.chuanbota.com/oauth/workbuddy/callback`。这必须与 Relay 的 `publicUrl` 同源；Relay 部署说明见 [`a2a-relay/README.md`](../../../a2a-relay/README.md#workbuddy-open-api-oauth-callback)。仅保存地址还不能授权：先发布带此路由的新 Relay，并在其**服务端私有环境**配置应用 `client_id`、`client_secret`、允许使用该授权的 Connector Agent ID 和加密密钥。不要把这些值写入本插件、静态 `cli.json`、应用表单的其他字段或聊天。
+
+Connector 已配对且 Relay OAuth 配置就绪后，在 Connector 主机运行：
+
+```bash
+workbuddy-a2a platform login
+workbuddy-a2a platform status
+```
+
+第一条命令打印 WorkBuddy 官方授权 URL；用户打开并同意后，第二条确认已关联。`platform logout` 从 Relay 删除本应用保存的加密 token。Relay 将授权码一次性兑换并加密存储 token，Connector 只用自己的配对凭据访问 OAuth 状态与短期 access token；应用密钥留在 Relay 服务端。该阶段仅完成 Open API 授权，**尚未**证明当前沙箱会话可见，也未提供 WorkBuddy 原生 A2A origin；仍需进行上述任务列表和 ACP 验证。
+
 ## 安装与配置
 
-当前仓库能验证的是 **WorkBuddy 包内 CLI 的本机运行路径**；尚未提供可复现的 WorkBuddy 市场源注册流程。不要假定把 `plugins/workbuddy` 复制到某个目录就会出现在 GUI：现有包把 `cli.json` 放在根目录、缺少官方市场样例中的 `.codebuddy-plugin/plugin.json`。市场发布前需按目标 WorkBuddy 版本验证包布局、入口和版本约束。`connector-meta.json` 是仓库元数据，不能据此断定 WorkBuddy 已启用 `minWorkbuddyVersion` 版本闸；该版本指 WorkBuddy 应用版本。
+当前仓库能验证的是 **WorkBuddy 包内 CLI 的本机运行路径**；尚未提供可复现的 WorkBuddy 市场源注册流程。不要假定把 `plugins/workbuddy` 复制到某个目录就会出现在 GUI。当前[公开连接器文档](https://open.workbuddy.cn/docs/connector)给出的 CLI + Skill 包基础结构是在提交目录根部放 `connector-meta.json`、`cli.json`、`icon.svg` 和 `skills/`；此前抽样的市场下载包则把 `cli.json` 放在 `ai.workbuddy/` 并带内部清单。两者可能是提交包与分发包的不同阶段，须通过目标版本的实际上传、解析和安装验证，不能仅凭任一静态样例断定另一布局无效。公开文档要求在 `connector-meta.json` 声明使用到的 `minWorkbuddyVersion`，但仍需在目标客户端验证版本闸实际生效。
 
 ### 自动安装与诊断
 
@@ -30,7 +49,9 @@ sh scripts/install-connector.sh status --host workbuddy --instance reviewer
 sh scripts/install-connector.sh repair --host workbuddy --relay wss://dsh-relay.chuanbota.com/connect --local http://127.0.0.1:9900
 ```
 
-`repair` 会停止脚本管理的进程、归档失效 pending 并重新申请；发现可能含凭据的临时文件或已有凭据时会停下，不会覆盖。后台 stderr 保存在私有的 `~/.config/a2a-connector/workbuddy.stderr.log`；`status` 只摘要提示 401/409，不输出凭据。该脚本连通的是 WorkBuddy 本机 A2A origin，**不会**让包自动出现在 WorkBuddy GUI。脚本用法见 `sh scripts/install-connector.sh --help`。
+`repair` 会停止脚本管理的进程、归档失效 pending 并重新申请；发现可能含凭据的临时文件或已有凭据时会停下，不会覆盖。后台 stderr 保存在私有的 `~/.config/a2a-connector/workbuddy.stderr.log`；`status` 只摘要提示 401/409，不输出凭据。该脚本连接的是指定的本机 A2A origin，**不会**让包自动出现在 WorkBuddy GUI。脚本用法见 `sh scripts/install-connector.sh --help`。
+
+验收时应确认三件事：Agent Card 指向预期的真实 A2A 服务；批准后 Relay 显示在线；最后由有权限的远端调用者发起一个会触达 **WorkBuddy 实际能力**的任务并核对结果。`Logged in`、已保存凭据、443 端口的 WSS 连接或 echo 响应，只证明对应的局部环节，不能代替最后一项。
 
 ### 手动 CLI 路径
 
@@ -62,7 +83,7 @@ sh scripts/install-connector.sh repair --host workbuddy --relay wss://dsh-relay.
 
    在非交互路径中，`workbuddy-settings.json` 不会自动生成，因此 `workbuddy-a2a start` 不能接管该进程，`auth status` 也可能误报未登录。继续用相同的原生 CLI 参数管理它。若本机 origin 需要 Bearer token，在**启动 Connector 的进程环境**中提供 `A2A_LOCAL_TOKEN`；包装 CLI 的 `login`/`start` 会继承当时的环境，但不会保存 token。重开终端、登录会话或服务重启后必须再次注入。不要把 token 放进 `cli.json` 的静态 `env`、shell 历史、命令参数或聊天内容。
 
-3. 交互式路径用 `workbuddy-a2a auth status` 查看审批信息，用 `workbuddy-a2a stop` / `start` 控制后台进程。`Logged in` 当前要求凭据文件、PID 文件和进程同时存在；进程退出时即使凭据仍有效也可能显示 `Not logged in`。`start` 打印 `Connector started` 仅表示子进程已派生，仍须按下文检查 Relay 连接。
+3. 交互式路径用 `workbuddy-a2a auth status` 查看审批信息，用 `workbuddy-a2a stop` / `start` 控制后台进程。`start` 会拒绝重复启动同一实例；若提示正在启动或 PID 文件仍指向活进程，先核实该进程，不要再手动起一个原生 CLI。`Logged in` 当前要求凭据文件、PID 文件和进程同时存在；进程退出时即使凭据仍有效也可能显示 `Not logged in`。`start` 打印 `Connector started` 仅表示子进程已派生，仍须按下文检查 Relay 连接。
 
    WorkBuddy 文件均在 `~/.config/a2a-connector/`：`workbuddy.json` 是含 token 的凭据，`workbuddy.json.pending` 是待审批请求，`workbuddy-settings.json` 保存 relay/local 等非 token 设置，`workbuddy.pid` 记录后台 PID，`workbuddy.stderr.log` 保存子进程输出。它们与 Hermes、DSH 的状态文件彼此独立。不要展示文件正文或把它们提交到仓库。
 
@@ -82,6 +103,19 @@ mv "$state_dir/workbuddy.json.pending" "$state_dir/workbuddy.json.pending.backup
 
 WorkBuddy 原生 CLI 还支持在已取得 `pair_` 码、且没有另一个兑换进程时，以 `A2A_PAIR_CODE` 和 `-enroll-only` 做一次性兑换；六位确认码不能用于此步骤。不要把 `pair_` 码或本机 Bearer token 放入 `cli.json` 的静态 `env`、命令历史或聊天内容。
 
-WorkBuddy 自带的原生**出站** A2A 调用能力与本 Connector 的**入站** Relay 隧道方向不同。若只需 WorkBuddy 向外调用 Agent，先确认宿主功能是否已满足需要。
+WorkBuddy 自带的**出站** A2A 调用能力与本 Connector 的**入站** Relay 隧道方向不同。若只需 WorkBuddy 向外调用 Agent，先确认宿主功能是否已满足需要；若要让远端调用 WorkBuddy PC 本地助理，可评估上文的官方 Open API 授权路径。
+
+## 从 WorkBuddy 调用其他 Agent
+
+已配对的 WorkBuddy 实例可以复用自身凭据，经 Relay 调用获授权的目标。管理员须先在 Relay `/pair/list` 给**当前 WorkBuddy Agent ID** 授予目标 Agent 的访问权限；否则请求返回 403。目标 ID 从管理员列表或可信的 Agent Card 获取，不通过猜测生成。以下命令从标准输入读取任务，返回 JSON（含状态、任务 ID、上下文 ID 和文本结果）；需要长时间执行的任务在 120 秒后报出任务 ID，先用 `task` 查询其状态再决定是否重试，避免重复执行：
+
+```bash
+printf '%s\n' '请审查这个改动' | workbuddy-a2a call reviewer-agent-id
+workbuddy-a2a task reviewer-agent-id <task-id>
+```
+
+多实例时设置 `A2A_CONNECTOR_INSTANCE`，以选中对应的配对状态。该命令只访问配置的 Relay，并检查 Agent Card 给出的 JSON-RPC 地址仍位于该 Relay 的目标路径下，避免把配对凭据发往任意 URL。它支持文本任务，不提供附件、交互审批或持久的多轮上下文；这些能力需要单独实现和验证。WorkBuddy GUI 是否能直接调用这个命令，取决于插件的发现与工具注册，不能把 CLI 可用等同于 GUI 已集成。
+
+反方向仍要求一个能把 `SendMessage` 真正转发到目标 WorkBuddy Agent 的本地 A2A origin。当前包没有这样的服务。若目标为 PC 本地助理，可在取得开放平台应用和用户授权后实现 Open API 适配；若目标为此次测试中的沙箱会话，必须先确认该会话的受支持调用入口及会话绑定方式，不能用新建的 echo Agent 冒充它。
 
 完成安装后，按[通用配对与验证](shared.md#配对与授权边界)检查审批、凭据和连线。

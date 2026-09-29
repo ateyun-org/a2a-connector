@@ -1,5 +1,3 @@
-const endpoints = new Map();
-
 export async function listenWithNextPort(server, startPort, attempts = 20) {
   if (!Number.isInteger(startPort) || startPort < 1 || startPort > 65535 ||
       !Number.isInteger(attempts) || attempts < 1) {
@@ -23,11 +21,3 @@ export async function listenWithNextPort(server, startPort, attempts = 20) {
   }
   throw new Error('No available DSH adapter port');
 }
-
-export function publishAdapterPort(key, port) {
-  if (endpoints.has(key)) throw new Error(`DSH adapter key already in use: ${key}`);
-  endpoints.set(key, port);
-  return () => { if (endpoints.get(key) === port) endpoints.delete(key); };
-}
-
-export function getAdapterPort(key) { return endpoints.get(key); }

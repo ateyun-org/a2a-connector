@@ -100,7 +100,7 @@ export class A2AOrchestrator {
     this.clients = new Map();
     this.store = store ?? new ConversationStore(config.storePath);
     this.pollIntervalMs = config.pollIntervalMs ?? 1000;
-    this.requestTimeoutMs = config.requestTimeoutMs ?? 30000;
+    this.requestTimeoutMs = config.requestTimeoutMs ?? 600000;
     for (const agent of config.agents) {
       if (!agent.id || this.agents.has(agent.id)) throw new Error(`duplicate or empty A2A agent id: ${agent.id}`);
       if (Boolean(agent.url) === Boolean(agent.card)) {

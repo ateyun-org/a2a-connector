@@ -31,7 +31,7 @@ export function installOutbound(ctx, config) {
   }
   ctx.tools.register(tool('a2a_agents', `Inspect configured A2A agents before delegation: availability, purpose, when to use, exclusions, and live Agent Card skills. ${catalog}`, {},
     async () => JSON.stringify(await a2a.listAgents())));
-  ctx.tools.register(tool('a2a_send', `Send a text message to an A2A agent. Choose the target using a2a_agents. ${catalog} Supply conversation_id to continue an earlier conversation; the returned ID can be used for status, follow-up, and cancellation.`, {
+  ctx.tools.register(tool('a2a_send', `Send a text message to an A2A agent. Choose the target using a2a_agents. ${catalog} For a long task, keep the returned conversation ID and check it later with a2a_task. Supply conversation_id to continue an earlier conversation; the returned ID can also be used for follow-up and cancellation.`, {
     agent_id: { type: 'string', required: true, description: 'Configured remote agent id.' },
     message: { type: 'string', required: true, description: 'Text request for the remote agent.' },
     conversation_id: { type: 'string', description: 'Existing A2A conversation ID, when continuing.' },

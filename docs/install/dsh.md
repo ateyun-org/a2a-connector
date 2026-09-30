@@ -59,6 +59,8 @@ agents:
 
 这里的 `storePath`、`agents` 与旧 `dsh-a2a` 配置含义相同；迁移时沿用**原有** `storePath` 可保留会话索引。不填 `storePath` 时，默认写在 Connector `state` 路径旁的 `.conversations.json` 文件。出站访问 Relay 自动读取同一条目的配对状态，若原先显式使用其他状态文件，可设置 `connectorState`。直接访问其他 A2A 服务时，`agents` 项仍可使用旧版 `url`、`tokenEnv`、`apiKeyEnv`、`allowHttp`、`allowedOrigins` 等字段。`agents` 未配置时不注册出站工具。
 
+出站请求的 `requestTimeoutMs` 默认是 `600000`（10 分钟），可在同一 `config` 中覆盖；它限制每次 HTTP 请求，不限制任务总运行时间。DSH 发送时要求远端立即返回任务 ID，之后持续用 `GetTask` 轮询。超长任务可先用 `a2a_send` 取得 `conversationId`，稍后用 `a2a_task` 查询，避免让一次 Subagent 调用一直等待；Subagent 的父会话若中止，当前实现会尝试取消远端任务。远端若把整个超长任务压在首次 `SendMessage` 中执行，任何固定超时最终都可能失效，需要远端改为尽快返回任务 ID。Relay 默认等待 9 分钟；已有生产配置若写了 `relay.timeout`，也要单独更新，并确保公网反向代理对 `/agents/` 的响应读取超时至少 10 分钟。若仍收到 `504 agent_timeout`，请求可能已经投递，先核对现有任务与会话，不要直接重复提交：已取得 `conversationId` 时用 `a2a_task`；首次发送尚未返回 ID 时，本地不会有会话记录，只能借助远端任务列表或远端自身的会话查询。若远端对多轮续聊返回 `TASK_STATE_REJECTED`，使用新的会话并在消息中给出完整任务与绝对路径；延长 HTTP 超时不会改变远端的任务状态约束。
+
 升级时把旧 `id: subagent-a2a` 条目下的 `storePath`、`agents`、`pollIntervalMs`、`requestTimeoutMs` 等配置移入此条目，然后移除旧条目和 `dsh-a2a` profile 依赖；若仍使用 `@deepseek-ai/dsh-tool-subagent` 包装工具，保留其 `provider: a2a:<agent-id>` 配置。先验证 `a2a_agents`、一次远端任务和续聊，再删除旧项目目录。不要删除原会话存储文件。
 
    同一 `contextId` 复用原生 DSH session，完成后追问只携带 `contextId`。支持文本发送、查询、取消和任务列表，不支持流式、推送及暂停任务续传。同会话只允许一个任务运行。最多保留 128 个上下文、4096 个任务；空闲 1 小时释放会话及任务索引。DSH 会 flush 会话日志，但当前 adapter 的 A2A ID 映射仅在内存：重启或过期后旧 ID 会明确报错，需新建会话，不会悄悄重建空历史。

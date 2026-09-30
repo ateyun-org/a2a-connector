@@ -28,7 +28,7 @@ export const Config = z.object({
   localTokenEnv: z.string(), allowInsecure: z.boolean().default(false),
   storePath: z.string(), connectorState: z.string(),
   pollIntervalMs: z.number().min(100).default(1000),
-  requestTimeoutMs: z.number().min(1000).default(30000),
+  requestTimeoutMs: z.number().min(1000).default(600000),
   agents: z.array(z.object({
     id: z.string().required(), purpose: z.string(), whenToUse: z.string(), notFor: z.string(),
     url: z.string(), card: z.string(), cardPath: z.string(),

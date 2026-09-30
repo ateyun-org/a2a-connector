@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, execFile } from 'node:child_process';
 import { createServer } from 'node:http';
 import { mkdir, mkdtemp, readFile, rm, writeFile, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { promisify } from 'node:util';
 import test from 'node:test';
 import { WebSocketServer } from 'ws';
 import { createHermesDriver } from '../plugins/hermes/agent-driver.js';
@@ -12,6 +13,8 @@ import { createAdapterServer, listenAdapter } from '../plugins/hermes/adapter-se
 import { prepareHermesA2A } from '../plugins/hermes/runner.js';
 
 const token = 'x'.repeat(64);
+const execute = promisify(execFile);
+const python = process.env.A2A_TEST_PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
 
 test('Hermes quiet driver resumes the returned session, follows compaction, and isolates contexts', async () => {
   const calls = [];
@@ -52,7 +55,7 @@ test('Hermes CLI failure and missing session/text are never reported as successf
 test('runner reuses native A2A without loading compatibility code', async () => {
   const result = await prepareHermesA2A({ env: { A2A_HERMES_PYTHON: '/host/python', A2A_LOCAL_TOKEN: token },
     run: async (binary, args) => {
-      assert.equal(binary, '/host/python'); assert.ok(args[0].endsWith('/a2a_support.py'));
+      assert.equal(binary, '/host/python'); assert.ok(args[0].endsWith(join('hermes', 'a2a_support.py')));
       return { stdout: JSON.stringify({ mode: 'native', local: 'http://127.0.0.1:9900' }) };
     } });
   assert.equal(result.mode, 'native'); assert.equal(result.token, token);
@@ -115,7 +118,7 @@ test('legacy Hermes runner forwards real Relay frames to isolated quiet CLI sess
   const connected = new Promise(resolve => ws.once('connection', resolve));
   const wrapperArgs = [resolve('plugins/hermes/runner.js'), '-auto-pair', '-state', state,
     '-relay', `ws://127.0.0.1:${relay.address().port}/connect`, '-local', 'auto', '-allow-insecure'];
-  const wrapperEnv = { ...process.env, HERMES_HOME: home, PYTHONPATH: host, A2A_HERMES_PYTHON: 'python3', A2A_HERMES_BINARY: '',
+  const wrapperEnv = { ...process.env, HERMES_HOME: home, PYTHONPATH: host, A2A_HERMES_PYTHON: python, A2A_HERMES_BINARY: '',
     A2A_LOCAL_URL: 'auto', A2A_LOCAL_TOKEN: '', A2A_BEARER_TOKEN: '', A2A_PEER_TOKENS: '', HERMES_BUNDLED_PLUGINS: '' };
   const child = spawn(process.execPath, wrapperArgs, {
     env: wrapperEnv,
@@ -124,12 +127,13 @@ test('legacy Hermes runner forwards real Relay frames to isolated quiet CLI sess
   let logs = '';
   child.stderr.on('data', chunk => { logs = (logs + chunk).slice(-8192); });
   const closed = new Promise(resolve => child.once('close', resolve));
-  t.after(async () => { child.kill('SIGTERM'); await closed; });
+  const stop = () => execute(process.execPath, [...wrapperArgs, '-stop'], { env: wrapperEnv });
+  t.after(async () => { if (child.exitCode === null) await stop(); await closed; });
   const socket = await Promise.race([connected, closed.then(code => { throw new Error(`Runner exited (${code}): ${logs}`); })]);
   const runtime = JSON.parse(await readFile(state + '.a2a-runtime.json', 'utf8'));
   assert.equal(runtime.mode, 'compat');
   assert.equal(runtime.pid, child.pid);
-  assert.equal((await stat(state + '.a2a-runtime.json')).mode & 0o777, 0o600);
+  if (process.platform !== 'win32') assert.equal((await stat(state + '.a2a-runtime.json')).mode & 0o777, 0o600);
   const duplicate = spawn(process.execPath, wrapperArgs, { env: wrapperEnv, stdio: ['ignore', 'ignore', 'pipe'] });
   let duplicateError = '';
   duplicate.stderr.on('data', chunk => { duplicateError += chunk; });
@@ -160,8 +164,121 @@ test('legacy Hermes runner forwards real Relay frames to isolated quiet CLI sess
   const reused = await prepareHermesA2A({ state, short: true, run: () => { throw new Error('Must reuse runtime'); } });
   assert.equal(reused.local, runtime.local); assert.equal(reused.token, runtime.token);
   await reused.close();
-  child.kill('SIGTERM');
+  await stop();
   assert.equal(await closed, 0);
   await assert.rejects(stat(state + '.a2a-runtime.json'), { code: 'ENOENT' });
   await assert.rejects(stat(state + '.hermes-runner.lock'), { code: 'ENOENT' });
+  await assert.rejects(stat(state + '.lock'), { code: 'ENOENT' });
+});
+
+test('managed stop aborts a blocked startup probe and releases the wrapper without starting a CLI', { timeout: 15000 }, async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'hermes-starting-'));
+  const state = join(dir, 'private folder/hermes.json');
+  let reached;
+  const probing = new Promise(resolve => { reached = resolve; });
+  const local = createServer(() => reached()); // Keep the source capability probe waiting.
+  await new Promise(resolve => local.listen(0, '127.0.0.1', resolve));
+  const env = { ...process.env, A2A_HERMES_PYTHON: python };
+  const args = [resolve('plugins/hermes/runner.js'), '-state', state, '-auto-pair',
+    '-local', `http://127.0.0.1:${local.address().port}`, '-relay', 'wss://relay.example/connect'];
+  const child = spawn(process.execPath, args, { env, stdio: ['ignore', 'ignore', 'pipe'] });
+  let logs = '';
+  child.stderr.on('data', chunk => { logs += chunk; });
+  const closed = new Promise(resolve => child.once('close', resolve));
+  const stop = () => execute(process.execPath, [...args, '-stop'], { env });
+  t.after(async () => {
+    if (child.exitCode === null) await stop();
+    await closed;
+    local.closeAllConnections();
+    await new Promise(resolve => local.close(resolve));
+    await rm(dir, { recursive: true, force: true });
+  });
+  await Promise.race([probing, closed.then(code => { throw new Error(`Startup exited (${code}): ${logs}`); })]);
+  const runtime = JSON.parse(await readFile(state + '.a2a-runtime.json', 'utf8'));
+  assert.equal(runtime.phase, 'starting');
+  assert.equal(JSON.parse((await stop()).stdout).stopped, true);
+  assert.equal(await closed, 0);
+  for (const suffix of ['.lock', '.hermes-runner.lock', '.a2a-runtime.json', '.hermes-stop.json']) {
+    await assert.rejects(stat(state + suffix), { code: 'ENOENT' });
+  }
+});
+
+test('Python plugin pairs, checks and stops a managed or manually started runner without Gateway restart', { timeout: 30000 }, async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'hermes-lifecycle-'));
+  const host = join(dir, 'host with spaces'), home = join(dir, 'profile');
+  await mkdir(join(host, 'hermes_cli'), { recursive: true });
+  await mkdir(home);
+  await writeFile(join(host, 'hermes_cli/__init__.py'), '');
+  await writeFile(join(host, 'run_agent.py'), '# Legacy Hermes\n');
+  const state = join(dir, 'private folder/hermes.json');
+  await mkdir(join(dir, 'private folder'));
+  // An expired request must be renewed by the one managed worker, before showing approval.
+  await writeFile(state + '.pending', JSON.stringify({ requestId: 'e'.repeat(64), agentId: 'managed-hermes',
+    confirmationCode: 'ABCDEF', expiresAt: 1 }), { mode: 0o600 });
+  let approved = false, requests = 0, registrations = 0;
+  const requestId = 'a'.repeat(64), code = 'pair_' + 'b'.repeat(48);
+  const relay = createServer(async (req, res) => {
+    let raw = ''; for await (const chunk of req) raw += chunk;
+    const body = raw ? JSON.parse(raw) : {};
+    res.setHeader('content-type', 'application/json');
+    if (req.url === '/pairing/requests') {
+      requests++; assert.equal(body.agentId, 'managed-hermes'); res.writeHead(201);
+      res.end(JSON.stringify({ requestId, agentId: body.agentId, confirmationCode: '123ABC', expiresAt: Math.floor(Date.now() / 1000) + 600 }));
+    } else if (req.url === '/pairing/status') {
+      if (body.requestId !== requestId) { res.writeHead(404); res.end('{}'); }
+      else res.end(JSON.stringify(approved ? { status: 'approved', code } : { status: 'pending' }));
+    } else if (req.url === '/register') {
+      registrations++; assert.equal(body.code, code); res.writeHead(201);
+      res.end(JSON.stringify({ agentId: 'managed-hermes', token }));
+    } else { res.writeHead(404); res.end('{}'); }
+  });
+  const ws = new WebSocketServer({ server: relay });
+  await new Promise(resolve => relay.listen(0, '127.0.0.1', resolve));
+  const env = { ...process.env, HERMES_HOME: home, PYTHONPATH: host, A2A_NODE_BINARY: process.execPath,
+    A2A_CONNECTOR_STATE: state, A2A_LOCAL_URL: 'auto', A2A_RELAY_URL: `ws://127.0.0.1:${relay.address().port}/connect`,
+    A2A_ALLOW_INSECURE: '1', A2A_AGENT_ID: '', A2A_LOCAL_TOKEN: '', A2A_BEARER_TOKEN: '', A2A_PEER_TOKENS: '', HERMES_BUNDLED_PLUGINS: '' };
+  const plugin = resolve('plugins/hermes/__init__.py');
+  const command = async name => (await execute(python, [plugin, name], { env, timeout: 28000 })).stdout.trim();
+  t.after(async () => {
+    await command('stop');
+    for (const client of ws.clients) client.terminate();
+    await new Promise(resolve => ws.close(resolve));
+    await new Promise(resolve => relay.close(resolve));
+    await rm(dir, { recursive: true, force: true });
+  });
+  const pairing = JSON.parse(await command('pair'));
+  assert.equal(pairing.confirmationCode, '123ABC');
+  assert.equal(pairing.status, 'pending');
+  assert.equal(requests, 1);
+  const pendingHealth = JSON.parse(await command('status'));
+  assert.equal(pendingHealth.running, true);
+  assert.equal(pendingHealth.tunnelOnline, false);
+  assert.match(await command('start'), /already running/);
+  assert.equal(JSON.parse(await command('status')).pid, pendingHealth.pid);
+  const connected = new Promise(resolve => ws.once('connection', resolve));
+  approved = true;
+  await connected;
+  const health = JSON.parse(await command('status'));
+  assert.equal(health.paired, true); assert.equal(health.tunnelOnline, true);
+  assert.equal(registrations, 1);
+  assert.ok(!JSON.stringify(health).includes(token));
+  await command('stop');
+  for (const suffix of ['.lock', '.hermes-runner.lock', '.a2a-runtime.json', '.hermes-stop.json']) {
+    await assert.rejects(stat(state + suffix), { code: 'ENOENT' });
+  }
+  assert.equal(JSON.parse(await command('status')).running, false);
+  assert.equal(JSON.parse(await readFile(state, 'utf8')).token, token);
+  // A manual runner has no Python PID file. Status/start/stop still find its canonical owner.
+  const manual = spawn(process.execPath, [resolve('plugins/hermes/runner.js'), '-auto-pair', '-state', state,
+    '-relay', env.A2A_RELAY_URL, '-local', 'auto', '-allow-insecure'], {
+    env: { ...env, A2A_HERMES_PYTHON: python }, stdio: ['ignore', 'ignore', 'pipe'],
+  });
+  manual.stderr.resume();
+  const exited = new Promise(resolve => manual.once('close', resolve));
+  await new Promise(resolve => ws.once('connection', resolve));
+  assert.match(await command('start'), /already running/);
+  assert.equal(JSON.parse(await command('status')).pid, manual.pid);
+  await command('stop');
+  assert.equal(await exited, 0);
+  assert.equal(registrations, 1);
 });

@@ -111,13 +111,21 @@ async function main() {
     if (enrolled) { console.log(JSON.stringify({ status: 'paired', agentId: enrolled.agentId })); return; }
     if (pending) { console.log(JSON.stringify({ status: 'pending', agentId: pending.agentId, confirmationCode: pending.confirmationCode, approvalURL: approvalURL(args.relay) })); return; }
   }
-  const lock = await acquireStateLock(path);
+  const lock = await acquireStateLock(path, { parentInstance: process.env.A2A_HERMES_RUNNER_INSTANCE });
   try {
     const fingerprint = createHash('sha256').update(path).digest('hex').slice(0, 8);
     const label = basename(path).replace(/\.json$/, '').replace(/[^A-Za-z0-9_-]/g, '-').slice(0, 32);
     process.title = `a2a-${fingerprint}-${label}`;
     const code = args['pair-code'] || process.env.A2A_PAIR_CODE;
     const controller = new AbortController();
+    const managed = typeof process.send === 'function';
+    const stopFromParent = message => { if (message?.type === 'hermes_shutdown') controller.abort(); };
+    const parentDisconnected = () => controller.abort();
+    if (managed) {
+      process.on('message', stopFromParent);
+      process.once('disconnect', parentDisconnected);
+      if (!process.connected) controller.abort();
+    }
     for (const name of ['SIGINT', 'SIGTERM']) process.once(name, () => controller.abort());
     if (args['enroll-only'] && !code) throw new Error('pairing code is required');
     if (code) {
@@ -155,7 +163,14 @@ async function main() {
     const heartbeat = setInterval(saveHealth, 15000);
     try { await connector.run(controller.signal); }
     finally { clearInterval(heartbeat); health.tunnelOnline = false; saveHealth(); await writes; }
-  } finally { await lock.release(); }
+  } finally {
+    await lock.release();
+    // A managed child must release its lock before dropping IPC or exiting.
+    if (process.connected && typeof process.disconnect === 'function') process.disconnect();
+  }
 }
 
-main().catch(error => { console.error(`A2A Connector: ${error.message}`); process.exitCode = 1; });
+main().catch(error => {
+  if (error.name !== 'AbortError') { console.error(`A2A Connector: ${error.message}`); process.exitCode = 1; }
+  if (process.connected && typeof process.disconnect === 'function') process.disconnect();
+});

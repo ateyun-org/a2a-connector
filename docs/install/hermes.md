@@ -1,125 +1,106 @@
 # Hermes 安装 A2A Connector
 
-开始前阅读[通用准备、配对与验证](shared.md)，然后按以下步骤安装 Hermes 插件。升级时，`plugins/` 下只能保留一个声明 `name: a2a-connector` 的目录；把旧目录移到 `plugins/` 外备份，单纯改名仍可能被扫描并注册同名 Hook。
+开始前阅读[通用配对与验证](shared.md)。Connector 优先使用当前 Hermes 自带的官方 A2A；只有确认没有官方模块时才安装和启动兼容服务。官方模块未启用、不可达或认证失败，都不会触发兼容模式。
 
-## 安装与配置
+## 安装前检查
 
-默认使用 `A2A_LOCAL_URL=auto`：检测当前 Hermes Python 安装中的官方 A2A platform 模块（包括旧目录），有自带能力时验证 Agent Card 与认证后的只读 `GetTask` 请求；确认缺少模块时才安装并启动兼容服务。检测失败、已有官方模块但 platform 未启用、Gateway 不可达或认证失败时会报错，不另起服务。自带 A2A 启用方式见[官方 A2A 插件文档](https://github.com/NousResearch/hermes-agent/blob/main/plugins/platforms/a2a/README.md)：
+使用实际 Hermes Python、实际 home/profile 和 Node.js 22+。Windows 使用原生路径，例如 `D:/Program Files/nodejs/node.exe`；从当前机器检测实际安装位置，不要假定 C 盘，也不要给原生 Python 传 Git Bash 的 `/c/...` 路径。参数列表直接交给 subprocess，带空格的路径无需额外 shell 转义。
 
-```yaml
-gateway:
-  platforms:
-    a2a:
-      enabled: true
-      extra:
-        port: 9900
+在仓库根目录先执行只读预检，下面的路径替换为实际值：
+
+```bash
+python scripts/install-hermes.py --check --home /actual/hermes/home \
+  --hermes-python /actual/hermes/python --node /actual/node \
+  --relay wss://dsh-relay.chuanbota.com/connect
 ```
 
-官方服务的端口优先读 `A2A_PORT`，否则使用该 profile 的 `gateway.platforms.a2a.extra.port`，默认 9900。Connector 可通过 `A2A_LOCAL_TOKEN` 提供认证，也可沿用 `A2A_BEARER_TOKEN` 或 `A2A_PEER_TOKENS` 中名为 `connector` 的 token。多 peer 不会随意挑选其他 peer 的凭据。无 token 的官方 localhost 模式也可复用，仍须通过只读任务探测。
+默认也能从 PATH 检测 Node。`--check` 验证 Python 的 Hermes 源码根目录、Node 路径/版本和 A2A 能力，不写配置、不申请配对、不要求官方 A2A 已经启动。Hermes 从源码启动时加 `--hermes-root /actual/hermes-agent`。命名 profile 的 `--home` 指向实际 profile home；multiplex Gateway 使用启动共享 Gateway 的 home。
 
-兼容服务只绑定 `127.0.0.1`，自动生成临时 token，默认从 9900 起尝试 20 个端口，将实际端口与 token 传给 Connector。它不根据任意占用端口的 Agent Card 猜测宿主身份。已有外部 adapter 时，请明确设置 `A2A_LOCAL_URL=http://127.0.0.1:实际端口`。
+升级已有安装时加 `--upgrade`，并指定旧实例实际的 `--state`；安装器请求受管理的 runner 停止，随后将旧插件原子备份到 home 下的 `a2a-connector.backup-*`（在 `plugins/` 外）再替换。原凭据保留，备份路径会输出。发现旧版/孤立进程或遗留锁时拒绝替换，不猜测 PID、不强杀。常规安装仍拒绝覆盖已有目录；插件目录中只能保留一个 `name: a2a-connector`。
 
-若 Hermes 已提供可访问的本机 A2A origin，且不需要宿主内的配对工具/Hook，可改用[独立 Connector 安装脚本](../../scripts/install-connector.sh)：从仓库根目录执行 `sh scripts/install-connector.sh install --host hermes --relay wss://dsh-relay.chuanbota.com/connect --local http://127.0.0.1:9900`。此路径不会安装下方的 Hermes 插件；不要同时运行两种路径连接同一个 Agent。
+**从 Windows 0.2.4 升级**：旧版 Python 的进程探测/停止有兼容缺陷。先在 Gateway 外部根据 `.a2a-runtime.json`、两个 `.lock/owner.json` 和实际进程命令行核对旧 runner/CLI，再停止已确认的进程树。不要调用旧版插件的 start/stop 来清理，也不要按 `node` 名称批量终止无关进程。确认对应进程都已退出后才处理遗留锁；保留状态凭据。新版本统一通过 runner 的受管理停止流程退出子进程并清理锁。
 
-从仓库源码安装前，如需测试，在仓库根目录执行 `npm ci` 和 `npm test`。默认测试不需要 DSH SDK；Hermes 插件目录本身仍无需 npm 安装。`npm run test:dsh` / `test:all` 是维护者验证 DSH 原生 adapter 的入口，需先安装 `plugins/dsh` 开发依赖。若旧版本默认测试报缺少 `@deepseek-ai/schemastery`，更新到拆分测试后的版本再验证；不要将失败当作已通过，也无需为 Hermes 安装 DSH SDK。同步脚本只更新 vendor 文件，不能修复测试依赖问题。
+## 安装与一次性加载
 
-1. 确认 Hermes 进程可用 Node.js 22 或更新版本。升级已有安装时，先在旧插件仍可用的目标 Agent 中执行 `/a2a_connector stop`；Connector 是独立启动的子进程，Gateway 重启不保证它退出。随后将旧插件目录备份到 `plugins/` 外，再安装完整插件目录：
+1. 执行安装脚本，保存非敏感参数和实际运行时路径：
 
    ```bash
-   hermes_root="${HERMES_HOME:-$HOME/.hermes}"
-   mkdir -p "$hermes_root/plugins"
-   if [ -e "$hermes_root/plugins/a2a-connector" ]; then
-     mv "$hermes_root/plugins/a2a-connector" "$hermes_root/a2a-connector.backup-$(date +%Y%m%d-%H%M%S)"
-   fi
-   # 在 a2a-connector 仓库目录执行，填写目标 Hermes 的 Python 绝对路径：
-   python3 scripts/install-hermes.py --home "$hermes_root" \
-     --hermes-python /absolute/path/to/hermes/.venv/bin/python
+   python scripts/install-hermes.py --home /actual/hermes/home \
+     --hermes-python /actual/hermes/python --node /actual/node \
+     --relay wss://dsh-relay.chuanbota.com/connect \
+     --state /actual/private/a2a-connector/hermes.json
    ```
 
-   安装脚本不会覆盖已有插件目录、宿主配置或配对状态；检测完成后才复制插件。有官方 A2A 时只安装 Connector，不复制兼容服务和 CLI driver；缺少时才一起安装。`ws` 已随包提供，无需 npm 安装，也不会安装或升级 Hermes。若宿主从源码启动、模块不在该 Python 的导入路径中，加 `--hermes-root /absolute/path/to/hermes-agent`。脚本需要当前 shell 能读取 A2A 服务凭据；宿主 `.env` 不会自动导出到 shell。已有外部 adapter 可传 `--local http://127.0.0.1:实际端口`，同时在下方宿主环境中设置相同的 `A2A_LOCAL_URL`。命名 profile 请将 `--home` 指向其实际 home。
+   `--node` 可省略，此时从 PATH 查找并验证。`--state` 可省略，插件默认 `~/.config/a2a-connector/hermes.json`；多个独立实例使用不同状态路径。
 
-   检查 `plugins/` 下其他备份目录的 `plugin.yaml`；凡是也声明 `name: a2a-connector` 的，都移到 `plugins/` 外。不要删除原有 Connector 状态文件。若旧插件已不可用，先按[通用验证步骤](shared.md#按顺序验证与排错)核对 PID 与命令行，只终止确认属于旧 Connector 的进程，再处理对应 PID 文件。开发时仍可复制完整源码目录，但兼容模块只在确认缺少自带能力后加载。
+   安装器只检查模块能力来决定复制哪些文件，运行时才检查服务是否健康。原生/已有模式不复制 `adapter-server.js` 和 `agent-driver.js`；兼容模式才复制。安装器不安装或升级 Hermes，不改宿主配置、凭据或 `.env`，`ws` 已随包提供。
 
-2. 这是 Hermes 的普通工具/Hook 插件，不是 Gateway platform 插件。先查看现有插件，再在目标 Hermes profile 中启用；不要把它配置到 `platforms.*.enabled`：
+   安装目录中的 `host-runtime.json` 保存实际 Node、Hermes Python 和源码/home 提示，直接运行 runner 时也能找到正确 Python。`connector-config.json` 保存非敏感参数，插件每次操作会重新读取；其中配置优先于同名进程环境变量。允许的键为 `A2A_RELAY_URL`、`A2A_LOCAL_URL`、`A2A_NODE_BINARY`、`A2A_CONNECTOR_STATE`、`A2A_AGENT_ID`。token 不写入该文件。
+
+2. 在目标 profile 启用工具/Hook 插件：
 
    ```bash
-   hermes plugins list
    hermes plugins enable a2a-connector
    ```
 
-   上述命令操作默认 profile。目标是命名的独立 profile 时，给两个命令都加同一个 `-p`，例如 `hermes -p "coder" plugins list` 和 `hermes -p "coder" plugins enable a2a-connector`。multiplex Gateway 只启用启动该共享 Gateway 的 profile。Hermes 的通用用户插件默认需要加入 `plugins.enabled`；`hermes plugins enable` 会更新该配置。见 [Hermes 插件文档](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/features/plugins.md)。
+   这是普通工具/Hook 插件，不是 Gateway platform。命名独立 profile 使用 `hermes -p coder plugins enable a2a-connector`。multiplex Gateway 使用共享 Gateway 的启动 profile。
 
-3. 在该 Hermes 实例读取的环境文件中配置：默认安装使用 `~/.hermes/.env`；若设置了 `HERMES_HOME`，使用对应 home 下的 `.env`。独立命名 profile 使用它自己的 `~/.hermes/profiles/<profile>/.env`。保留原文件内容并将权限设为 `0600`。多 profile multiplex Gateway 是一个共享进程，而 Connector 直接读取进程环境；此时把 Connector 参数放入启动该 Gateway 的 home 环境中，不要假设它会按每个 profile 单独启动。`.env` 由宿主加载时，`/proc/<Gateway PID>/environ` 不一定反映加载后的 Python 进程环境，也不会自动给当前交互 shell 导出这些变量。
+3. 检测结果为 native 时，启用宿主官方 A2A：
 
-   ```text
-   A2A_RELAY_URL=wss://dsh-relay.chuanbota.com/connect
-   A2A_LOCAL_URL=auto
-   # 自带/已有 A2A 要求认证时配置；填入 token 值，不是变量名：
-   # A2A_LOCAL_TOKEN=replace-with-local-agent-token
-   # 服务 PATH 找不到 node 时，填写 Node.js 22+ 的绝对路径：
-   A2A_NODE_BINARY=/absolute/path/to/node
-   # 可选：兼容任务使用特定 Hermes CLI；默认用当前宿主 Python -m hermes_cli.main：
-   # A2A_HERMES_BINARY=/absolute/path/to/hermes
-   # 可选：兼容服务端口和任务超时（毫秒）：
-   # A2A_COMPAT_PORT=9900
-   # A2A_COMPAT_PORT_ATTEMPTS=20
-   # A2A_TASK_TIMEOUT_MS=600000
-   # 多个 Connector 实例时，为每个实例指定不同状态文件：
-   A2A_CONNECTOR_STATE=/absolute/path/to/private/hermes-connector.json
+   ```yaml
+   gateway:
+     platforms:
+       a2a:
+         enabled: true
+         extra:
+           port: 9900
    ```
 
-   `A2A_LOCAL_TOKEN` 的值会作为 Bearer token 发送到本机 Agent Card 和 A2A endpoint。不要把真实 token 写进命令参数、配置示例或对话。
+   配置保留其他已有段。官方端口优先读 `A2A_PORT`，否则读取当前 profile 的 `gateway.platforms.a2a.extra.port`，默认 9900。官方服务的 localhost 模式可通过本机 Connector 转发，不要求开放公网端口。见[官方 A2A 文档](https://github.com/NousResearch/hermes-agent/blob/main/plugins/platforms/a2a/README.md)。
 
-   其他可选变量：`A2A_AGENT_ID`、`A2A_ALLOW_INSECURE=1`。生产环境不要设置 `A2A_ALLOW_INSECURE`；固定 Agent ID 的使用场景见上面的参数说明。
+   若官方服务需要认证，在该 Hermes home/profile 的 `.env` 配置 `A2A_LOCAL_TOKEN`，也可沿用 `A2A_BEARER_TOKEN` 或 `A2A_PEER_TOKENS` 中名为 `connector` 的 token。不随意使用其他 peer 的凭据。保持文件私有，不把真实 token 写进命令参数或聊天。进程环境配置方式仍兼容，`A2A_HERMES_PYTHON` 由插件自动设置为当前 `sys.executable`。
 
-   `A2A_NODE_BINARY` 默认是 `node`，要求 Connector 子进程的 PATH 能找到 Node.js。交互终端中的 `node --version` 成功不代表 systemd/launchd 服务也能找到它；给服务设置绝对路径更可靠。
-
-   插件注册时会执行一次不发网络请求的自检：缺少必需环境变量、Node 路径或随包 CLI 时记 ERROR；未配对或等待审批会单独提示，但不阻止 session start hook 自动申请/恢复配对。`A2A_LOCAL_TOKEN` 仅在本机接口启用认证时需要，缺失不属于自检错误。
-
-   启动失败在 Gateway 日志中以 ERROR 报告。子进程 stderr 保存在状态文件旁的 `hermes.stderr.log`（自定义 state 时替换其扩展名），权限 `0600`，重启追加写入；排查时检查该文件，不要把原始日志直接贴到对话中。日志不会自动轮转，需按主机日志保留策略管理。启动后立即退出会报退出码及日志路径；稍后发生的错误也会保留在该文件。命令报告“进程启动”不代表已配对或网络连通，仍需按下方步骤验证。
-
-   Hermes Connector 的状态文件默认是 `~/.config/a2a-connector/hermes.json`，待审批请求写入该路径加 `.pending`，PID 文件是 `~/.config/a2a-connector/hermes.pid`。多个独立 Hermes/Connector 实例应设置不同的 `A2A_CONNECTOR_STATE`，避免共用身份文件。`A2A_ALLOW_INSECURE=1` 仅用于本地测试。
-
-   启动时会重新检测能力。旧版升级后优先复用官方 platform，须先启用它；只有 Connector 的安装若宿主降级，需要重新运行安装脚本补装兼容文件。运行时 origin 和兼容 token 写入状态路径加 `.a2a-runtime.json`，权限 `0600`，仅用于同实例配对工具复用，停止时清理。该 token 与 Relay 凭据不同。包装进程使用独立 `.hermes-runner.lock`，Connector 子进程仍使用原有 `.lock`，重复启动会拒绝；崩溃后先核实所有者再处理遗留锁，不要直接删除配对凭据。
-
-4. 让配置生效：
+4. 完成插件注册、官方 platform 和宿主环境配置后，**从 Gateway 外部的独立终端/SSH 加载一次**：
 
    ```bash
    hermes gateway restart
    hermes gateway status
    ```
 
-   目标是命名的独立 profile 时，两个命令都使用同一个 profile，例如 `hermes -p "coder" gateway restart` 和 `hermes -p "coder" gateway status`。若该 profile 由 multiplex Gateway 服务，只重启共享的默认 Gateway：`hermes gateway restart`。Hermes Gateway 在进程启动时加载插件和环境；只运行 `hermes plugins enable` 不会让已经运行的 Gateway 立即加载它。普通 `.env` 内容变更后重启即可，不需要 `daemon-reload`。
+   独立命名 profile 的两个命令使用同一 `-p`；multiplex 重启共享 Gateway。保留完整输出，检查新 Gateway 状态。不要让正在服务当前聊天的 Agent 自己执行 Gateway restart，也不要用原始 systemctl/nohup/后台 `&` 绕过内部保护。不要直接修改 Hermes 生成的主 systemd unit；特殊服务环境使用 drop-in，参考[官方 Gateway 文档](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/messaging/index.md)。
 
-   不要直接编辑 Hermes 生成的 systemd unit 中的 `Environment=` 行；Gateway 管理命令可能重新生成 unit 并覆盖该改动。默认优先用上述 `.env`。Linux systemd 用户服务如需独立环境文件，将变量放入 `~/.hermes/a2a-connector.env` 并设为 `0600`，然后给服务加 drop-in：
+5. 在目标 Agent 执行 `/a2a_connector doctor`，然后调用 `a2a_connector_pair` 或 `/a2a_connector pair`。插件先启动受管理的 worker，再返回该 worker 的有效审批信息；申请、自动续期和兑换都由同一个 worker 完成。用户批准后不需要 Gateway 重启，也不需要再手动兑换 token。
 
-   ```bash
-   systemctl --user edit hermes-gateway.service
-   ```
+6. 使用 `a2a_connector_status` 或 `/a2a_connector status` 验证 `running`、`paired` 和 `tunnelOnline`。这三个状态分别表示 runner 存活、凭据已保存、CLI 的近期连接健康信息确认隧道在线。最后按[通用验证](shared.md#按顺序验证与排错)执行实际 A2A 请求。
 
-   在编辑器中写入：
+## 日常管理与排错
 
-   ```ini
-   [Service]
-   EnvironmentFile=%h/.hermes/a2a-connector.env
-   ```
+| 命令 | 行为 |
+| --- | --- |
+| `/a2a_connector doctor` | 核对当前环境里的 Node/Python、源码能力、实际 state/PID/log 路径和运行状态；不申请审批 |
+| `/a2a_connector status` / `a2a_connector_status` | 只读运行、配对与隧道健康；不显示 token |
+| `/a2a_connector start` | 启动或复用同一状态文件的 runner；也识别手动启动的新版本 runner |
+| `/a2a_connector pair` | 启动同一个 worker并返回有效审批信息；不会因为重复调用创建第二个 worker |
+| `/a2a_connector stop` | 请求 runner 清理自己的 CLI、兼容服务和锁；保留凭据 |
 
-   保存后执行（命名 profile 或 system service 请替换为实际 unit 和 scope）：
+插件启动 Hook 是 `on_session_start`，只有开始新 session 才触发；同一会话再发一句消息不等于新 session。不依赖 Hook 时可以直接调用 start/pair。普通 CLI 子命令 `hermes a2a_connector ...` 不存在。
 
-   ```bash
-   systemctl --user daemon-reload
-   systemctl --user restart hermes-gateway.service
-   systemctl --user status hermes-gateway.service --no-pager
-   ```
+从外部终端也可使用实际 Hermes Python 执行安装目录中的 `__init__.py status|doctor|start|stop|pair`。独立进程不自动读取宿主 `.env`，认证等环境应由有效的宿主环境提供；状态检查不需要本机服务 token。该入口管理 Connector，不重启 Gateway。
 
-   以上是默认 profile 的 user service 示例。用 `hermes gateway status` 和 `systemctl --user list-units 'hermes-gateway*'` 确认服务范围和 unit 名称；命名 profile 的独立 service 使用它自己的 unit，multiplex Gateway 使用默认 Gateway 的 unit。若安装为默认 profile 的 system service，执行 `sudo systemctl edit hermes-gateway.service`，再按同样顺序运行 `sudo systemctl daemon-reload`、`sudo systemctl restart hermes-gateway.service` 和 `sudo systemctl status hermes-gateway.service --no-pager`。命名 profile 请替换为实际 unit。不要把 `Environment=` 直接写回生成的主 unit。Hermes 的 Gateway 管理方式见[官方文档](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/messaging/index.md)。
+修改 `connector-config.json` 的 Node/Relay/local 等非敏感参数后，只需停止并重新启动 Connector，Gateway 内每次操作都会读取新值。修改宿主 `.env`、插件注册或官方 platform 时，才需要从外部重新加载 Gateway。切换状态路径前先停止原路径对应的 Connector，避免留下旧实例。
 
-   重启后在同一 profile 运行 `hermes plugins list`，确认 `a2a-connector` 已启用；再在 Agent 中确认 `a2a_connector_pair` 工具和 `/a2a_connector pair|start|stop` 命令已注册。Connector 的启动 Hook 是 `on_session_start`，重启 Gateway 本身不会触发它；如需立即启动，在目标 Agent 中执行 `/a2a_connector start`，或者开始一个会话触发 Hook。不要仅凭 Gateway 已监听本机端口判断 Connector 已启动。
+`WinError 2` 优先检查报错调用和实际可执行路径；没有匹配到日志不能证明插件没有 import。插件自检失败仍注册诊断工具。独立 Bash/Python 测试成功不能证明 Gateway 使用了相同的 home、Python、环境或安装副本。
 
-完成安装后，按[通用配对与验证](shared.md#配对与授权边界)检查审批、凭据和连线。
+stdout/stderr 都保存在 state 路径替换扩展名后的 `.stderr.log`，例如 `hermes.json` 对应 `hermes.stderr.log`；PID 镜像为 `hermes.pid`，不是 `hermes.json.pid`。Windows 使用当前用户和 SYSTEM 的受保护 DACL，POSIX 使用目录 0700/文件 0600。日志包含审批信息，保持私有，不直接整份贴入聊天；日志追加写入，按主机策略轮转。
+
+运行身份由规范状态路径的 `.hermes-runner.lock/owner.json` 和 `.a2a-runtime.json` 管理，CLI 使用独立 `.lock`。`.pid` 是辅助文件，不是存活判断依据。runner 的 stop 请求绑定实例 ID，通过 IPC 让 CLI 退出；不使用 Python `os.kill(pid, 0)` 探测 Windows 进程。崩溃后的旧锁会明确报错，必须核实所有者及进程树后恢复；不要删除凭据来解决连接问题。
+
+`.a2a-runtime.json` 可能包含兼容服务临时 token，status 不输出它。runtime 文件存在、进程存活、凭据落盘都不能单独证明 WSS 已连通。审批等待/短暂断线由 worker 自动处理，不需要 Gateway 重启。
 
 ## 兼容服务范围
 
-兼容实现提供 A2A 1.0 Agent Card、文本 `SendMessage`、`GetTask` 轮询、结果 artifacts 和 `contextId` 多轮会话；同一 context 的并发任务被拒绝。每个 context 首次运行 `hermes chat --quiet --query ...`，从 stderr 读取宿主返回的 `session_id:`，后续通过 `--resume` 续接，也会跟随压缩后的新 session ID。不同 context 启动独立会话。兼容子会话禁用 Connector 启动 Hook，避免递归启动。
+兼容服务只绑定 `127.0.0.1`，临时 token 自动生成，默认从 9900 起尝试 20 个端口；其他实例占用端口不会被误当成宿主 A2A。已有外部 adapter 使用明确的 `--local http://127.0.0.1:实际端口`。运行时验证 Agent Card 和认证后的只读 GetTask；已有官方模块未启用或不可达时报告失败，不启动兼容服务。
 
-旧宿主须支持 quiet CLI、退出码、`session_id:` 输出及 `--resume`。缺少回复或会话 ID、非零退出码、超时均返回失败任务，不猜测成功或自动重跑工具。该实现不支持流式响应、推送或 `CancelTask`；不伪造 canceled 状态。任务/context 记录在内存，闲置一小时清理，重启后失效。默认任务超时十分钟，可用 `A2A_TASK_TIMEOUT_MS` 调整。
+兼容实现提供 A2A 1.0 Agent Card、文本 SendMessage、GetTask 轮询、结果 artifacts 和 contextId 多轮会话。同一 context 的并发任务被拒绝。使用宿主 quiet CLI 输出的 `session_id:` 续接 `--resume`，跟随压缩后的 session ID；不同 context 独立。兼容子会话禁用 Connector Hook，避免递归启动。
+
+旧宿主须支持 quiet CLI、退出码、session ID 和 resume；缺少输出、非零退出码、超时均返回失败任务，不猜测成功。无 SSE、推送或 CancelTask；任务/context 状态在内存中，重启后失效，闲置一小时清理。可通过环境设置 `A2A_COMPAT_PORT`、`A2A_COMPAT_PORT_ATTEMPTS`、`A2A_TASK_TIMEOUT_MS`（默认十分钟）、`A2A_HERMES_BINARY`。生产不要设置 `A2A_ALLOW_INSECURE`。

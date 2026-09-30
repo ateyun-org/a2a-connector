@@ -1,7 +1,9 @@
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
+import shutil
 import sys
 import tempfile
 import threading
@@ -109,7 +111,10 @@ class HermesA2ATests(unittest.TestCase):
             config = home / "config.yaml"; config.write_text("existing: settings\n")
             selected = {"mode": mode, "local": "http://127.0.0.1:9900"}
             def detect(args, **kwargs):
+                if args[-1] == "--version":
+                    return subprocess.CompletedProcess(args, 0, stdout="v22.19.0")
                 self.assertEqual(args[0], "/actual/hermes/python")
+                self.assertEqual(args[-1], "--inspect")
                 self.assertEqual(kwargs["env"]["HERMES_HOME"], str(home.resolve()))
                 return subprocess.CompletedProcess(args, 0, stdout=json.dumps(selected))
             self.assertEqual(installer.install_hermes(home, "/actual/hermes/python", env={}, run=detect), selected)
@@ -119,6 +124,8 @@ class HermesA2ATests(unittest.TestCase):
             self.assertTrue((installed / "vendor/connector/state-lock.js").exists())
             self.assertTrue((installed / "vendor/connector/node_modules/ws/package.json").exists())
             self.assertTrue((installed / "runner.js").exists())
+            self.assertTrue((installed / "host_support.py").exists())
+            self.assertEqual(json.loads((installed / "host-runtime.json").read_text())["python"], "/actual/hermes/python")
             self.assertEqual(json.loads((installed / "package.json").read_text())["type"], "module")
             self.assertEqual(config.read_text(), "existing: settings\n")
             with self.assertRaisesRegex(ValueError, "already exists"):
@@ -135,6 +142,111 @@ class HermesA2ATests(unittest.TestCase):
         with patch.dict(plugin.os.environ, {"A2A_CONNECTOR_CHILD": "1"}, clear=True), patch.object(plugin, "_self_check_once") as check:
             plugin.register(object())
             check.assert_not_called()
+
+    def test_install_inspection_does_not_probe_disabled_native_a2a(self):
+        self.native()
+        with patch.object(support, "native_port", return_value=9900):
+            selected = support.select_a2a(self.env, self.root, lambda *_: self.fail("Installation must not probe"), validate_service=False)
+        self.assertEqual(selected["mode"], "native")
+        with patch.object(support, "native_port", return_value=9900):
+            with self.assertRaisesRegex(ValueError, "Compatibility A2A was not selected"):
+                support.select_a2a(self.env, self.root, lambda *_: (_ for _ in ()).throw(urllib.error.URLError("disabled")))
+
+    def test_missing_node_and_old_node_fail_before_writing_installation(self):
+        def detect(args, **kwargs):
+            return subprocess.CompletedProcess(args, 0, stdout="v20.0.0" if args[-1] == "--version" else '{"mode":"compat"}')
+        with patch.object(installer.shutil, "which", return_value=None):
+            with self.assertRaisesRegex(ValueError, "Node executable not found"):
+                installer.install_hermes(self.home, run=detect)
+        with patch.object(installer.shutil, "which", return_value="/actual/node"):
+            with self.assertRaisesRegex(ValueError, "22 or newer"):
+                installer.install_hermes(self.home, run=detect)
+        self.assertFalse(self.home.exists())
+
+    def test_check_mode_does_not_create_directories_or_require_a_live_platform(self):
+        def detect(args, **kwargs):
+            return subprocess.CompletedProcess(args, 0, stdout="v22.19.0" if args[-1] == "--version" else '{"mode":"native","local":"http://127.0.0.1:9900"}')
+        with patch.object(installer.shutil, "which", return_value="/actual/node"):
+            selected = installer.install_hermes(self.home, run=detect, check=True)
+        self.assertEqual(selected["mode"], "native")
+        self.assertFalse(self.home.exists())
+
+    def test_real_installer_preflight_accepts_native_module_before_gateway_is_started(self):
+        self.native()
+        (self.root / "run_agent.py").write_text("# Source root")
+        package = self.root / "hermes_cli"
+        package.mkdir()
+        (package / "__init__.py").write_text("")
+        (package / "config.py").write_text("def load_config():\\n    return {}\\n".replace("\\n", "\n"))
+        result = subprocess.run([sys.executable, str(ROOT / "scripts/install-hermes.py"), "--check",
+            "--home", str(self.home), "--hermes-python", sys.executable, "--hermes-root", str(self.root),
+            "--node", shutil.which("node"), "--relay", "wss://relay.example/connect"],
+            env=dict(os.environ, A2A_PORT="9900", A2A_LOCAL_URL="auto", HERMES_BUNDLED_PLUGINS=""),
+            capture_output=True, text=True, check=True)
+        selected = json.loads(result.stdout)
+        self.assertEqual(selected["mode"], "native")
+        self.assertEqual(Path(selected["python"]), Path(sys.executable))
+        self.assertFalse(self.home.exists())
+        state = self.home / "private/hermes.json"
+        subprocess.run([sys.executable, str(ROOT / "scripts/install-hermes.py"),
+            "--home", str(self.home), "--hermes-python", sys.executable, "--hermes-root", str(self.root),
+            "--node", shutil.which("node"), "--relay", "wss://relay.example/connect", "--state", str(state)],
+            env=dict(os.environ, A2A_PORT="9900", A2A_LOCAL_URL="auto", HERMES_BUNDLED_PLUGINS=""),
+            capture_output=True, text=True, check=True)
+        installed = self.home / "plugins/a2a-connector"
+        self.assertFalse((installed / "adapter-server.js").exists())
+        # The installed entry point must work without the install shell's PYTHONPATH.
+        standalone = dict(os.environ, A2A_PORT="9900", HERMES_BUNDLED_PLUGINS="")
+        standalone.pop("PYTHONPATH", None)
+        standalone.pop("HERMES_HOME", None)
+        result = subprocess.run([sys.executable, str(installed / "__init__.py"), "doctor"],
+            env=standalone, capture_output=True, text=True, check=True)
+        doctor = json.loads(result.stdout)
+        self.assertEqual(doctor["capability"], "native")
+        self.assertEqual(Path(doctor["state"]), state.resolve())
+        self.assertTrue(doctor["relayConfigured"])
+        self.assertFalse(doctor["health"]["running"])
+
+    def test_upgrade_stops_verified_state_then_backs_up_plugin_without_touching_credentials(self):
+        target = self.home / "plugins/a2a-connector"
+        target.mkdir(parents=True)
+        (target / "plugin.yaml").write_text("name: a2a-connector\nversion: 0.2.4\n")
+        state = self.home / "private/hermes.json"
+        state.parent.mkdir()
+        state.write_text('{"agentId":"retained","token":"PRIVATE"}')
+        (target / "connector-config.json").write_text(json.dumps({"A2A_RELAY_URL": "wss://old.example/connect", "A2A_CONNECTOR_STATE": str(state), "A2A_LOCAL_URL": "http://127.0.0.1:7777"}))
+        stopped = []
+        def run(args, **kwargs):
+            if args[-1] == "--version":
+                return subprocess.CompletedProcess(args, 0, stdout="v22.19.0")
+            if args[-1] == "-stop":
+                stopped.append(args)
+                self.assertEqual(args[-2], str(state.resolve()))
+                return subprocess.CompletedProcess(args, 0, stdout='{"stopped":true}')
+            self.assertEqual(kwargs["env"]["A2A_LOCAL_URL"], "http://127.0.0.1:7777")
+            return subprocess.CompletedProcess(args, 0, stdout='{"mode":"existing","local":"http://127.0.0.1:7777"}')
+        selected = installer.install_hermes(self.home, run=run, env={}, upgrade=True)
+        backup = Path(selected["backup"])
+        self.assertEqual(len(stopped), 1)
+        self.assertEqual(backup.parent, self.home.resolve())
+        self.assertTrue((backup / "plugin.yaml").exists())
+        self.assertEqual(json.loads((target / "connector-config.json").read_text())["A2A_LOCAL_URL"], "http://127.0.0.1:7777")
+        self.assertEqual(state.read_text(), '{"agentId":"retained","token":"PRIVATE"}')
+
+    def test_upgrade_refuses_live_legacy_runner_without_replacing_plugin(self):
+        target = self.home / "plugins/a2a-connector"
+        target.mkdir(parents=True)
+        original = "name: a2a-connector\nversion: legacy\n"
+        (target / "plugin.yaml").write_text(original)
+        def run(args, **kwargs):
+            if args[-1] == "--version":
+                return subprocess.CompletedProcess(args, 0, stdout="v22.19.0")
+            if args[-1] == "-stop":
+                raise subprocess.CalledProcessError(1, args, stderr="Legacy runner cannot receive a managed stop")
+            return subprocess.CompletedProcess(args, 0, stdout='{"mode":"compat"}')
+        with self.assertRaises(subprocess.CalledProcessError):
+            installer.install_hermes(self.home, run=run, env={}, upgrade=True, state=self.home / "private/hermes.json")
+        self.assertEqual((target / "plugin.yaml").read_text(), original)
 
 
 if __name__ == "__main__":

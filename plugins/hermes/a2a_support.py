@@ -103,14 +103,15 @@ def probe(origin, token):
         raise ValueError("A2A task endpoint failed authentication or the read-only GetTask probe")
 
 
-def select_a2a(env=None, root=None, request_probe=None):
+def select_a2a(env=None, root=None, request_probe=None, validate_service=True):
     env = os.environ if env is None else env
     request_probe = probe if request_probe is None else request_probe
     explicit = env.get("A2A_LOCAL_URL", "auto").strip() or "auto"
     token = local_token(env)
     if explicit != "auto":
         origin = local_origin(explicit)
-        request_probe(origin, token)
+        if validate_service:
+            request_probe(origin, token)
         return {"mode": "existing", "local": origin}
     root = hermes_root() if root is None else Path(root)
     home = Path(env.get("HERMES_HOME", "~/.hermes")).expanduser()
@@ -121,6 +122,8 @@ def select_a2a(env=None, root=None, request_probe=None):
         return {"mode": "compat"}
     port = native_port(env)
     origin = f"http://127.0.0.1:{port}"
+    if not validate_service:
+        return {"mode": "native", "local": origin}
     try:
         request_probe(origin, token)
         return {"mode": "native", "local": origin}
@@ -130,7 +133,12 @@ def select_a2a(env=None, root=None, request_probe=None):
 
 if __name__ == "__main__":
     try:
-        print(json.dumps(select_a2a()))
+        inspect = "--inspect" in sys.argv[1:]
+        selected = select_a2a(validate_service=not inspect)
+        if inspect:
+            selected["python"] = sys.executable
+            selected["hermesRoot"] = str(hermes_root())
+        print(json.dumps(selected))
     except Exception as error:
         # Avoid dumping credential-bearing HTTP bodies or subprocess environment.
         print(f"Hermes A2A detection failed: {type(error).__name__}: {error}", file=sys.stderr)

@@ -1,7 +1,8 @@
 name: a2a-connector
-version: 0.2.4
+version: 0.2.5
 description: Pair Hermes with an A2A Relay; prefer native A2A and provide compatibility when absent
 provides_tools:
   - a2a_connector_pair
+  - a2a_connector_status
 provides_hooks:
   - on_session_start

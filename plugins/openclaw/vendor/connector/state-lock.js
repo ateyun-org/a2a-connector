@@ -26,7 +26,7 @@ export function ownerAlive(owner) {
 
 /** Atomic directory creation excludes both running and pairing CLI processes.
  * Crash leftovers deliberately fail closed; never reclaim a lock on a PID guess. */
-export async function acquireStateLock(path) {
+export async function acquireStateLock(path, { parentInstance } = {}) {
   const directory = `${path}.lock`;
   try { await mkdir(directory, { mode: 0o700 }); }
   catch (error) {
@@ -34,7 +34,8 @@ export async function acquireStateLock(path) {
     const owner = await lockOwner(path);
     throw new Error(`state_locked: ${path}; owner PID ${owner?.pid ?? 'unknown'} on ${owner?.hostname ?? 'unknown'}. Inspect ${directory} before removing a stale lock.`);
   }
-  const owner = { pid: process.pid, hostname: hostname(), startedAt: new Date().toISOString(), instanceId: randomUUID() };
+  const owner = { pid: process.pid, hostname: hostname(), startedAt: new Date().toISOString(), instanceId: randomUUID(),
+    ...(parentInstance ? { parentInstance } : {}) };
   try { await writeFile(join(directory, 'owner.json'), JSON.stringify(owner), { mode: 0o600 }); }
   catch (error) { await rm(directory, { recursive: true, force: true }); throw error; }
   return { owner, async release() {

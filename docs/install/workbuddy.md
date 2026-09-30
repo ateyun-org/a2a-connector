@@ -89,7 +89,7 @@ sh scripts/install-connector.sh repair --host workbuddy --relay wss://dsh-relay.
 
 ## WorkBuddy 故障恢复
 
-`Not logged in` 也可能表示 PID 文件不存在、进程已退出，或非交互路径没有 settings 文件；不能单凭这条输出断定凭据失效。先按[通用恢复顺序](shared.md#兑换失败重复申请与安全恢复)停止同一状态路径的进程，并检查是否已有可用凭据。交互式路径可先执行 `workbuddy-a2a stop`；仍要用 `pgrep -af 'vendor/connector/cli.js'` 核对是否有原生 CLI 或旧包进程。
+`Not logged in` 也可能表示 PID 文件不存在、进程已退出，或非交互路径没有 settings 文件；不能单凭这条输出断定凭据失效。先按[通用恢复顺序](shared.md#兑换失败重复申请与安全恢复)停止同一状态路径的进程，并检查是否已有可用凭据。交互式路径可先执行 `workbuddy-a2a stop`；仍要用 `pgrep -fl '^a2a-[0-9a-f]{8}-'` 核对是否有原生 CLI 或旧包进程。
 
 完成停进程和凭据检查后，可以只查看文件名/权限，并归档**已确认失效**的 pending；不要用 `cat`、`jq`、`grep` 展示凭据内容，也不要整目录上传：
 

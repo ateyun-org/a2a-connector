@@ -59,7 +59,18 @@ agents:
 
 这里的 `storePath`、`agents` 与旧 `dsh-a2a` 配置含义相同；迁移时沿用**原有** `storePath` 可保留会话索引。不填 `storePath` 时，默认写在 Connector `state` 路径旁的 `.conversations.json` 文件。出站访问 Relay 自动读取同一条目的配对状态，若原先显式使用其他状态文件，可设置 `connectorState`。直接访问其他 A2A 服务时，`agents` 项仍可使用旧版 `url`、`tokenEnv`、`apiKeyEnv`、`allowHttp`、`allowedOrigins` 等字段。`agents` 未配置时不注册出站工具。
 
-出站请求的 `requestTimeoutMs` 默认是 `600000`（10 分钟），可在同一 `config` 中覆盖；它限制每次 HTTP 请求，不限制任务总运行时间。DSH 发送时要求远端立即返回任务 ID，之后持续用 `GetTask` 轮询。超长任务可先用 `a2a_send` 取得 `conversationId`，稍后用 `a2a_task` 查询，避免让一次 Subagent 调用一直等待；Subagent 的父会话若中止，当前实现会尝试取消远端任务。远端若把整个超长任务压在首次 `SendMessage` 中执行，任何固定超时最终都可能失效，需要远端改为尽快返回任务 ID。Relay 默认等待 9 分钟；已有生产配置若写了 `relay.timeout`，也要单独更新，并确保公网反向代理对 `/agents/` 的响应读取超时至少 10 分钟。若仍收到 `504 agent_timeout`，请求可能已经投递，先核对现有任务与会话，不要直接重复提交：已取得 `conversationId` 时用 `a2a_task`；首次发送尚未返回 ID 时，本地不会有会话记录，只能借助远端任务列表或远端自身的会话查询。若远端对多轮续聊返回 `TASK_STATE_REJECTED`，使用新的会话并在消息中给出完整任务与绝对路径；延长 HTTP 超时不会改变远端的任务状态约束。
+出站请求 `requestTimeoutMs` 默认 600000 ms（10 分钟）。Relay HTTP 等待默认 9 分钟；推荐保持 **Relay 等待 < Connector HTTP 超时 < 公网反代读取超时**，例如 9 / 10 / 11 分钟。9 < 10 本身是正确顺序，不代表超时配置有误。Relay 额外以 `processingTimeout`（默认 30 分钟）保留首次派发的迟到响应，并以 `requestRetention`（默认 24 小时）保存查询/去重记录；不是取消远端任务的时间。Relay 启动校验 `timeout < processingTimeout < requestRetention`。各节点无法自动获知对方和反代的配置，需一起核对。
+
+Subagent 总等待默认 `taskTimeoutMs: 1800000`，从派发时开始计时；到期尽力请求取消并报告超时。轮询从 `pollIntervalMs`（默认 1000 ms）指数退避至 `maxPollIntervalMs`（默认 30000 ms），带抖动；429 按 `Retry-After` 进入该目标的本地冷却，停止当前轮询，不自动重发消息。远端仍应及时返回 taskId；`returnImmediately` 是请求选项，不能保证远端遵守。Push capability 只表示对端支持回调，当前尚未安装可鉴权回调通道。
+
+`a2a_send` 在 HTTP 派发前保存 `conversationId`、稳定 `messageId` 和 `relayRequestId`。内联完成的 Task 直接返回去重后的正文；工具保留数字 `state`，并增加 `stateName`。若返回 `dispatchState: unknown`（如 504/断网），按以下步骤处理：
+
+1. 从返回值取得 `conversationId`；调用中止未展示返回值时，用 `a2a_conversations` 找到待派发/未知记录。
+2. 调用 `a2a_reconcile({conversation_id: "..."})`。新版 Relay 可返回迟到的 Task 或 Message 正文，不需要再次发送。旧 Relay 仅在已知 contextId 且远端 history 包含该 messageId 时，才可能通过 ListTasks 匹配。
+3. 换 DSH session 后，显式调用 `a2a_conversations({include_previous_sessions: true})` 和 `a2a_reconcile({conversation_id: "...", include_previous_sessions: true})` 进行只读查询。历史查询不转移所有权；续聊/取消仍需要原 session。这个 store 是同一本机 profile 的共享查询边界，多用户应使用不同 storePath/凭据。
+4. `outcome: unknown`、空列表、404、过期索引都**不能证明未执行**，不自动重发。`safeToResubmit` 保持 false；应继续对账或核对远端执行记录。需要显式幂等键时，`a2a_send` 可带 `message_id`，同键只能用于同一派发和同一内容；本地已知键只对账，新版 Relay 也会去重。新生成的 messageId 是新派发，不按正文自动合并。
+
+会话索引在写入时清理超过 30 天的终态记录，并限制为 4096 条；运行/未知记录不自动删除，全部占满时拒绝新派发并要求先对账。启动会查询新版 Relay 的 `/pairing/targets` 并把未授权/离线目标写入近期诊断，`a2a_agents` 也会刷新目标授权和 Card 状态。`available` 仅代表出站 Card 读取；`targetTunnelOnline` 是远端隧道快照，本机入站健康需调用 `a2a_connector_status`。
 
 升级时把旧 `id: subagent-a2a` 条目下的 `storePath`、`agents`、`pollIntervalMs`、`requestTimeoutMs` 等配置移入此条目，然后移除旧条目和 `dsh-a2a` profile 依赖；若仍使用 `@deepseek-ai/dsh-tool-subagent` 包装工具，保留其 `provider: a2a:<agent-id>` 配置。先验证 `a2a_agents`、一次远端任务和续聊，再删除旧项目目录。不要删除原会话存储文件。
 

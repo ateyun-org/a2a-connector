@@ -12,7 +12,8 @@ const view = task => ({ id: task.id, contextId: task.contextId,
 /** Loopback A2A v1.0 text endpoint. createSession returns { run, cancel, dispose }. */
 export function createAdapterServer({ token, createSession, name = 'DSH Agent',
   description = DEFAULT_DESCRIPTION, skills = DEFAULT_SKILLS,
-  maxContexts = 128, maxTasks = 4096, idleMs = 3600000 }) {
+  maxContexts = 128, maxTasks = 4096, idleMs = 3600000, maxRequestBodyBytes = 1048576 }) {
+  if (!Number.isInteger(maxRequestBodyBytes) || maxRequestBodyBytes < 1 || maxRequestBodyBytes > 16777216) throw new Error('Invalid maxRequestBodyBytes');
   if (typeof token !== 'string' || token.length < 32) throw new Error('DSH adapter token must contain at least 32 characters');
   if (typeof description !== 'string' || !description.trim() || !Array.isArray(skills) ||
       skills.some(skill => !skill || typeof skill.id !== 'string' || !skill.id ||
@@ -49,7 +50,7 @@ export function createAdapterServer({ token, createSession, name = 'DSH Agent',
       const chunks = [];
       for await (const chunk of req) {
         size += chunk.length;
-        if (size > 1024 * 1024) { json(413, { error: 'body_too_large' }); return; }
+        if (size > maxRequestBodyBytes) { json(413, { error: 'body_too_large' }); return; }
         chunks.push(chunk);
       }
       body = JSON.parse(Buffer.concat(chunks).toString());

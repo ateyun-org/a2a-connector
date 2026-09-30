@@ -1,21 +1,34 @@
 """Hermes A2A Connector plugin."""
 
 import json
+import importlib.util
 import logging
 import os
 from pathlib import Path
 import signal
 import shutil
 import subprocess
+import sys
+import time
 
 
 def _settings():
     state = Path(os.environ.get("A2A_CONNECTOR_STATE", "~/.config/a2a-connector/hermes.json")).expanduser()
     node = os.environ.get("A2A_NODE_BINARY", "node")
-    script = Path(__file__).parent / "vendor" / "connector" / "cli.js"
+    script = Path(__file__).parent / "runner.js"
     return (node, str(script),
             os.environ.get("A2A_RELAY_URL", ""),
-            os.environ.get("A2A_LOCAL_URL", ""), state)
+            os.environ.get("A2A_LOCAL_URL", "auto"), state)
+
+
+def _runtime_env():
+    env = dict(os.environ)
+    env["A2A_HERMES_PYTHON"] = sys.executable
+    spec = importlib.util.find_spec("hermes_cli")
+    if spec and spec.origin:
+        root = str(Path(spec.origin).resolve().parent.parent)
+        env["PYTHONPATH"] = root + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    return env
 
 
 def _args():
@@ -34,16 +47,16 @@ def _args():
 def _pair(code):
     if not code:
         result = subprocess.run(_args() + ["-request-only"], check=True,
-                                capture_output=True, text=True, timeout=20)
+                                capture_output=True, text=True, timeout=30, env=_runtime_env())
         _start()
         return result.stdout.strip()
     if not code.startswith("pair_"):
         raise ValueError("Invalid pairing code")
     _, _, _, _, state = _settings()
-    env = dict(os.environ, A2A_PAIR_CODE=code)
-    subprocess.run(_args() + ["-enroll-only"], check=True, env=env,
-                   stdout=subprocess.DEVNULL, timeout=20)
     _stop()
+    env = dict(_runtime_env(), A2A_PAIR_CODE=code)
+    subprocess.run(_args() + ["-enroll-only"], check=True, env=env,
+                   stdout=subprocess.DEVNULL, timeout=30)
     _start()
     return json.dumps({"agentId": json.loads(state.read_text())["agentId"], "connected": True})
 
@@ -67,6 +80,8 @@ def _self_check_once():
         if not shutil.which(args[0]):
             raise OSError("Node executable not found; set A2A_NODE_BINARY to an executable Node.js 22+ path")
         if not Path(args[1]).is_file():
+            raise OSError("Bundled Connector CLI is missing; reinstall the complete Hermes plugin directory")
+        if not (Path(__file__).parent / "vendor/connector/cli.js").is_file():
             raise OSError("Bundled Connector CLI is missing; reinstall the complete Hermes plugin directory")
     except (OSError, ValueError) as error:
         logger.error("A2A Connector self-check failed: %s. Configure the active Gateway/profile environment "
@@ -104,7 +119,7 @@ def _start():
         os.fchmod(stderr.fileno(), 0o600)
         process = subprocess.Popen(args + ["-auto-pair"], stdin=subprocess.DEVNULL,
                                    stdout=subprocess.DEVNULL, stderr=stderr,
-                                   start_new_session=True)
+                                   start_new_session=True, env=_runtime_env())
     try:
         try:
             code = process.wait(timeout=0.2)
@@ -138,6 +153,15 @@ def _stop():
             os.kill(_pid(pid_path), signal.SIGTERM)
         except (ProcessLookupError, ValueError):
             pass
+        else:
+            # The wrapper releases the Connector state lock and local adapter before restart.
+            deadline = time.monotonic() + 8
+            runtime = Path(str(state) + ".a2a-runtime.json")
+            runner_lock = Path(str(state) + ".hermes-runner.lock")
+            while (runtime.exists() or runner_lock.exists()) and time.monotonic() < deadline:
+                time.sleep(0.05)
+            if runtime.exists() or runner_lock.exists():
+                raise subprocess.SubprocessError("Hermes Connector did not stop; inspect its PID and private log before restarting")
         pid_path.unlink(missing_ok=True)
 
 
@@ -164,6 +188,9 @@ def _command(raw_args):
 
 
 def register(ctx):
+    if os.environ.get("A2A_CONNECTOR_CHILD") == "1":
+        # Compatibility CLI sessions must not start another Connector recursively.
+        return
     _self_check_once()
     schema = {"name": "a2a_connector_pair",
               "description": "Show the pending pairing approval link and confirmation code. Optionally redeem a manual pair_ code.",

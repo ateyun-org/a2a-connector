@@ -16,7 +16,8 @@ export default {
     const script = join(dirname(fileURLToPath(import.meta.url)), 'vendor', 'connector', 'cli.js');
     const binary = config.binary || process.execPath;
     const state = config.state || join(homedir(), '.config', 'a2a-connector', 'openclaw.json');
-    let child, adapter, args, env, preparing;
+    let child, adapter, args, env, preparing, recentLogs = '';
+    const remember = chunk => { recentLogs = (recentLogs + chunk.toString()).slice(-65536); };
     const prepare = () => preparing ??= (async () => {
       const localToken = config.localTokenEnv ? process.env[config.localTokenEnv] : undefined;
       if (config.localTokenEnv && !localToken) throw new Error(`Missing local A2A token environment variable: ${config.localTokenEnv}`);
@@ -50,8 +51,10 @@ export default {
     const start = async () => {
       await prepare();
       if (child) return;
-      const active = spawn(binary, [...args, '-auto-pair'], { stdio: 'ignore', env });
+      const active = spawn(binary, [...args, '-auto-pair'], { stdio: ['ignore', 'pipe', 'pipe'], env });
       child = active;
+      active.stdout.on('data', remember);
+      active.stderr.on('data', remember);
       active.once('error', error => { api.logger?.error?.(`A2A Connector failed: ${error.message}`); if (child === active) child = undefined; });
       active.once('exit', () => { if (child === active) child = undefined; });
     };
@@ -74,6 +77,15 @@ export default {
         await stopChild();
         await adapter?.close();
         adapter = undefined; preparing = undefined; args = undefined; env = undefined;
+      },
+    });
+    api.registerTool({
+      name: 'a2a_connector_status', description: 'Inspect Connector process and inbound WSS tunnel health with recent bounded logs.',
+      parameters: { type: 'object', properties: {}, additionalProperties: false },
+      async execute() {
+        await prepare();
+        const { stdout } = await run(binary, [...args, '-status'], { timeout: 10000, env });
+        return { content: [{ type: 'text', text: JSON.stringify({ ...JSON.parse(stdout), recentLogs: recentLogs.slice(-8192) }) }] };
       },
     });
     api.registerTool({

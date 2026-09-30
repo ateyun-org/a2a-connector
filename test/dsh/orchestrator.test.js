@@ -116,7 +116,7 @@ test('registers a DSH provider and exposes its purpose to the controller', async
   assert.equal(providers[0].name, 'a2a:coder');
   assert.equal(providers[0].capabilities.depthLimit, false);
   assert.deepEqual(tools.map(tool => tool.name),
-    ['a2a_agents', 'a2a_send', 'a2a_task', 'a2a_cancel', 'a2a_conversations']);
+    ['a2a_agents', 'a2a_send', 'a2a_task', 'a2a_cancel', 'a2a_conversations', 'a2a_reconcile']);
   assert.match(tools[0].description, /coder: Reviews Go and Node.js code/);
   assert.match(tools[1].description, /coder: Reviews Go and Node.js code/);
   const [agent] = await a2a.listAgents();
@@ -238,4 +238,134 @@ test('Relay not_controller stays readable when a controller is revoked during ta
   const outcome = await a2a.waitForResult(conversation, { status: { state: 'TASK_STATE_WORKING' } });
   assert.equal(outcome.stopReason, 'error');
   assert.match(outcome.diagnostic, /not_controller.*pair\/list/);
+});
+
+test('a2a_send returns inline completed output once without duplicate artifact text', async () => {
+  taskState = 'TASK_STATE_COMPLETED';
+  const tools = [];
+  installOutbound({ subagents: { registerProvider() {} }, tools: { register(tool) { tools.push(tool); } } }, config);
+  const result = await tools.find(tool => tool.name === 'a2a_send').execute({ agent_id: 'coder', message: 'Inline result' },
+    { agent: { session: { id: 'inline-parent' } }, signal: new AbortController().signal });
+  const value = JSON.parse(result.text);
+  assert.equal(value.stateName, 'completed');
+  assert.deepEqual(value.response.map(part => part.content.value), ['done', 'result']);
+});
+
+test('dispatch is journaled before HTTP, and 504 recovery never resends or transfers historical ownership', async () => {
+  const storePath = join(directory, 'unknown.json');
+  let sends = 0, relayRequestId, messageId;
+  const settings = { ...config, storePath, connectorState: join(directory, 'missing.json'),
+    agents: [{ id: 'coder', card: 'https://relay.example/agents/coder/.well-known/agent-card.json' }] };
+  const fetchImpl = async (input, init = {}) => {
+    const url = String(input);
+    if (url.includes('agent-card')) return new Response(JSON.stringify({ name: 'Coder', supportedInterfaces: [{
+      url: 'https://relay.example/agents/coder/rpc', protocolBinding: 'JSONRPC', protocolVersion: '1.0' }] }),
+      { headers: { 'content-type': 'application/json' } });
+    if (url.includes('/relay/requests/')) return new Response(JSON.stringify({ state: 'completed', forwarded: true,
+      responseStatus: 200, responseBody: JSON.stringify({ jsonrpc: '2.0', id: 1, result: { task: {
+        id: 'recovered-task', contextId: 'recovered-context', status: { state: 'TASK_STATE_COMPLETED', message: {
+          role: 'ROLE_AGENT', parts: [{ text: 'Recovered late output' }] } }, artifacts: [] } } }) }),
+      { headers: { 'content-type': 'application/json' } });
+    sends++;
+    const saved = JSON.parse(await (await import('node:fs/promises')).readFile(storePath, 'utf8')).conversations[0];
+    assert.equal(saved.dispatchState, 'pending');
+    assert.ok(saved.id);
+    relayRequestId = init.headers.get('X-Relay-Request-Id');
+    messageId = init.headers.get('Idempotency-Key');
+    assert.equal(saved.relayRequestId, relayRequestId);
+    assert.equal(saved.messageId, messageId);
+    return new Response(JSON.stringify({ error: 'agent_timeout', relayRequestId, forwarded: true }), { status: 504 });
+  };
+  const a2a = new A2AOrchestrator(settings, { fetchImpl });
+  const sent = await a2a.send({ agentId: 'coder', parentId: 'old-session', messageId: 'recover-this', content: [{ type: 'text', text: 'work' }] });
+  assert.equal(sent.conversation.dispatchState, 'unknown');
+  assert.equal(sent.response, undefined);
+  assert.match(sent.diagnostic, /outcome unknown/);
+  await assert.rejects(() => a2a.send({ agentId: 'coder', parentId: 'old-session', conversationId: sent.conversation.id,
+    content: [{ type: 'text', text: 'work again' }] }), /a2a_reconcile/);
+  const restarted = new A2AOrchestrator(settings, { fetchImpl });
+  assert.equal((await restarted.listConversations('new-session')).length, 0);
+  assert.equal((await restarted.listConversations('new-session', { includePreviousSessions: true })).length, 1);
+  await assert.rejects(() => restarted.reconcile(sent.conversation.id, 'new-session'), /not found/);
+  const recovered = await restarted.reconcile(sent.conversation.id, 'new-session', { includePreviousSessions: true });
+  assert.equal(recovered.response.id, 'recovered-task');
+  assert.equal(recovered.historical, true);
+  assert.equal(recovered.safeToResubmit, false);
+  assert.equal((await restarted.store.get(sent.conversation.id)).dispatchState, 'unknown');
+  await assert.rejects(() => restarted.cancel(sent.conversation.id, 'new-session'), /not found/);
+  const duplicate = await restarted.send({ agentId: 'coder', parentId: 'old-session', messageId, content: [{ type: 'text', text: 'work' }] });
+  assert.equal(duplicate.response.id, 'recovered-task');
+  assert.equal(sends, 1);
+  await assert.rejects(() => restarted.send({ agentId: 'coder', parentId: 'old-session', messageId, content: [{ type: 'text', text: 'changed' }] }), /different content/);
+});
+
+test('missing remote evidence remains unknown rather than implying permission to resend', async () => {
+  const a2a = new A2AOrchestrator({ ...config, storePath: join(directory, 'unrecoverable.json') });
+  await a2a.store.put({ id: 'unrecoverable', agentId: 'coder', parentId: 'owner', contextId: '',
+    dispatchState: 'unknown', messageId: 'lost', state: 0, updatedAt: new Date().toISOString() });
+  const result = await a2a.reconcile('unrecoverable', 'owner');
+  assert.equal(result.outcome, 'unknown');
+  assert.equal(result.safeToResubmit, false);
+});
+
+test('total wait timeout cancels a task and settles the provider result', async () => {
+  taskState = 'TASK_STATE_WORKING';
+  const a2a = new A2AOrchestrator({ ...config, taskTimeoutMs: 30, pollIntervalMs: 10 });
+  const run = await a2a.startRun('coder', { parent: { session: { id: 'timeout-owner' } },
+    prompt: [{ type: 'text', text: 'never finish' }], signal: new AbortController().signal });
+  const result = await run.result;
+  assert.equal(result.stopReason, 'error');
+  assert.match(result.diagnostic, /task timeout/);
+  assert.equal(taskState, 'TASK_STATE_CANCELED');
+  await run.dispose();
+});
+
+test('429 stops polling with Retry-After diagnostics and does not resend', async () => {
+  taskState = 'TASK_STATE_WORKING';
+  let sends = 0, gets = 0;
+  const a2a = new A2AOrchestrator({ ...config, pollIntervalMs: 10 }, { fetchImpl: async (input, init) => {
+    const method = init.body ? JSON.parse(init.body).method : '';
+    if (method === 'SendMessage') sends++;
+    if (method === 'GetTask') { gets++; return new Response('{}', { status: 429, headers: { 'Retry-After': '60' } }); }
+    return fetch(input, init);
+  } });
+  const run = await a2a.startRun('coder', { parent: { session: { id: 'limited-owner' } },
+    prompt: [{ type: 'text', text: 'limited' }], signal: new AbortController().signal });
+  const result = await run.result;
+  assert.equal(result.stopReason, 'error');
+  assert.match(result.diagnostic, /retry after 60 seconds/);
+  assert.equal(sends, 1); assert.equal(gets, 1);
+  await run.dispose();
+});
+
+test('configured unauthorized Relay targets are diagnosed by the caller-scoped inventory', async () => {
+  let cardReads = 0;
+  const a2a = new A2AOrchestrator({ ...config, connectorState: join(directory, 'not-enrolled.json'),
+    agents: [{ id: 'denied', card: 'https://relay.example/agents/denied/.well-known/agent-card.json' },
+      { id: 'allowed', card: 'https://relay.example/agents/allowed/.well-known/agent-card.json' }] }, { fetchImpl: async input => {
+    if (String(input).includes('/pairing/targets')) return new Response(JSON.stringify({ targets: [{ agentId: 'allowed', online: true }] }));
+    cardReads++;
+    return new Response(JSON.stringify({ name: 'Allowed', supportedInterfaces: [{ url: 'https://relay.example/agents/allowed/rpc', protocolBinding: 'JSONRPC', protocolVersion: '1.0' }] }));
+  } });
+  const results = await a2a.listAgents();
+  assert.equal(results[0].authorized, false); assert.equal(results[0].available, false);
+  assert.match(results[0].diagnostic, /not authorized/);
+  assert.equal(results[1].targetTunnelOnline, true);
+  assert.equal(results[1].availabilityScope, 'outbound_agent_card');
+  assert.equal(cardReads, 1);
+});
+
+test('Relay duplicate receipt replaces the preallocated handle before recording unknown status', async () => {
+  const actualId = 'f'.repeat(32);
+  const settings = { ...config, storePath: join(directory, 'duplicate-receipt.json'), connectorState: join(directory, 'not-enrolled.json'),
+    agents: [{ id: 'coder', card: 'https://relay.example/agents/coder/.well-known/agent-card.json' }] };
+  const a2a = new A2AOrchestrator(settings, { fetchImpl: async input => {
+    if (String(input).includes('agent-card')) return new Response(JSON.stringify({ name: 'Coder', supportedInterfaces: [{ url: 'https://relay.example/agents/coder/rpc', protocolBinding: 'JSONRPC', protocolVersion: '1.0' }] }));
+    return new Response(JSON.stringify({ error: 'agent_timeout', relayRequestId: actualId, forwarded: true }),
+      { status: 504, headers: { 'X-Relay-Request-Id': actualId, 'X-Relay-Deduplicated': 'true' } });
+  } });
+  const { conversation } = await a2a.send({ agentId: 'coder', parentId: 'receipt-parent', content: [{ type: 'text', text: 'repeat' }] });
+  assert.equal(conversation.relayRequestId, actualId);
+  assert.equal(conversation.forwarded, true);
+  assert.equal((await a2a.store.get(conversation.id)).relayRequestId, actualId);
 });

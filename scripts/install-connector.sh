@@ -127,9 +127,11 @@ if [ "$HOST" = workbuddy ]; then LOG_FILE="$STATE_DIR/$WB_PREFIX.stderr.log"
 else LOG_FILE="$STATE.setup.log"; fi
 PROCESS_NAME=$(node - "$STATE" <<'NODE'
 const { createHash } = require('node:crypto');
-const { basename } = require('node:path');
+const { basename, dirname, join } = require('node:path');
+const { realpathSync } = require('node:fs');
 const path = process.argv[2];
-const hash = createHash('sha256').update(path).digest('hex').slice(0, 8);
+const canonical = (() => { try { return realpathSync(path); } catch { return join(realpathSync(dirname(path)), basename(path)); } })();
+const hash = createHash('sha256').update(canonical).digest('hex').slice(0, 8);
 const label = basename(path).replace(/\.json$/, '').replace(/[^A-Za-z0-9_-]/g, '-').slice(0, 32);
 console.log(`a2a-${hash}-${label}`);
 NODE

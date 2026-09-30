@@ -1,3 +1,4 @@
+import { canonicalState } from '../src/state-lock.js';
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -223,7 +224,7 @@ test('shell installer preflights the origin and reuses one pending request', asy
   assert.match(first.stdout, /ABC123/);
   assert.match(second.stdout, /ABC123/);
   assert.equal(created, 1);
-  const title = `a2a-${createHash('sha256').update(state).digest('hex').slice(0, 8)}-state`;
+  const title = `a2a-${createHash('sha256').update(await canonicalState(state)).digest('hex').slice(0, 8)}-state`;
   const duplicate = spawn(process.execPath, ['-e',
     'process.title=process.argv[1]; console.log("ready"); setInterval(() => {}, 1000)', title],
   { stdio: ['ignore', 'pipe', 'pipe'] });

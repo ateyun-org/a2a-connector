@@ -24,7 +24,9 @@ If a local A2A origin is already running, `sh scripts/install-connector.sh insta
 
 OpenClaw hosts can run `node scripts/install-openclaw.mjs`: it detects the host's A2A capabilities and installs only the Connector when native A2A exists, or includes the compatibility service when absent. The plugin defaults to `local: "auto"` and rechecks capabilities at startup. Disabled/broken native A2A requires repair rather than installing a second service. See [OpenClaw installation](docs/install/openclaw.md) for native peer authentication and older CLI requirements.
 
-DSH hosts can use one `dsh-a2a-connector` entry, which starts its bundled native A2A service and Relay Connector together and registers outbound A2A delegation when `agents` are configured; see [DSH installation and service setup](docs/install/dsh.md). Hermes and WorkBuddy still need a real local Agent Card and A2A endpoint. Start the standalone Connector with automatic pairing:
+Hermes hosts can use `python3 scripts/install-hermes.py --hermes-python /path/to/hermes/.venv/bin/python`. It inspects the actual host installation and includes compatibility A2A only when native A2A is absent. The plugin defaults to `A2A_LOCAL_URL=auto`, reuses native A2A when available, and uses isolated quiet CLI sessions otherwise. See [Hermes installation](docs/install/hermes.md) for profiles, native authentication and older CLI requirements.
+
+DSH hosts can use one `dsh-a2a-connector` entry, which starts its bundled native A2A service and Relay Connector together and registers outbound A2A delegation when `agents` are configured; see [DSH installation and service setup](docs/install/dsh.md). WorkBuddy still needs a real local Agent Card and A2A endpoint. Start the standalone Connector with automatic pairing:
 
 ```bash
 node src/cli.js -auto-pair \
@@ -32,7 +34,7 @@ node src/cli.js -auto-pair \
   -local http://127.0.0.1:9900
 ```
 
-The CLI shows the approval page, Agent ID, and six-character confirmation code. An administrator checks **both** at `https://dsh-relay.chuanbota.com/pair` and approves the request. Approval creates a Relay record, which can remain offline while the Connector fetches a separate `pair_` code from `/pairing/status`, redeems it **once** at `/register`, saves the Agent credential, and opens the WSS tunnel. A pending request survives Connector restarts until its ten-minute expiry. Run only **one** Connector process for a given state path during pairing; two processes can race to redeem the same code.
+The CLI shows the approval page, Agent ID, and six-character confirmation code. An administrator checks **both** at `https://dsh-relay.chuanbota.com/pair` and approves the request. Approval creates a Relay record, which can remain offline while the Connector fetches a separate `pair_` code from `/pairing/status`, redeems it **once** at `/register`, saves the Agent credential, and opens the WSS tunnel. A pending request survives Connector restarts until its ten-minute expiry. Run only **one** Connector process for a given state path during pairing; the CLI now rejects a second owner with `state_locked` before networking. Crash locks require inspection before removal.
 
 CLI options (also supported by the copies in `plugins/*/vendor/connector/cli.js`):
 
@@ -44,6 +46,8 @@ CLI options (also supported by the copies in `plugins/*/vendor/connector/cli.js`
 | `-request-only` | Reuse/create a pending request, print public approval data as JSON, and exit without connecting. |
 | `-enroll-only` | With `-pair-code` or `A2A_PAIR_CODE`, redeem exactly once, save the credential, and exit without connecting. |
 | `-pair-code <pair_...>` | Single-use machine redemption code; avoid command history and prefer `A2A_PAIR_CODE` in a private process environment. This is **not** the six-character confirmation code. |
+| `-status` | Read process/tunnel health for `-state` as JSON, without exposing credentials or requiring network arguments. |
+| `-max-request-body <bytes>` | Limit incoming request buffering to 1–16777216 bytes; default 16 MiB. DSH's bundled adapter uses 1 MiB. |
 | `-state <private-file>` | Enrollment path; pending request uses the same path plus `.pending`. |
 | `-agent-id <id>` | Optional fixed public ID for a new pairing; re-pairing an existing ID rotates its credential. |
 | `-local-token <secret>` | Bearer token for the local origin; prefer `A2A_LOCAL_TOKEN` in the process environment. |
@@ -52,7 +56,7 @@ CLI options (also supported by the copies in `plugins/*/vendor/connector/cli.js`
 
 For the manual flow, run `-request-only` first, wait for administrator approval, then have **one** process perform redemption. The automatic `-auto-pair` path handles that redemption without revealing the machine code. See [pairing recovery](docs/install/shared.md#兑换失败重复申请与安全恢复) before retrying a `401` or `409`.
 
-The credential and pending request ID are stored in private `0600` files under the OS user config directory; use `-state` to choose another path. The default path matches the earlier Go CLI. Set `A2A_LOCAL_TOKEN` if the local Agent requires a Bearer token. The Connector pings every 25 seconds and reconnects with exponential backoff. Bodies are capped at 16 MiB and buffered; SSE streaming is not yet implemented.
+The credential and pending request ID are stored in private `0600` files under the OS user config directory; use `-state` to choose another path. The default path matches the earlier Go CLI. Set `A2A_LOCAL_TOKEN` if the local Agent requires a Bearer token. The canonical state path owns an atomic `<state>.lock` directory. Its `owner.json` identifies the process without credentials; normal shutdown releases the lock, while crash leftovers fail closed. The private `<state>.status.json` holds a token-free health snapshot, refreshed every 15 seconds. `-status` combines snapshot freshness, instance identity and process liveness; DSH/OpenClaw expose it as `a2a_connector_status` with a bounded recent log buffer. Agent Card availability is outbound HTTPS reachability and does not establish inbound WSS health. The Connector pings every 25 seconds and reconnects with exponential backoff. Bodies are capped at 16 MiB and buffered; SSE streaming is not yet implemented.
 
 ## Host plugins
 

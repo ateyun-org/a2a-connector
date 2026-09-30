@@ -42,19 +42,20 @@
 
 Connector 首次启动后会显示审批 URL、Agent ID 和六位确认码。把这三项交给用户/Relay 管理员；管理员应以 **Agent ID + 确认码** 为准，不能只看显示名（同名 Agent 可有多个）。**不要索取 Relay 管理员 token，也不要代替管理员批准。**等待审批的请求保存十分钟；批准后兑换码同样有独立的十分钟有效期。普通自动流程会轮询、兑换、写入凭据并连接，用户无需手动取得 `pair_` 码。
 
-**同一状态文件只允许一个 Connector 进程轮询和兑换。**重复启动可能让两个进程争抢一次性码：一个成功、另一个收到 `401 invalid_pairing_code`。凭据文件属于敏感数据，不能打印、复制到不安全位置或提交。正常等待和断线重连时保留状态文件；只有确认进入下述故障恢复分支、且已停止所有使用该状态文件的进程后，才归档失效 `.pending`。
+**同一状态文件只允许一个 Connector 进程轮询和兑换。**CLI 会将状态路径解析为规范绝对路径，再原子创建 `<state>.lock` 目录；第二个进程会在网络操作前以 `state_locked` 退出。锁内 `owner.json` 只保存 PID、主机名、启动时间和实例 ID，不含凭据。正常退出自动释放；崩溃遗留的锁不会自动抢占，先核实原进程已停止，再删除该锁目录。`-request-only` 可只读查看已有凭据/申请；创建新申请或兑换仍需持锁。旧版 CLI 没有此保护，升级时先停止旧进程。凭据文件属于敏感数据，不能打印、复制到不安全位置或提交。正常等待和断线重连时保留状态文件；只有确认进入下述故障恢复分支、且已停止所有使用该状态文件的进程后，才归档失效 `.pending`。
 
 ### 兑换失败、重复申请与安全恢复
 
 | 现象 | 含义与处理 |
 | --- | --- |
 | `401` / `invalid_pairing_code` | 兑换码无效、已过期或已被另一个进程消耗；Relay 不区分这些原因。先检查是否已有成功的凭据/隧道，勿直接再兑换同一码。当前自动 CLI 会停止并保留 `.pending`，供安全恢复。 |
+| `state_locked` | 同一规范状态路径已有运行/兑换者，或留下崩溃锁。检查 `<state>.lock/owner.json` 和进程，确认停止后才移除遗留锁；不要重配对。 |
 | `409` / `pairing_already_pending` | Relay 已有同 Agent ID 的待审批请求；当前自动 CLI 会停止并提示检查现有请求与进程，不会无限重试。 |
 | 审批页有离线记录 | 批准只创建/更新记录；还要完成兑换、落盘和连接。按下文检查本机凭据是否存在、是否有连接。 |
 
 恢复顺序：
 
-1. 停止使用**同一状态路径**的全部 Connector 进程；用 `pgrep -af 'vendor/connector/cli.js'` 核对是否还有原生 CLI 或旧包进程。只结束已核实路径和命令行的进程。不要在旧进程仍可能写文件时移动状态。
+1. 停止使用**同一状态路径**的全部 Connector 进程；先执行 `node src/cli.js -state /absolute/path/to/state.json -status`（插件包可使用 `vendor/connector/cli.js`），核对状态锁中的 PID；再用 `pgrep -fl '^a2a-[0-9a-f]{8}-'` 核对当前 CLI。旧版未改名进程还应按完整 argv 检查。只结束已核实路径和命令行的进程。不要在旧进程仍可能写文件时移动状态。
 2. 先看状态文件**是否存在及权限**，不要输出正文。若凭据文件已存在，优先用原有身份启动单个 Connector 并验证连接，不要重新配对。若兑换返回成功后落盘被中断，状态目录可能留下 `.state-*` 临时文件；它可能包含完整 token。不要删除或贴出内容。只有在确认它包含完整 `agentId` 与 `token`、其身份匹配本次配对、目标凭据文件不存在且没有并发进程时，才在私有目录内以 `0600` 权限将它转正为目标凭据文件；否则保留供授权管理员排查。
 3. 若确认没有可用凭据，且 `.pending` 指向已消耗/失效的请求，**先将它移到同一私有目录的备份名**（保留权限），再启动**一个** Connector 申请新请求。无固定 `-agent-id` 时会生成新 ID；若必须沿用旧 ID，先确认 Relay 没有该 ID 的活跃待审批请求，且重新批准会轮换旧凭据。当前自动 CLI 在进程内可能持续复用旧 ID；停止并重新启动后再核对实际显示的 Agent ID/确认码。不要再次批准旧请求。
 4. 管理员只批准新的 **Agent ID + 六位确认码** 组合。确认新连接在线后，按管理员流程清理遗留的离线记录；不要将页面上同名记录当成同一身份。
@@ -69,11 +70,11 @@ Connector 首次启动后会显示审批 URL、Agent ID 和六位确认码。把
 2. **本机 Agent**：从 Connector 主机请求 `<local origin>/.well-known/agent-card.json`，确认返回 200 且 JSON 有非空 `name`；再核对本机认证变量可由该进程读取。
 3. **宿主加载**：确认所选宿主插件已启用，且其配对工具或 CLI 命令可调用；具体命令见对应宿主文档。
 4. **配对申请**：取得当前请求的 URL、Agent ID、六位确认码；过期后检查或创建新请求，不要在正常等待时删除状态文件。
-5. **批准与连线**：管理员核对 Agent ID 和确认码并批准后，核对本机已保存凭据。`status: paired` 或 `Logged in` 不能单独证明 Relay 连接仍活跃。用 `pgrep -af 'vendor/connector/cli.js'` 查看进程并核对 vendor 路径；`ps -p <PID> -o pid=,args=` 在某些沙箱对活进程可能返回空，不要单凭它判断。用 `lsof -nP -a -p <PID> -iTCP -sTCP:ESTABLISHED` 确认该进程有到**预期 Relay 地址**的连接，在审批页确认对应 Agent 在线，最后发一个授权的实际 A2A 请求验证转发。连接问题先检查 WSS 地址、本机 origin、认证变量和 Node 路径；不要直接重配对。
+5. **批准与连线**：管理员核对 Agent ID 和确认码并批准后，核对本机已保存凭据。`status: paired` 或 `Logged in` 不能单独证明 Relay 连接仍活跃。先用 `a2a_connector_status`（DSH/OpenClaw）或 `node src/cli.js -state /absolute/path/to/state.json -status` 查看 `running`、`tunnelOnline`、最近连接时间与错误，再用 `pgrep -fl '^a2a-[0-9a-f]{8}-'` 查看当前 CLI；进程名为 `a2a-<sha256(规范状态路径)[0:8]>-<文件名标签>`，改名后不能靠匹配 `cli.js` 找到它。锁中的 PID 和路径比进程名更准确；`ps -p <PID> -o pid=,args=` 在某些沙箱对活进程可能返回空，不要单凭它判断。用 `lsof -nP -a -p <PID> -iTCP -sTCP:ESTABLISHED` 确认该进程有到**预期 Relay 地址**的连接，在审批页确认对应 Agent 在线，最后发一个授权的实际 A2A 请求验证转发。连接问题先检查 WSS 地址、本机 origin、认证变量和 Node 路径；不要直接重配对。
 
 ## 通道边界
 
-本 Connector 接收 Relay 转发到本机 A2A origin 的入站流量。获授权的调用者可经 Relay 对该 origin 发送 `GET`、`POST`、`PUT`、`DELETE`、`PATCH` 请求及任意路径；仅安装 Connector 不会限制 origin 的路由。把 origin 限定在 `127.0.0.1`，并由本机 A2A 服务执行身份、方法和路径检查。若本机接口启用 Bearer 认证，使用足够长的随机 token 并通过进程环境传给 Connector。Connector 对请求/响应正文的上限为 16 MiB，当前缓冲整个正文，不支持 SSE 流式传输；普通断线会自动重连。若主机设置了 HTTP 代理，仍需从 Connector 所在进程环境实测本机 `127.0.0.1` origin 可达；当前 Connector 没有显式的代理或 `NO_PROXY` 配置逻辑。
+本 Connector 接收 Relay 转发到本机 A2A origin 的入站流量。获授权的调用者可经 Relay 对该 origin 发送 `GET`、`POST`、`PUT`、`DELETE`、`PATCH` 请求及任意路径；仅安装 Connector 不会限制 origin 的路由。把 origin 限定在 `127.0.0.1`，并由本机 A2A 服务执行身份、方法和路径检查。若本机接口启用 Bearer 认证，使用足够长的随机 token 并通过进程环境传给 Connector。Connector 默认请求/响应正文上限为 16 MiB；`-max-request-body <bytes>` 可缩小入站请求限额。DSH 内置 adapter 与其隧道默认统一为 1 MiB（`maxRequestBodyBytes`），当前缓冲整个正文，不支持 SSE 流式传输；普通断线会自动重连。若主机设置了 HTTP 代理，仍需从 Connector 所在进程环境实测本机 `127.0.0.1` origin 可达；当前 Connector 没有显式的代理或 `NO_PROXY` 配置逻辑。
 
 ## 完成检查
 

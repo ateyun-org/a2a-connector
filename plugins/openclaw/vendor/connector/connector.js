@@ -172,7 +172,10 @@ function replyError(socket, id, status) {
 export class Connector {
   constructor(config) {
     const { relay, local } = validateConfig(config);
-    this.config = { ...config, relay: relay.toString(), local: local.toString() };
+    const maxRequestBodyBytes = config.maxRequestBodyBytes ?? MAX_BODY;
+    if (!Number.isInteger(maxRequestBodyBytes) || maxRequestBodyBytes < 1 || maxRequestBodyBytes > MAX_BODY) throw new Error('maxRequestBodyBytes must be between 1 and 16777216');
+    this.config = { ...config, maxRequestBodyBytes, relay: relay.toString(), local: local.toString() };
+    this.reconnects = 0;
   }
 
   async discover(signal) {
@@ -193,7 +196,10 @@ export class Connector {
         await this.connectOnce(signal);
         delay = 1000;
       } catch (error) {
-        if (!signal?.aborted) console.warn(`A2A Connector: ${error.message}`);
+        if (!signal?.aborted) {
+          this.config.onStatus?.({ tunnelOnline: false, lastError: String(error.message).slice(0, 256) });
+          console.warn(`A2A Connector: ${error.message}`);
+        }
       }
       if (signal?.aborted) break;
       await new Promise(resolve => {
@@ -221,7 +227,11 @@ export class Connector {
       const onAbort = () => socket.terminate();
       signal?.addEventListener('abort', onAbort, { once: true });
       socket.on('pong', () => { alive = true; });
-      socket.on('open', () => { opened = true; });
+      socket.on('open', () => {
+        opened = true;
+        this.config.onStatus?.({ tunnelOnline: true, lastConnectedAt: new Date().toISOString(), reconnects: this.reconnects++, lastError: undefined });
+        console.log('A2A tunnel connected');
+      });
       socket.on('message', raw => {
         let frame;
         try { frame = JSON.parse(raw.toString()); } catch { socket.close(1002, 'invalid frame'); return; }
@@ -235,7 +245,7 @@ export class Connector {
             if (!item) break;
             const chunk = Buffer.from(frame.body || '', 'base64');
             item.size += chunk.length;
-            if (item.size > MAX_BODY) { pending.delete(frame.requestId); replyError(socket, frame.requestId, 413); }
+            if (item.size > this.config.maxRequestBodyBytes) { pending.delete(frame.requestId); replyError(socket, frame.requestId, 413); }
             else item.chunks.push(chunk);
             break;
           }
@@ -254,6 +264,7 @@ export class Connector {
       });
       socket.on('error', error => { if (!opened) reject(error); });
       socket.once('close', () => {
+        this.config.onStatus?.({ tunnelOnline: false, lastDisconnectedAt: new Date().toISOString() });
         clearInterval(heartbeat);
         signal?.removeEventListener('abort', onAbort);
         for (const controller of active) controller.abort();

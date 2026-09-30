@@ -29,6 +29,9 @@ export const Config = z.object({
   storePath: z.string(), connectorState: z.string(),
   pollIntervalMs: z.number().min(100).default(1000),
   requestTimeoutMs: z.number().min(1000).default(600000),
+  taskTimeoutMs: z.number().min(1000).default(1800000),
+  maxPollIntervalMs: z.number().min(100).default(30000),
+  maxRequestBodyBytes: z.number().min(1).max(16777216).default(1048576),
   agents: z.array(z.object({
     id: z.string().required(), purpose: z.string(), whenToUse: z.string(), notFor: z.string(),
     url: z.string(), card: z.string(), cardPath: z.string(),
@@ -46,23 +49,27 @@ export async function apply(ctx, config) {
     localToken = randomBytes(32).toString('hex');
     adapter = createAdapterServer({ token: localToken, name: config.name,
       description: config.description, skills: config.skills,
-      createSession: createDSHSessionFactory(ctx) });
+      createSession: createDSHSessionFactory(ctx), maxRequestBodyBytes: config.maxRequestBodyBytes ?? 1048576 });
     try {
       const port = await listenWithNextPort(adapter.server, config.port ?? 9900, config.portAttempts ?? 20);
       local = `http://127.0.0.1:${port}`;
     } catch (error) { await adapter.close(); throw error; }
   }
-  const args = [script, '-relay', config.relay, '-local', local, '-state', state];
+  const args = [script, '-relay', config.relay, '-local', local, '-state', state,
+    '-max-request-body', String(config.maxRequestBodyBytes ?? (adapter ? 1048576 : 16777216))];
   if (config.agentId) args.push('-agent-id', config.agentId);
   if (config.allowInsecure) args.push('-allow-insecure');
   const env = { ...process.env };
   if (adapter) env.A2A_LOCAL_TOKEN = localToken;
   else if (config.localTokenEnv) env.A2A_LOCAL_TOKEN = process.env[config.localTokenEnv] || '';
-  let child;
+  let child, outbound, recentLogs = '';
+  const remember = chunk => { recentLogs = (recentLogs + chunk.toString()).slice(-65536); };
   function start() {
     if (child) return;
-    const started = spawn(binary, [...args, '-auto-pair'], { stdio: 'ignore', env });
+    const started = spawn(binary, [...args, '-auto-pair'], { stdio: ['ignore', 'pipe', 'pipe'], env });
     child = started;
+    started.stdout.on('data', remember);
+    started.stderr.on('data', remember);
     started.once('error', () => { if (child === started) child = undefined; });
     started.once('exit', () => { if (child === started) child = undefined; });
   }
@@ -86,9 +93,19 @@ export async function apply(ctx, config) {
   }
   try {
     if (config.agents?.length) {
-      installOutbound(ctx, { ...config, connectorState: config.connectorState || state,
+      outbound = installOutbound(ctx, { ...config, connectorState: config.connectorState || state,
         storePath: config.storePath || `${state}.conversations.json` });
     }
+    ctx.tools.register(defineTool({
+      name: 'a2a_connector_status', description: 'Inspect this Connector process and inbound WSS tunnel health, plus recent bounded logs. Remote Agent Card availability is outbound only.',
+      parameters: {},
+      output: { schema: { type: 'object', additionalProperties: false, properties: { text: { type: 'string', required: true } } },
+        render: (_args, result) => [{ type: 'text', text: result.text }] },
+      async execute() {
+        const { stdout } = await run(binary, [...args, '-status'], { timeout: 10000, env });
+        return { text: JSON.stringify({ ...JSON.parse(stdout), recentLogs: recentLogs.slice(-8192) }) };
+      },
+    }));
     ctx.tools.register(defineTool({
       name: 'a2a_connector_pair',
       description: 'Show this Agent’s pending pairing request and approval code. Optional code supports manual pairing.',
@@ -112,6 +129,9 @@ export async function apply(ctx, config) {
     }));
     ctx.effect(() => {
       start();
+      void outbound?.validateTargets().then(values => {
+        for (const value of values) if (value.grantDiagnostic) remember(Buffer.from(value.grantDiagnostic + '\n'));
+      }).catch(() => remember(Buffer.from('Relay target validation unavailable\n')));
       return async () => { try { await stop(); } finally { await adapter?.close(); } };
     });
   } catch (error) { await adapter?.close(); throw error; }

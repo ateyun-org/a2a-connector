@@ -80,5 +80,5 @@ test('one DSH plugin entry registers inbound pairing and outbound A2A delegation
   });
   assert.deepEqual(providers, ['a2a:reviewer']);
   assert.deepEqual(tools, ['a2a_agents', 'a2a_send', 'a2a_task', 'a2a_cancel',
-    'a2a_conversations', 'a2a_connector_pair']);
+    'a2a_conversations', 'a2a_reconcile', 'a2a_connector_status', 'a2a_connector_pair']);
 });

@@ -6,7 +6,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 for (const plugin of ['openclaw', 'hermes', 'dsh', 'workbuddy']) {
   const vendor = join(root, 'plugins', plugin, 'vendor', 'connector');
   mkdirSync(vendor, { recursive: true });
-  for (const file of ['cli.js', 'connector.js']) copyFileSync(join(root, 'src', file), join(vendor, file));
+  for (const file of ['cli.js', 'connector.js', 'state-lock.js']) copyFileSync(join(root, 'src', file), join(vendor, file));
   writeFileSync(join(vendor, 'package.json'), '{"type":"module"}\n');
   if (plugin === 'hermes') {
     const modules = join(vendor, 'node_modules');

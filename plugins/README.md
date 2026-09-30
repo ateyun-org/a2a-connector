@@ -5,7 +5,7 @@ Choose a host from the [installation index](../AGENT_INSTALL.md). Shared pairing
 | Package     | Integration                                                                                                                                             |
 | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `openclaw`  | JavaScript plugin with `ws`; detects native A2A, and installs/loads CLI-backed compatibility A2A only when absent. No newer plugin SDK import or bundled OpenClaw is required. |
-| `hermes`    | Python hook/tool shim launching Node 22+; `ws` is vendored.                                                                                             |
+| `hermes`    | Python hook/tool shim launching Node 22+; detects native A2A and provisions quiet-CLI compatibility only when absent. `ws` is vendored. |
 | `dsh`       | One Cordis plugin starts the native DSH A2A service and Relay Connector together; configured `agents` add outbound A2A delegation. DSH SDKs stay in peer dependencies to share host instances. |
 | `workbuddy` | CLI, skill and Node 22 runtime declaration; the verified local CLI path installs `ws` with `npm ci --prefix plugins/workbuddy`.                          |
 
@@ -15,4 +15,4 @@ Run `npm ci` and `npm test` for SDK-independent Connector/package tests (includi
 
 WorkBuddy marketplace distribution still requires host review. The [current public CLI + Skill connector guide](https://open.workbuddy.cn/docs/connector) describes a submission package with root-level `connector-meta.json`, `cli.json`, `icon.svg`, and `skills/`. An inspected marketplace download used an `ai.workbuddy/` directory and an internal manifest; these may be different packaging stages. Test the actual upload, client discovery, and version gate before claiming GUI support. The documented local CLI route is in the [WorkBuddy installation guide](../docs/install/workbuddy.md); it connects an existing local origin to the Relay without installing a GUI connector or skill into WorkBuddy.
 
-Hermes shim checks: `python3 -m unittest discover -s test -p 'test_hermes.py'`. These require only the Python standard library and run in CI. They cover registration diagnostics, unpaired startup, private stderr/PID files, early child failure, and cleanup after PID-write failure.
+Hermes checks: `python3 -m unittest discover -s test -p 'test_hermes*.py'`. These require only the Python standard library and run in CI. They cover registration diagnostics, unpaired startup, private stderr/PID files, early child failure, cleanup after PID-write failure, native capability detection, task authentication and conditional installation. The default Node suite also tests the compatibility adapter, CLI session continuation, and actual Connector tunnel frames.

@@ -4,7 +4,7 @@ Choose a host from the [installation index](../AGENT_INSTALL.md). Shared pairing
 
 | Package     | Integration                                                                                                                                             |
 | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `openclaw`  | JavaScript plugin; host installs `ws` and `typebox`.                                                                                                    |
+| `openclaw`  | JavaScript plugin with `ws`; detects native A2A, and installs/loads CLI-backed compatibility A2A only when absent. No newer plugin SDK import or bundled OpenClaw is required. |
 | `hermes`    | Python hook/tool shim launching Node 22+; `ws` is vendored.                                                                                             |
 | `dsh`       | One Cordis plugin starts the native DSH A2A service and Relay Connector together; configured `agents` add outbound A2A delegation. DSH SDKs stay in peer dependencies to share host instances. |
 | `workbuddy` | CLI, skill and Node 22 runtime declaration; the verified local CLI path installs `ws` with `npm ci --prefix plugins/workbuddy`.                          |

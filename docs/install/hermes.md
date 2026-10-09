@@ -16,7 +16,7 @@ python scripts/install-hermes.py --check --home /actual/hermes/home \
 
 默认也能从 PATH 检测 Node。`--check` 验证 Python 的 Hermes 源码根目录、Node 路径/版本和 A2A 能力，不写配置、不申请配对、不要求官方 A2A 已经启动。Hermes 从源码启动时加 `--hermes-root /actual/hermes-agent`。命名 profile 的 `--home` 指向实际 profile home；multiplex Gateway 使用启动共享 Gateway 的 home。
 
-升级已有安装时加 `--upgrade`，并指定旧实例实际的 `--state`；安装器请求受管理的 runner 停止，随后将旧插件原子备份到 home 下的 `a2a-connector.backup-*`（在 `plugins/` 外）再替换。原凭据保留，备份路径会输出。发现旧版/孤立进程或遗留锁时拒绝替换，不猜测 PID、不强杀。常规安装仍拒绝覆盖已有目录；插件目录中只能保留一个 `name: a2a-connector`。
+升级已有安装时加 `--upgrade`，并指定旧实例实际的 `--state`；安装器请求受管理的 runner 停止，随后将旧插件原子备份到 home 下的 `a2a-connector.backup-*`（在 `plugins/` 外）再替换。原凭据保留，备份路径会输出。已确认进程退出的本机遗留锁会自动回收；旧版/孤立的存活进程或无法确认所有权的锁仍拒绝替换，不猜测 PID、不强杀。常规安装仍拒绝覆盖已有目录；插件目录中只能保留一个 `name: a2a-connector`。
 
 **从 Windows 0.2.4 升级**：旧版 Python 的进程探测/停止有兼容缺陷。先在 Gateway 外部根据 `.a2a-runtime.json`、两个 `.lock/owner.json` 和实际进程命令行核对旧 runner/CLI，再停止已确认的进程树。不要调用旧版插件的 start/stop 来清理，也不要按 `node` 名称批量终止无关进程。确认对应进程都已退出后才处理遗留锁；保留状态凭据。新版本统一通过 runner 的受管理停止流程退出子进程并清理锁。
 
@@ -93,7 +93,7 @@ python scripts/install-hermes.py --check --home /actual/hermes/home \
 
 stdout/stderr 都保存在 state 路径替换扩展名后的 `.stderr.log`，例如 `hermes.json` 对应 `hermes.stderr.log`；PID 镜像为 `hermes.pid`，不是 `hermes.json.pid`。Windows 使用当前用户和 SYSTEM 的受保护 DACL，POSIX 使用目录 0700/文件 0600。日志包含审批信息，保持私有，不直接整份贴入聊天；日志追加写入，按主机策略轮转。
 
-运行身份由规范状态路径的 `.hermes-runner.lock/owner.json` 和 `.a2a-runtime.json` 管理，CLI 使用独立 `.lock`。`.pid` 是辅助文件，不是存活判断依据。runner 的 stop 请求绑定实例 ID，通过 IPC 让 CLI 退出；不使用 Python `os.kill(pid, 0)` 探测 Windows 进程。崩溃后的旧锁会明确报错，必须核实所有者及进程树后恢复；不要删除凭据来解决连接问题。
+运行身份由规范状态路径的 `.hermes-runner.lock/owner.json` 和 `.a2a-runtime.json` 管理，CLI 使用独立 `.lock`。`.pid` 是辅助文件，不是存活判断依据。runner 的 stop 请求绑定实例 ID，通过 IPC 让 CLI 退出；不使用 Python `os.kill(pid, 0)` 探测 Windows 进程。启动或受管理停止时会自动恢复已确认失效的本机旧锁，新版锁通过进程出生标识识别 PID 复用。跨主机、损坏或身份无法确认的锁仍需人工核实。CLI 异常退出后由同一 runner 退避重启；配置/配对错误停止自动重试。不要删除凭据来解决连接问题。自动启动仍由 Hermes 的 `on_session_start` 触发；操作系统开机自启需要宿主 Gateway 自身的常驻配置。
 
 `.a2a-runtime.json` 可能包含兼容服务临时 token，status 不输出它。runtime 文件存在、进程存活、凭据落盘都不能单独证明 WSS 已连通。审批等待/短暂断线由 worker 自动处理，不需要 Gateway 重启。
 

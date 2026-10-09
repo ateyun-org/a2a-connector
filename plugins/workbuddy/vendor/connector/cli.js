@@ -119,7 +119,9 @@ async function main() {
     const code = args['pair-code'] || process.env.A2A_PAIR_CODE;
     const controller = new AbortController();
     const managed = typeof process.send === 'function';
-    const stopFromParent = message => { if (message?.type === 'hermes_shutdown') controller.abort(); };
+    const stopFromParent = message => {
+      if (['connector_shutdown', 'hermes_shutdown'].includes(message?.type)) controller.abort();
+    };
     const parentDisconnected = () => controller.abort();
     if (managed) {
       process.on('message', stopFromParent);
@@ -171,6 +173,11 @@ async function main() {
 }
 
 main().catch(error => {
-  if (error.name !== 'AbortError') { console.error(`A2A Connector: ${error.message}`); process.exitCode = 1; }
+  if (error.name !== 'AbortError') {
+    console.error(`A2A Connector: ${error.message}`);
+    // Supervisors may retry contention, but must not repeat an uncertain one-time
+    // pairing redemption or loop on invalid settings/credentials.
+    process.exitCode = error.message.startsWith('state_locked:') ? 75 : 78;
+  }
   if (process.connected && typeof process.disconnect === 'function') process.disconnect();
 });

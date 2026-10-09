@@ -55,7 +55,8 @@ def install_hermes(home, python=sys.executable, env=None, run=subprocess.run, no
         managed_state = Path(managed_state).expanduser().resolve()
         if target == managed_state or target in managed_state.parents:
             raise ValueError("Move the state outside the plugin directory before upgrading")
-        # New runners can shut down in place; legacy or orphaned locks fail closed.
+        # Stop managed runners and recover verified dead local owners. Unknown or
+        # live unmanaged owners still fail closed before any replacement.
         run([binary, str(SOURCE / "runner.js"), "-state", str(managed_state), "-stop"],
             check=True, capture_output=True, text=True, timeout=20, env=env)
     # Detection is complete before creating directories or replacing any plugin.

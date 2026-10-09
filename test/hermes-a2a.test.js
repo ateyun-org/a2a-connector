@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { spawn, execFile } from 'node:child_process';
 import { createServer } from 'node:http';
 import { mkdir, mkdtemp, readFile, rm, writeFile, stat } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { hostname, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { promisify } from 'node:util';
@@ -164,11 +164,44 @@ test('legacy Hermes runner forwards real Relay frames to isolated quiet CLI sess
   const reused = await prepareHermesA2A({ state, short: true, run: () => { throw new Error('Must reuse runtime'); } });
   assert.equal(reused.local, runtime.local); assert.equal(reused.token, runtime.token);
   await reused.close();
+  // A crashed CLI is restarted by the same runner without reopening the adapter.
+  const oldCLI = JSON.parse(await readFile(state + '.lock/owner.json', 'utf8'));
+  const reconnected = new Promise(resolve => ws.once('connection', resolve));
+  process.kill(oldCLI.pid, 'SIGKILL');
+  await reconnected;
+  const newCLI = JSON.parse(await readFile(state + '.lock/owner.json', 'utf8'));
+  assert.notEqual(newCLI.pid, oldCLI.pid);
+  assert.equal(newCLI.parentInstance, runtime.instanceId);
+  assert.equal(JSON.parse(await readFile(state + '.a2a-runtime.json', 'utf8')).pid, child.pid);
   await stop();
   assert.equal(await closed, 0);
   await assert.rejects(stat(state + '.a2a-runtime.json'), { code: 'ENOENT' });
   await assert.rejects(stat(state + '.hermes-runner.lock'), { code: 'ENOENT' });
   await assert.rejects(stat(state + '.lock'), { code: 'ENOENT' });
+});
+
+test('managed stop recovers both abandoned locks and runtime metadata without touching a reused PID', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'hermes-stale-stop-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const state = join(dir, 'hermes.json');
+  const credentials = JSON.stringify({ agentId: 'existing', token: 'kept-secret' });
+  await writeFile(state, credentials, { mode: 0o600 });
+  const old = { pid: process.pid, hostname: hostname(), instanceId: 'old', processIdentity: 'previous-boot' };
+  for (const suffix of ['.lock', '.hermes-runner.lock']) {
+    await mkdir(state + suffix);
+    await writeFile(state + suffix + '/owner.json', JSON.stringify(old));
+  }
+  await writeFile(state + '.a2a-runtime.json', JSON.stringify({ pid: process.pid, instanceId: 'old', phase: 'running' }), { mode: 0o600 });
+  await writeFile(join(dir, 'hermes.pid'), String(process.pid));
+  const env = { ...process.env, A2A_NODE_BINARY: process.execPath, A2A_CONNECTOR_STATE: state };
+  assert.match((await execute(python, [resolve('plugins/hermes/__init__.py'), 'stop'], { env })).stdout, /stopped/);
+  for (const suffix of ['.lock', '.hermes-runner.lock', '.a2a-runtime.json']) {
+    await assert.rejects(stat(state + suffix), { code: 'ENOENT' });
+  }
+  await assert.rejects(stat(join(dir, 'hermes.pid')), { code: 'ENOENT' });
+  assert.equal(await readFile(state, 'utf8'), credentials);
+  const health = JSON.parse((await execute(python, [resolve('plugins/hermes/__init__.py'), 'status'], { env })).stdout);
+  assert.equal(health.running, false);
 });
 
 test('managed stop aborts a blocked startup probe and releases the wrapper without starting a CLI', { timeout: 15000 }, async t => {
@@ -215,6 +248,15 @@ test('Python plugin pairs, checks and stops a managed or manually started runner
   // An expired request must be renewed by the one managed worker, before showing approval.
   await writeFile(state + '.pending', JSON.stringify({ requestId: 'e'.repeat(64), agentId: 'managed-hermes',
     confirmationCode: 'ABCDEF', expiresAt: 1 }), { mode: 0o600 });
+  // Both locks and runtime/PID metadata can survive shutdown. A reused PID must
+  // not make Python regard this previous runner as live or terminate this test.
+  const abandoned = { pid: process.pid, hostname: hostname(), instanceId: 'previous-run', processIdentity: 'previous-boot' };
+  for (const suffix of ['.lock', '.hermes-runner.lock']) {
+    await mkdir(state + suffix);
+    await writeFile(state + suffix + '/owner.json', JSON.stringify(abandoned));
+  }
+  await writeFile(state + '.a2a-runtime.json', JSON.stringify({ pid: process.pid, instanceId: 'previous-run', phase: 'running' }), { mode: 0o600 });
+  await writeFile(state.replace(/\.json$/, '.pid'), String(process.pid));
   let approved = false, requests = 0, registrations = 0;
   const requestId = 'a'.repeat(64), code = 'pair_' + 'b'.repeat(48);
   const relay = createServer(async (req, res) => {

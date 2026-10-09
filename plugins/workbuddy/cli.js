@@ -2,7 +2,7 @@
 import { execFile, spawn } from 'node:child_process';
 import { createInterface } from 'node:readline/promises';
 import { stdin, stdout } from 'node:process';
-import { readFile, writeFile, mkdir, rmdir, unlink, open } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, unlink, open } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { dirname } from 'node:path';
@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { callAgent, getAgentTask } from './a2a-client.js';
 import { platformAuthorizationURL, platformRequest } from './platform-client.js';
+import { acquireStateLock } from './vendor/connector/state-lock.js';
 
 const run = promisify(execFile);
 const dir = join(homedir(), '.config', 'a2a-connector');
@@ -42,10 +43,7 @@ async function existingPid() {
 }
 async function start() {
   await mkdir(dir, { recursive: true, mode: 0o700 });
-  await mkdir(startLock, { mode: 0o700 }).catch(error => {
-    if (error.code === 'EEXIST') throw new Error(`another start is in progress: ${startLock}`);
-    throw error;
-  });
+  const lock = await acquireStateLock(startLock.slice(0, -5));
   try {
     const prior = await existingPid();
     if (prior) throw new Error(`Connector already running (PID ${prior}); stop it before starting another`);
@@ -63,7 +61,7 @@ async function start() {
     child.unref();
     try { await writeFile(pidFile, String(child.pid), { mode: 0o600, flag: 'wx' }); }
     catch (error) { child.kill('SIGTERM'); throw error; }
-  } finally { await rmdir(startLock); }
+  } finally { await lock.release(); }
 }
 async function stop() {
   try {

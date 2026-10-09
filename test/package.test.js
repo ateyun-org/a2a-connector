@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 test('host plugins carry the current JavaScript Connector', async () => {
-  for (const file of ['cli.js', 'connector.js', 'state-lock.js']) {
+  for (const file of ['cli.js', 'connector.js', 'state-lock.js', 'process-supervisor.js']) {
     const source = await readFile(join('src', file));
     for (const host of ['openclaw', 'hermes', 'dsh', 'workbuddy']) {
       assert.deepEqual(await readFile(join('plugins', host, 'vendor', 'connector', file)), source,

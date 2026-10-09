@@ -10,6 +10,7 @@ import { createAdapterServer } from './adapter-server.js';
 import { listenWithNextPort } from './adapter-port.js';
 import { createDSHSessionFactory } from './dsh-session.js';
 import { installOutbound } from './outbound.js';
+import { createProcessSupervisor } from './vendor/connector/process-supervisor.js';
 
 export { A2AOrchestrator, a2aTaskState, responseParts } from './orchestrator.js';
 
@@ -62,35 +63,11 @@ export async function apply(ctx, config) {
   const env = { ...process.env };
   if (adapter) env.A2A_LOCAL_TOKEN = localToken;
   else if (config.localTokenEnv) env.A2A_LOCAL_TOKEN = process.env[config.localTokenEnv] || '';
-  let child, outbound, recentLogs = '';
-  const remember = chunk => { recentLogs = (recentLogs + chunk.toString()).slice(-65536); };
-  function start() {
-    if (child) return;
-    const started = spawn(binary, [...args, '-auto-pair'], { stdio: ['ignore', 'pipe', 'pipe'], env });
-    child = started;
-    started.stdout.on('data', remember);
-    started.stderr.on('data', remember);
-    started.once('error', () => { if (child === started) child = undefined; });
-    started.once('exit', () => { if (child === started) child = undefined; });
-  }
-  async function stop() {
-    const active = child;
-    if (!active) return;
-    if (active.exitCode !== null || active.signalCode !== null) {
-      if (child === active) child = undefined;
-      return;
-    }
-    let timer;
-    try {
-      const stopped = new Promise(resolve => active.once('close', resolve));
-      const deadline = new Promise((_resolve, reject) => {
-        timer = setTimeout(() => reject(new Error('Connector did not stop within five seconds')), 5000);
-      });
-      active.kill('SIGTERM');
-      await Promise.race([stopped, deadline]);
-    } finally { clearTimeout(timer); }
-    if (child === active) child = undefined;
-  }
+  let outbound;
+  const supervisor = createProcessSupervisor({
+    launch: () => spawn(binary, [...args, '-auto-pair'], { stdio: ['ignore', 'pipe', 'pipe', 'ipc'], env }),
+  });
+  const { start, stop, remember } = supervisor;
   try {
     if (config.agents?.length) {
       outbound = installOutbound(ctx, { ...config, connectorState: config.connectorState || state,
@@ -103,7 +80,7 @@ export async function apply(ctx, config) {
         render: (_args, result) => [{ type: 'text', text: result.text }] },
       async execute() {
         const { stdout } = await run(binary, [...args, '-status'], { timeout: 10000, env });
-        return { text: JSON.stringify({ ...JSON.parse(stdout), recentLogs: recentLogs.slice(-8192) }) };
+        return { text: JSON.stringify({ ...JSON.parse(stdout), ...supervisor.status() }) };
       },
     }));
     ctx.tools.register(defineTool({

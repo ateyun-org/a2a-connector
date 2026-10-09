@@ -4,8 +4,9 @@ import { readFile, stat, rm } from 'node:fs/promises';
 import { delimiter, dirname, extname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
+import { setTimeout as delay } from 'node:timers/promises';
 import { loadEnrollment, loadPendingPairing, saveEnrollment } from './vendor/connector/connector.js';
-import { acquireStateLock, canonicalState, connectorStatus, lockOwner } from './vendor/connector/state-lock.js';
+import { acquireStateLock, canonicalState, connectorStatus, lockOwner, ownerAlive } from './vendor/connector/state-lock.js';
 
 const root = dirname(fileURLToPath(import.meta.url));
 const execute = promisify(execFile);
@@ -38,6 +39,7 @@ async function activeRuntime(state) {
     if (!Number.isInteger(value.pid) || value.pid <= 1 || (value.mode && typeof value.local !== 'string')) throw new Error('Invalid Hermes A2A runtime file');
     process.kill(value.pid, 0);
     const owner = await lockOwner(state + '.hermes-runner');
+    if (owner && !await ownerAlive(owner)) return undefined;
     if (!owner || owner.pid !== value.pid || (value.instanceId && owner.instanceId !== value.instanceId)) {
       throw new Error('Hermes runtime ownership does not match its lock; inspect the state before recovery');
     }
@@ -77,9 +79,27 @@ async function stopRuntime(state) {
   const runtime = await activeRuntime(state);
   if (!runtime) {
     const owner = await lockOwner(state + '.hermes-runner');
-    if (owner) throw new Error(`Stale Hermes runner lock (PID ${owner.pid}); inspect it before recovery`);
+    if (owner) {
+      const recovered = await acquireStateLock(state + '.hermes-runner');
+      try {
+        // Keep the replacement lock while clearing old runtime metadata, so a
+        // concurrent starter cannot publish a new runtime between read and rm.
+        try {
+          const previous = JSON.parse(await readFile(state + '.a2a-runtime.json', 'utf8'));
+          if (previous.pid === owner.pid && previous.instanceId === owner.instanceId) {
+            await rm(state + '.a2a-runtime.json', { force: true });
+          }
+        } catch (error) { if (error.code !== 'ENOENT') throw error; }
+      } finally { await recovered.release(); }
+    }
     const cli = await lockOwner(state);
-    if (cli) throw new Error(`Unmanaged or stale Connector CLI lock (PID ${cli.pid}); inspect its process tree before recovery`);
+    if (cli) {
+      const recovered = await acquireStateLock(state);
+      await recovered.release();
+    }
+    // The managed locks identify the old processes more reliably than an advisory
+    // PID marker, whose number may now belong to an unrelated process.
+    if (owner || cli) return { stopped: true };
     let marker;
     try { marker = await readFile(state.slice(0, state.length - extname(state).length) + '.pid', 'utf8'); }
     catch (error) { if (error.code !== 'ENOENT') throw error; }
@@ -192,15 +212,32 @@ export async function runHermesConnector(args, { env = process.env } = {}) {
       console.error(`Hermes Connector: ${prepared.mode} A2A at ${prepared.local}`);
     }
     if (stopped) return 0;
-    const outcome = await new Promise((resolve, reject) => {
-      child = spawn(process.execPath, [join(root, 'vendor/connector/cli.js'), ...forwarded], {
-        stdio: ['ignore', 'inherit', 'inherit', 'ipc'], windowsHide: true,
-        env: { ...env, A2A_LOCAL_TOKEN: prepared?.token || '', A2A_HERMES_RUNNER_INSTANCE: lock?.owner.instanceId || '' },
+    let failures = 0;
+    do {
+      if (!short) {
+        runtime = { ...runtime, phase: 'running' };
+        delete runtime.retryAt;
+        await saveEnrollment(state + '.a2a-runtime.json', runtime);
+      }
+      const launchedAt = Date.now();
+      const outcome = await new Promise((resolve, reject) => {
+        child = spawn(process.execPath, [join(root, 'vendor/connector/cli.js'), ...forwarded], {
+          stdio: ['ignore', 'inherit', 'inherit', 'ipc'], windowsHide: true,
+          env: { ...env, A2A_LOCAL_TOKEN: prepared?.token || '', A2A_HERMES_RUNNER_INSTANCE: lock?.owner.instanceId || '' },
+        });
+        child.once('error', reject);
+        child.once('close', (code, signal) => resolve(signal ? (stopped ? 0 : 1) : code));
       });
-      child.once('error', reject);
-      child.once('close', (code, signal) => resolve(signal ? (stopped ? 0 : 1) : code));
-    });
-    return outcome ?? 1;
+      if (short || stopped || outcome === 78) return outcome ?? 1;
+      if (Date.now() - launchedAt >= 60000) failures = 0;
+      const retryMs = Math.min(30000, 1000 * 2 ** Math.min(failures++, 10));
+      runtime = { ...runtime, phase: 'restarting', lastExitCode: outcome,
+        retryAt: new Date(Date.now() + retryMs).toISOString() };
+      await saveEnrollment(state + '.a2a-runtime.json', runtime);
+      console.error(`Hermes Connector CLI exited (${outcome}); restarting in ${retryMs}ms`);
+      await delay(retryMs, undefined, { signal: startup.signal });
+    } while (!stopped);
+    return 0;
   } catch (error) {
     if (stopped && error.name === 'AbortError') return 0;
     throw error;

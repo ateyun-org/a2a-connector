@@ -1,11 +1,62 @@
 import assert from 'node:assert/strict';
 import { createServer as createTCPServer } from 'node:net';
 import { createServer as createHTTPServer } from 'node:http';
-import { mkdtemp } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { apply } from '../../plugins/dsh/index.js';
+import { WebSocketServer } from 'ws';
+
+async function waitStatus(tool, check) {
+  const deadline = Date.now() + 8000;
+  let value;
+  while (Date.now() < deadline) {
+    value = JSON.parse((await tool.execute({})).text);
+    if (check(value)) return value;
+    await new Promise(resolve => setTimeout(resolve, 30));
+  }
+  throw new Error(`DSH Connector did not recover its tunnel: ${JSON.stringify(value)}`);
+}
+
+test('DSH recovers a stale lock, restarts a killed Connector, and clears logs from the previous run', { timeout: 15000 }, async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-recovery-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const state = join(directory, 'dsh.json');
+  const credentials = JSON.stringify({ agentId: 'dsh-recovery', token: 'agt_dsh-recovery.secret' });
+  await writeFile(state, credentials, { mode: 0o600 });
+  await mkdir(state + '.lock');
+  await writeFile(state + '.lock/owner.json', JSON.stringify({
+    pid: process.pid, hostname: hostname(), instanceId: 'old-run', processIdentity: 'previous-boot',
+  }));
+  const relay = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+  await new Promise(resolve => relay.once('listening', resolve));
+  t.after(() => { for (const socket of relay.clients) socket.terminate(); relay.close(); });
+  const local = createHTTPServer((_req, res) => res.end(JSON.stringify({ name: 'DSH Recovery' })));
+  await new Promise(resolve => local.listen(0, '127.0.0.1', resolve));
+  t.after(() => local.close());
+  let effect;
+  const tools = new Map();
+  await apply({ effect(fn) { effect = fn; }, tools: { register(tool) { tools.set(tool.name, tool); } } }, {
+    relay: `ws://127.0.0.1:${relay.address().port}/connect`, allowInsecure: true,
+    local: `http://127.0.0.1:${local.address().port}`, state,
+  });
+  const cleanup = effect();
+  t.after(cleanup);
+  const tool = tools.get('a2a_connector_status');
+  const first = await waitStatus(tool, value => value.running && value.tunnelOnline);
+  assert.equal(await readFile(state, 'utf8'), credentials);
+  assert.equal(first.logsAreHistorical, true);
+  process.kill(first.pid, 'SIGKILL');
+  const second = await waitStatus(tool, value => value.running && value.tunnelOnline && value.pid !== first.pid);
+  assert.notEqual(second.logRun.id, first.logRun.id);
+  assert.equal(await readFile(state, 'utf8'), credentials);
+  await cleanup();
+  const stopped = await waitStatus(tool, value => !value.running);
+  assert.equal(stopped.restartScheduled, false);
+  assert.equal(stopped.tunnelOnline, false);
+  await assert.rejects(readFile(state + '.lock/owner.json'), { code: 'ENOENT' });
+});
 
 test('one DSH plugin entry starts the bundled service after an occupied port', async t => {
   const occupied = createTCPServer();

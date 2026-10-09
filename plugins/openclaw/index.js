@@ -5,6 +5,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { selectA2A } from './a2a-selection.js';
+import { createProcessSupervisor } from './vendor/connector/process-supervisor.js';
 
 const run = promisify(execFile);
 
@@ -16,8 +17,11 @@ export default {
     const script = join(dirname(fileURLToPath(import.meta.url)), 'vendor', 'connector', 'cli.js');
     const binary = config.binary || process.execPath;
     const state = config.state || join(homedir(), '.config', 'a2a-connector', 'openclaw.json');
-    let child, adapter, args, env, preparing, recentLogs = '';
-    const remember = chunk => { recentLogs = (recentLogs + chunk.toString()).slice(-65536); };
+    let adapter, args, env, preparing, stopping = false;
+    const supervisor = createProcessSupervisor({
+      launch: () => spawn(binary, [...args, '-auto-pair'], { stdio: ['ignore', 'pipe', 'pipe', 'ipc'], env }),
+      onError: error => api.logger?.error?.(`A2A Connector failed: ${error.message}`),
+    });
     const prepare = () => preparing ??= (async () => {
       const localToken = config.localTokenEnv ? process.env[config.localTokenEnv] : undefined;
       if (config.localTokenEnv && !localToken) throw new Error(`Missing local A2A token environment variable: ${config.localTokenEnv}`);
@@ -50,29 +54,14 @@ export default {
     })().catch(error => { preparing = undefined; throw error; });
     const start = async () => {
       await prepare();
-      if (child) return;
-      const active = spawn(binary, [...args, '-auto-pair'], { stdio: ['ignore', 'pipe', 'pipe'], env });
-      child = active;
-      active.stdout.on('data', remember);
-      active.stderr.on('data', remember);
-      active.once('error', error => { api.logger?.error?.(`A2A Connector failed: ${error.message}`); if (child === active) child = undefined; });
-      active.once('exit', () => { if (child === active) child = undefined; });
+      if (!stopping) supervisor.start();
     };
-    async function stopChild() {
-      const active = child;
-      if (!active) return;
-      if (active.exitCode === null && active.signalCode === null) {
-        const stopped = new Promise(resolve => active.once('close', resolve));
-        const timer = setTimeout(() => active.kill('SIGKILL'), 5000);
-        try { active.kill('SIGTERM'); await stopped; }
-        finally { clearTimeout(timer); }
-      }
-      if (child === active) child = undefined;
-    }
+    const stopChild = supervisor.stop;
     api.registerService({
       id: 'a2a-connector',
-      start,
+      start: async () => { stopping = false; await start(); },
       async stop() {
+        stopping = true;
         if (preparing) await preparing.catch(() => {});
         await stopChild();
         await adapter?.close();
@@ -85,7 +74,7 @@ export default {
       async execute() {
         await prepare();
         const { stdout } = await run(binary, [...args, '-status'], { timeout: 10000, env });
-        return { content: [{ type: 'text', text: JSON.stringify({ ...JSON.parse(stdout), recentLogs: recentLogs.slice(-8192) }) }] };
+        return { content: [{ type: 'text', text: JSON.stringify({ ...JSON.parse(stdout), ...supervisor.status() }) }] };
       },
     });
     api.registerTool({

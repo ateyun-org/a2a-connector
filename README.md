@@ -34,7 +34,7 @@ node src/cli.js -auto-pair \
   -local http://127.0.0.1:9900
 ```
 
-The CLI shows the approval page, Agent ID, and six-character confirmation code. An administrator checks **both** at `https://dsh-relay.chuanbota.com/pair` and approves the request. Approval creates a Relay record, which can remain offline while the Connector fetches a separate `pair_` code from `/pairing/status`, redeems it **once** at `/register`, saves the Agent credential, and opens the WSS tunnel. A pending request survives Connector restarts until its ten-minute expiry. Run only **one** Connector process for a given state path during pairing; the CLI now rejects a second owner with `state_locked` before networking. Crash locks require inspection before removal.
+The CLI shows the approval page, Agent ID, and six-character confirmation code. An administrator checks **both** at `https://dsh-relay.chuanbota.com/pair` and approves the request. Approval creates a Relay record, which can remain offline while the Connector fetches a separate `pair_` code from `/pairing/status`, redeems it **once** at `/register`, saves the Agent credential, and opens the WSS tunnel. A pending request survives Connector restarts until its ten-minute expiry. Run only **one** Connector process for a given state path during pairing; the CLI rejects a second live owner with `state_locked` before networking. Startup automatically recovers locks belonging to verified dead local processes, using process birth identity to detect reused PIDs. Foreign, malformed or unverifiable locks still require inspection; credentials are preserved.
 
 CLI options (also supported by the copies in `plugins/*/vendor/connector/cli.js`):
 

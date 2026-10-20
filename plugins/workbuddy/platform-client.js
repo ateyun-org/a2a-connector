@@ -1,5 +1,7 @@
 export function platformRelayURL(relay, endpoint, allowInsecure = false) {
   const url = new URL(relay);
+  if (url.username || url.password || url.search || url.hash || url.pathname !== '/connect' ||
+      !['start', 'status', 'access-token', 'session'].includes(endpoint)) throw new Error('Invalid WorkBuddy Relay endpoint');
   if (url.protocol === 'wss:') url.protocol = 'https:';
   else if (url.protocol === 'ws:' && allowInsecure) url.protocol = 'http:';
   else throw new Error('WorkBuddy platform OAuth requires a secure Relay URL');

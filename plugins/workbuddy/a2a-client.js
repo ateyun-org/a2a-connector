@@ -49,7 +49,7 @@ async function readJSON(response) {
 
 async function request(url, token, options = {}) {
   return readJSON(await fetch(url, { ...options, redirect: 'manual',
-    headers: { authorization: `Bearer ${token}`, ...(options.body ? { 'content-type': 'application/json' } : {}) },
+    headers: { authorization: `Bearer ${token}`, ...(options.body ? { 'content-type': 'application/json' } : {}), ...options.headers },
     signal: AbortSignal.timeout(30000) }));
 }
 
@@ -62,7 +62,7 @@ function resultText(result) {
   return (message?.parts ?? []).filter(part => typeof part?.text === 'string').map(part => part.text).join('\n');
 }
 
-async function openRPC({ relay, allowInsecure = false, enrollment, targetId }) {
+async function openRPC({ relay, allowInsecure = false, enrollment, targetId, relayRequestId }) {
   if (!agentIdPattern.test(targetId)) throw new Error('invalid target Agent ID');
   if (!enrollment?.token || !enrollment?.agentId) throw new Error('paired WorkBuddy credential is required');
   const origin = relayOrigin(relay, allowInsecure);
@@ -72,6 +72,7 @@ async function openRPC({ relay, allowInsecure = false, enrollment, targetId }) {
   let id = 0;
   return async (method, params) => {
     const reply = await request(endpoint, enrollment.token, { method: 'POST',
+      ...(method === 'SendMessage' && relayRequestId ? { headers: { 'X-Relay-Request-Id': relayRequestId } } : {}),
       body: JSON.stringify({ jsonrpc: '2.0', id: ++id, method, params }) });
     if (reply?.error) throw new Error(`A2A ${method} failed: ${reply.error.message || reply.error.code}`);
     if (!reply || !('result' in reply)) throw new Error(`A2A ${method} returned no result`);
@@ -79,9 +80,27 @@ async function openRPC({ relay, allowInsecure = false, enrollment, targetId }) {
   };
 }
 
+export async function listTargets({ relay, allowInsecure = false, enrollment }) {
+  if (!enrollment?.token) throw new Error('paired WorkBuddy credential is required');
+  const result = await request(new URL('/pairing/targets', relayOrigin(relay, allowInsecure)), enrollment.token);
+  if (!Array.isArray(result.targets) || result.targets.some(target => !agentIdPattern.test(target?.agentId || ''))) {
+    throw new Error('Relay returned an invalid target list');
+  }
+  return result;
+}
+
 function presentTask(targetId, task) {
   return { targetId, taskId: task.id, contextId: task.contextId,
-    state: task.status?.state || 'UNKNOWN', text: resultText(task) };
+    state: task.status?.state || 'UNKNOWN', text: resultText(task),
+    ...(task.metadata ? { metadata: task.metadata } : {}), ...(task.artifacts ? { artifacts: task.artifacts } : {}) };
+}
+
+export async function controlAgentTask(options, method, params) {
+  if (!['RespondPermission', 'CancelTask', 'ReleaseCloudTask'].includes(method)) throw new Error('Unsupported task control method');
+  const rpc = await openRPC(options);
+  const task = taskFrom(await rpc(method, params));
+  if (!task) throw new Error('A2A task control returned no task');
+  return presentTask(options.targetId, task);
 }
 
 export async function getAgentTask(options, taskId) {
@@ -95,14 +114,19 @@ export async function getAgentTask(options, taskId) {
 }
 
 export async function callAgent({ relay, allowInsecure = false, enrollment, targetId, prompt,
-  pollIntervalMs = 2000, deadlineMs = 120000 }) {
+  pollIntervalMs = 2000, deadlineMs = 120000, messageId = randomUUID(), contextId, relayRequestId, onTask, onDispatch }) {
   if (typeof prompt !== 'string' || !prompt.trim()) throw new Error('task text is required on stdin');
-  const rpc = await openRPC({ relay, allowInsecure, enrollment, targetId });
-  let result = await rpc('SendMessage', { message: { messageId: randomUUID(), role: 'ROLE_USER',
-    parts: [{ text: prompt }] } });
+  if (typeof messageId !== 'string' || !messageId.trim() || messageId.length > 256) throw new Error('invalid message ID');
+  if (contextId !== undefined && (typeof contextId !== 'string' || !contextId || contextId.length > 256)) throw new Error('invalid context ID');
+  if (relayRequestId !== undefined && !/^[0-9a-f]{32}$/.test(relayRequestId)) throw new Error('invalid Relay request ID');
+  const rpc = await openRPC({ relay, allowInsecure, enrollment, targetId, relayRequestId });
+  await onDispatch?.();
+  let result = await rpc('SendMessage', { message: { messageId, role: 'ROLE_USER',
+    ...(contextId ? { contextId } : {}), parts: [{ text: prompt }] } });
   const firstTask = taskFrom(result);
   if (!firstTask) return { targetId, state: 'MESSAGE', text: resultText(result) };
   if (typeof firstTask.id !== 'string' || !firstTask.id) throw new Error('A2A task has no ID');
+  await onTask?.(presentTask(targetId, firstTask));
   const expires = Date.now() + deadlineMs;
   let task = firstTask;
   while (activeStates.has(task.status?.state)) {
@@ -112,4 +136,21 @@ export async function callAgent({ relay, allowInsecure = false, enrollment, targ
     if (!task) throw new Error('A2A GetTask returned no task');
   }
   return presentTask(targetId, task);
+}
+
+/** Recover a late response through the existing Relay journal; never sends a second task. */
+export async function recoverDispatch(options, requestId) {
+  if (!/^[0-9a-f]{32}$/.test(requestId)) throw new Error('invalid Relay request ID');
+  const origin = relayOrigin(options.relay, options.allowInsecure);
+  const record = await request(new URL(`/relay/requests/${requestId}`, origin), options.enrollment.token);
+  if (record.targetAgentId !== options.targetId && record.target !== options.targetId) {
+    throw new Error('Relay request journal target does not match');
+  }
+  if (record.state !== 'completed') return { targetId: options.targetId, state: 'UNKNOWN', text: 'Relay outcome is unresolved; do not resubmit', relayRequestId: requestId };
+  let reply;
+  try { reply = JSON.parse(record.responseBody); } catch { throw new Error('Relay has no recoverable A2A response'); }
+  if (reply.error || !reply.result) throw new Error('Original A2A dispatch returned an error; inspect its outcome before retrying');
+  const task = taskFrom(reply.result);
+  if (task) return getAgentTask(options, task.id);
+  return { targetId: options.targetId, state: 'MESSAGE', text: resultText(reply.result) };
 }

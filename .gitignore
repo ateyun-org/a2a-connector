@@ -4,6 +4,7 @@ node_modules/
 !/plugins/hermes/vendor/connector/node_modules/ws/
 !/plugins/hermes/vendor/connector/node_modules/ws/**
 *.tgz
+dist/
 __pycache__/
 *.py[cod]
 

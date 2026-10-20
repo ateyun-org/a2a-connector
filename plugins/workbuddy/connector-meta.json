@@ -2,12 +2,21 @@
   "name": "A2A Connector",
   "name_zh": "A2A 连接器",
   "name_en": "A2A Connector",
-  "description": "Connect a local A2A agent to a remote Relay for DSH orchestration.",
-  "description_zh": "将本机 A2A Agent 接入远程 Relay，供 DSH 调度。",
+  "description": "Delegate tasks to authorized agents and receive WorkBuddy desktop or cloud tasks through an A2A Relay.",
+  "description_zh": "通过 A2A Relay 调用已授权 Agent，支持 WorkBuddy 桌面助理与云端 ACP 执行、审批和结果查询。",
+  "description_en": "Delegate tasks to authorized agents and receive WorkBuddy desktop or cloud tasks through an A2A Relay.",
   "source": "dsh-a2a-connector",
   "type": "cli",
-  "version": "0.2.5",
+  "version": "0.4.0",
   "minWorkbuddyVersion": "4.24.0",
-  "examples_zh": ["把这台机器上的 Agent 接入 A2A Relay", "检查 A2A Connector 的连接状态"],
-  "examples_en": ["Connect this agent to the A2A Relay", "Check the A2A Connector status"]
+  "examples_zh": [
+    "把 WorkBuddy 接入任务协作网络",
+    "让已授权的 Agent 完成任务并查询结果",
+    "检查 WorkBuddy 桌面或云端执行通道是否就绪"
+  ],
+  "examples_en": [
+    "Connect WorkBuddy to the task coordination network",
+    "Delegate a task to an authorized agent and check its result",
+    "Check WorkBuddy desktop or cloud execution readiness"
+  ]
 }

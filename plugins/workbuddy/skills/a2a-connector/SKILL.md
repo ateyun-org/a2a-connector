@@ -1,10 +1,54 @@
 ---
 name: a2a-connector
-description: Pair and operate the local A2A Connector for Relay access.
+description: Delegate tasks to authorized A2A agents, track results, and operate WorkBuddy desktop or cloud receiving adapters.
 ---
 
-Use `workbuddy-a2a auth status` to check for an active Connector process. `Not logged in` can also mean the process has exited even when a credential file exists; inspect the runtime before starting or pairing again. If this CLI was installed and no Connector is running, use `workbuddy-a2a auth login` in an interactive terminal. The command asks for the Relay WSS `/connect` URL and local A2A HTTP origin, then shows the approval page, Agent ID, and six-character confirmation code. Ask the administrator to check **Agent ID and confirmation code** before approval. Do not start a second Connector process against the same pending request. Approval is followed by automatic redemption of a separate, single-use `pair_` code, credential storage, and tunnel connection.
+Use this skill for actual Agent coordination. Prompt cards alone do not create connections.
 
-Use `workbuddy-a2a auth status` to show a pending confirmation code, `workbuddy-a2a start` to restart the Connector, `workbuddy-a2a stop` to stop it, and `workbuddy-a2a auth logout` to remove its local credentials. `start` inherits `A2A_LOCAL_TOKEN` from its current environment when the local origin requires Bearer authentication; the CLI does not persist that token. Credentials are under `~/.config/a2a-connector/workbuddy.json`; the pending request is in `.pending` beside it. Never print the Agent credential, `pair_` code, local Bearer token, or Relay administrator token. The local HTTP origin must expose `/.well-known/agent-card.json` and an A2A endpoint connected to the intended Agent's real capabilities. This package does not create a WorkBuddy A2A server; a temporary echo origin only tests the tunnel. After pairing, verify one authorized remote task reaches the intended Agent before reporting full integration. For non-interactive setup and recovery, follow the repository's `docs/install/workbuddy.md`; for shared pairing and connection checks, see `docs/install/shared.md`.
+## Readiness and authentication
 
-To call another paired Agent, first obtain its exact Agent ID and have the Relay administrator grant this WorkBuddy Agent access in `/pair/list`. Pass the task text on stdin to `workbuddy-a2a call <target-agent-id>`. The command returns JSON with the remote task state and result; use `workbuddy-a2a task <target-agent-id> <task-id>` to check a task still running after the call deadline before retrying. Do not report a failed or canceled task as successful. This CLI path is available after local installation, but does not imply the WorkBuddy GUI registered it as a tool. Receiving remote tasks into the current WorkBuddy Agent requires a real supported WorkBuddy invocation API and an A2A origin adapter; do not present an echo server as that adapter.
+Use `workbuddy-a2a auth status` for pairing and live tunnel health. Pending status shows the approval URL, exact Agent ID and six-character confirmation code. The administrator must compare the ID and code; never approve a different identity automatically. Credentials alone do not prove a working tunnel.
+
+Initial setup: `workbuddy-a2a setup --relay <user-provided WSS /connect URL> --name <Agent name>`. It starts the built-in authenticated PC adapter and one managed tunnel without an external origin. GUI auth uses `workbuddy-a2a auth connect`: no stdin, reading `A2A_RELAY_URL` on first use. Do not start another runner for the same state while pairing is pending.
+
+For receiving tasks, use `workbuddy-a2a platform login` and give its official URL to the user for approval. `platform status` reports OAuth status. `doctor` verifies pairing, tunnel, desktop scopes and actual PC online status without submitting a task. The Relay must have server-side app credentials configured. Never ask for client secrets or tokens in chat or task text.
+
+For cloud receiving, first setup with `--mode cloud`; optionally bind `--task-id <actual-cloud-session-id>` and `--cwd /workspace`. Do not confuse a Buddy application ID with a cloud task ID. No binding means new sessions per new context. Cloud needs user.task.readable and user.task.invokable; cloud doctor checks readable tasks/bound-session status, not PC online status. The runtime needs Node.js 22 and persistent outbound connectivity. Cloud-hosted controllers can use the same CLI when installed and authorized in their execution environment. Configuration alone does not install or authorize tools. Separate instances have distinct Agent identities; the Relay OAuth configuration currently authorizes one WORKBUDDY_AGENT_ID, so do not copy credentials between instances.
+
+## Delegation
+
+1. Run `workbuddy-a2a targets`. Choose an exact authorized Agent ID suited to the task. If denied, ask the administrator to grant this WorkBuddy identity access in `/pair/list`; do not substitute credentials.
+2. Pass task text through stdin to `workbuddy-a2a call <target-agent-id> --message-id <unique-request-id>`. Reuse an ID only for the exact same target and task. The command saves a request journal before sending and returns JSON with task/context IDs, state, text and request identifiers.
+3. Query an active task with `workbuddy-a2a task <target-agent-id> <task-id>`.
+4. After timeout, disconnect or uncertain dispatch, use `workbuddy-a2a outbound <relay-request-id>`. This recovers the original response or polls an existing task, without sending another task. Missing or expired Relay logs do not prove non-execution. Never assign a new message ID merely to retry an uncertain task. Only an explicit local `dispatched:false` preflight failure permits retry with the same ID after correcting its cause.
+5. Report actual results; distinguish submitted, working, awaiting input, completed, failed, canceled, rejected and unknown states. Failed/canceled/rejected return nonzero. Input-required is not successful completion.
+
+After a completed round, use `--context-id <returned-context-id>` for a follow-up in the same target context. Use a new message ID for a new instruction, retaining it for exact retries. Results include available artifact text/locations and metadata.
+
+## Receiving tasks
+
+The PC adapter accepts text `SendMessage` requests and supports `GetTask` / `ListTasks`. Local diagnostics: `workbuddy-a2a adapter task <task-id>`. The Relay checks controller grants, and the adapter separately authenticates loopback requests.
+
+Each task includes `[A2A_TASK:<id>]`. Execute the authorized task normally and preserve that ID. The final reply must be one JSON object with `a2aTaskId`, `status` (`completed`, `failed`, `input-required`) and `text` containing results, output locations, verification evidence or a blocking question. Do not emit completed during planning. This is required because the PC history API has no independent completion event.
+
+The PC assistant is a shared conversation, not an isolated cloud sandbox. Only one unresolved incoming task is permitted. Do not submit another while the current task runs, needs input, or has an unknown outcome. Durable records survive restarts and reconcile existing messages without resending.
+
+PC approvals and AskQuestion interactions stay in the desktop; never auto-approve them. PC provider cancellation is unsupported, so stopping the tunnel does not cancel execution. No attachment upload is claimed.
+
+## Cloud receiving
+
+Cloud uses Open API plus ACP initialize/load/prompt. Do not impose the desktop final-JSON convention on cloud tasks: the matching prompt response is authoritative. end_turn completes, refusal rejects, cancelled cancels, other stop reasons require inspection. History replay from session/load is not this round's result. A new cloud session starts with an initialization-only READY turn, then submits the real instruction exactly once through ACP.
+
+Use `workbuddy-a2a cloud tasks` or `cloud task <cloud-task-id>` for safe provider status, and `adapter task <A2A-task-id>` for the local journal. Binding always uses the specified existing session and never silently creates a replacement. Bound contexts share one cloud session. Serialized incoming turns reject overlap and unresolved outcomes.
+
+When task metadata contains permission, show the user its tool details and options. Only after an explicit user choice use `workbuddy-a2a permission <target-agent-id> <A2A-task-id> <request-id-as-JSON> <option-id>`. Preserve string versus numeric request ID and the exact supplied option ID; never select an approval just to continue. Example string argument: `'"permission-1"'`. For a requested cancellation, use `workbuddy-a2a cancel <target-agent-id> <A2A-task-id>`, then query until the actual canceled stop reason arrives. A cancel send is not proof of remote termination.
+
+Cloud disconnects, uncertain creation/sends or runner restarts retain original IDs without resubmission. Surface the unresolved state and ask the user to inspect the original WorkBuddy session; do not infer current-round completion from old history or overall session status. Creation uncertainty retains cloudName=A2A-<task-id> for provider lookup. Streamed artifact URIs are provider locations, not guaranteed public download URLs. ACP credentials remain in process memory and never belong in output or journals.
+
+Only after the user explicitly asks to abandon unresolved tracking, use `workbuddy-a2a release <target-agent-id> <A2A-task-id> [recovered-cloud-task-id]`. It requires no live ACP turn and an inactive provider session; recovered creation IDs must match cloudName. It closes local tracking as rejected, never as completed or remotely canceled. Do not automatically release unknown tasks to make the queue accept new work.
+
+## Operations
+
+Use `stop` / `start` for the managed service. Run `platform logout` to remove encrypted server-side WorkBuddy tokens before `auth logout` removes local pairing credentials. Status commands are read-only. Diagnose offline/pending state before repairing or pairing again.
+
+State is outside the package in `~/.config/a2a-connector/`. `A2A_CONNECTOR_INSTANCE` isolates instances; `A2A_CONNECTOR_CONFIG_DIR` chooses a private directory. Never print/upload credentials, pending request IDs, pairing codes, local Bearer tokens or OAuth/ACP tokens. Preserve journals on uncertain execution and report task/request IDs instead of private file contents.

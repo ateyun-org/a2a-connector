@@ -1,121 +1,150 @@
-# Tencent WorkBuddy 安装 A2A Connector
+# Tencent WorkBuddy 接入任务协作
 
-开始前阅读[通用准备、配对与验证](shared.md)，然后按以下步骤安装 WorkBuddy 对应的 Connector。包装 CLI 没有公开的 Agent ID 参数；需要固定 ID 时使用原生 CLI 的 `-agent-id`。
+`plugins/workbuddy` 支持两个方向：WorkBuddy 主控通过 Relay 调用其他已授权 Agent；WorkBuddy 受控通过内置 A2A adapter 执行任务。受控端有 `desktop`（PC 本地助理 Open API）与 `cloud`（云端任务 Open API + ACP）两种模式。`setup` 启动 adapter 和一个 Connector，不要求预先准备外部 A2A origin。
 
-本仓库的 `plugins/workbuddy` 包含隧道客户端和管理 CLI，**没有提供把 WorkBuddy 能力暴露为本机 A2A HTTP 服务的 adapter**。全局安装 `workbuddy-a2a` 只注册命令，不能凭此确认 WorkBuddy 已有 `/.well-known/agent-card.json`。若本机没有真正连接到目标 Agent 能力的 A2A origin，先完成该服务端接入，再申请配对。临时 echo/沙箱 origin 只能验证隧道传输，不能算 WorkBuddy Agent 接入成功。
+云端模式可以新建会话，也能绑定已有云端 task ID；同一 A2A context 的后续轮次复用对应云端会话。两种模式都可以在具备 Node.js 22 和持续网络连接的主机运行；云端受控执行无需 PC 助理在线。WorkBuddy 云端作为主控时，须在其可执行命令的环境内安装 CLI、配对并获得目标访问权限；仅填写应用提示词不会授予工具能力。
 
-若目标是 **WorkBuddy PC 端本地助理**，腾讯[开放平台文档](https://open.workbuddy.cn/docs/openapi)提供查询在线状态、发送消息和增量读取消息历史的 API。它要求已创建并启用的第三方应用、用户 OAuth 授权，以及 `user.localassistant.invokable` / `user.localassistant.readable` 权限；本仓库尚未实现相应的 A2A 桥接。CodeBuddy Code CLI 的 [`--a2a` stdio 被调模式](https://www.codebuddy.ai/docs/cli/cli-reference)是另一种运行时入口，不能用它代替 WorkBuddy 桌面/沙箱 Agent 的接入验证。
+## 安装与启动
 
-若目标是 **WorkBuddy 云端沙箱里的当前 Agent**，应先验证[云端任务 API 与 ACP 通道](https://open.workbuddy.cn/docs/openapi)：用带 `user.task.readable` 授权的第三方应用查询任务列表，确认当前会话的 `task_id` 出现在列表里，再查询该任务是否返回可用 ACP `link`/`token`，最后验证 `session/load` 能否加载这一已有会话。`user.task.invokable` 可用于新建任务，但新建任务不等于接入当前会话。官方文档列出了这条 API 路径；当前仓库尚未验证该沙箱会话是否可通过这些接口访问，因此不能把它宣称为已接入。不要把 client secret、OAuth token 或 ACP token 放进安装包或对话。
-
-### 开放平台 OAuth 回调
-
-在 Buddy 应用中登记 `https://dsh-relay.chuanbota.com/oauth/workbuddy/callback`。这必须与 Relay 的 `publicUrl` 同源；Relay 部署说明见 [`a2a-relay/README.md`](../../../a2a-relay/README.md#workbuddy-open-api-oauth-callback)。仅保存地址还不能授权：先发布带此路由的新 Relay，并在其**服务端私有环境**配置应用 `client_id`、`client_secret`、允许使用该授权的 Connector Agent ID 和加密密钥。不要把这些值写入本插件、静态 `cli.json`、应用表单的其他字段或聊天。
-
-Connector 已配对且 Relay OAuth 配置就绪后，在 Connector 主机运行：
+先阅读[通用配对说明](shared.md)。在仓库根目录安装依赖与 CLI，要求 Node.js 22+：
 
 ```bash
-workbuddy-a2a platform login
-workbuddy-a2a platform status
+rtk npm ci --prefix plugins/workbuddy
+rtk npm install -g ./plugins/workbuddy
+rtk proxy workbuddy-a2a setup --relay wss://dsh-relay.chuanbota.com/connect --name '传播塔 WorkBuddy'
+rtk proxy workbuddy-a2a auth status
 ```
 
-第一条命令打印 WorkBuddy 官方授权 URL；用户打开并同意后，第二条确认已关联。`platform logout` 从 Relay 删除本应用保存的加密 token。Relay 将授权码一次性兑换并加密存储 token，Connector 只用自己的配对凭据访问 OAuth 状态与短期 access token；应用密钥留在 Relay 服务端。该阶段仅完成 Open API 授权，**尚未**证明当前沙箱会话可见，也未提供 WorkBuddy 原生 A2A origin；仍需进行上述任务列表和 ACP 验证。
+`setup` 使用系统分配的 loopback 端口启动真实的 PC adapter。Card/RPC 均要求独立 Bearer token；token 每次启动随机生成，只在进程间传递，不写入 settings、安装包或日志。Connector 向 Relay 发布 Card 时重写接口地址。
 
-## 安装与配置
-
-当前仓库能验证的是 **WorkBuddy 包内 CLI 的本机运行路径**；尚未提供可复现的 WorkBuddy 市场源注册流程。不要假定把 `plugins/workbuddy` 复制到某个目录就会出现在 GUI。当前[公开连接器文档](https://open.workbuddy.cn/docs/connector)给出的 CLI + Skill 包基础结构是在提交目录根部放 `connector-meta.json`、`cli.json`、`icon.svg` 和 `skills/`；此前抽样的市场下载包则把 `cli.json` 放在 `ai.workbuddy/` 并带内部清单。两者可能是提交包与分发包的不同阶段，须通过目标版本的实际上传、解析和安装验证，不能仅凭任一静态样例断定另一布局无效。公开文档要求在 `connector-meta.json` 声明使用到的 `minWorkbuddyVersion`，但仍需在目标客户端验证版本闸实际生效。
-
-### 自动安装与诊断
-
-本机 A2A origin 已启动后，从仓库根目录运行以下命令。脚本检查 Node.js、Agent Card 和 token 环境，安装 `ws`，复用已有 pending/凭据，写入非敏感的 WorkBuddy settings，再启动**一个**后台进程。若 origin 要求 Bearer token，先在当前进程环境提供 `A2A_LOCAL_TOKEN`；脚本不会保存 token。管理员仍需在审批页核对 Agent ID 和六位确认码并批准。
+`auth status` 显示待审批 Agent ID、六位确认码和审批地址。管理员在 `/pair` 核对后批准。`Logged in` 要求隧道健康，而非仅有凭据文件；这仍不代表 WorkBuddy Open API 已授权。
 
 ```bash
-sh scripts/install-connector.sh install --host workbuddy --relay wss://dsh-relay.chuanbota.com/connect --local http://127.0.0.1:9900
-sh scripts/install-connector.sh status --host workbuddy
+rtk proxy workbuddy-a2a stop
+rtk proxy workbuddy-a2a start
 ```
 
-同机运行多个 WorkBuddy A2A origin 时，每个服务须先在其自身配置中监听不同端口，并使用不同的 Agent Card `name`。安装脚本用 `--instance` 隔离状态、PID、日志和进程名；`--local auto` 从指定起始端口扫描**已经启动**的服务，只有 Agent Card 名称与 `--expect-name` 完全匹配才接入：
+`stop` 停止本地 adapter 和隧道，不会假装取消已送到 WorkBuddy 的任务。重启恢复查询已有任务，不重新发送。
+
+`A2A_CONNECTOR_INSTANCE` 可隔离多实例（最长32字符的小写字母、数字、下划线或连字符）；每个实例有独立身份、进程、任务记录及动态端口。`A2A_CONNECTOR_CONFIG_DIR` 可指定私有状态目录，默认 `~/.config/a2a-connector/`。已有 settings 不匹配时不会覆盖，须先检查或使用另一实例。
+
+## 云端模式
+
+首次配置云端受控 Agent（与已有桌面实例使用不同 instance）：
 
 ```bash
-sh scripts/install-connector.sh install --host workbuddy --instance reviewer --expect-name 'Review Agent' --relay wss://dsh-relay.chuanbota.com/connect --local auto --port-start 9900
-sh scripts/install-connector.sh status --host workbuddy --instance reviewer
+rtk proxy env A2A_CONNECTOR_INSTANCE=cloud workbuddy-a2a setup --mode cloud --relay wss://dsh-relay.chuanbota.com/connect --name '传播塔云端'
+rtk proxy env A2A_CONNECTOR_INSTANCE=cloud workbuddy-a2a auth status
+rtk proxy env A2A_CONNECTOR_INSTANCE=cloud workbuddy-a2a platform login
+rtk proxy env A2A_CONNECTOR_INSTANCE=cloud workbuddy-a2a doctor
 ```
 
-此实例的文件使用 `workbuddy-reviewer.*` 前缀，后台 Connector 标题带独立的状态路径指纹；使用包装 CLI 检查或停止它时，传入 `A2A_CONNECTOR_INSTANCE=reviewer` 环境变量。脚本不能替 WorkBuddy 或其他外部 Agent 修改其内置 A2A 服务的监听端口；若服务因 9900 冲突而没启动，先在该服务的启动配置中改端口。扫描时匿名读取 Card，不会把本机 Bearer token 发往未确认的端口；遇到两个同名 Card 会报错。若 Card 必须认证，改用明确的 `--local http://127.0.0.1:<port>`，同时保留 `--expect-name` 校验。
-
-需要停止时执行 `sh scripts/install-connector.sh stop --host workbuddy`。只有在 `status` 提示 401/409、已经核实没有有效凭据，并按[通用恢复顺序](shared.md#兑换失败重复申请与安全恢复)检查 `.state-*` 后，才执行：
+如需操作现有云端会话，在**第一次 setup** 时追加 `--task-id ACTUAL_CLOUD_TASK_ID`，可选 `--cwd /workspace`。task ID 是云端会话 ID，不是 Buddy 应用 ID。绑定后始终使用指定会话；不存在、无权访问或不可用时直接失败，不偷偷新建。绑定模式的所有 context 共用该会话，应避免手动对话并发。创建模式中，不带 context 的新任务建立新会话；`call TARGET --context-id RETURNED_CONTEXT_ID` 用于完成后的追问。
 
 ```bash
-sh scripts/install-connector.sh repair --host workbuddy --relay wss://dsh-relay.chuanbota.com/connect --local http://127.0.0.1:9900
+rtk proxy env A2A_CONNECTOR_INSTANCE=cloud workbuddy-a2a cloud tasks
+rtk proxy env A2A_CONNECTOR_INSTANCE=cloud workbuddy-a2a cloud task ACTUAL_CLOUD_TASK_ID
 ```
 
-`repair` 会停止脚本管理的进程、归档失效 pending 并重新申请；发现可能含凭据的临时文件或已有凭据时会停下，不会覆盖。后台 stderr 保存在私有的 `~/.config/a2a-connector/workbuddy.stderr.log`；`status` 只摘要提示 401/409，不输出凭据。该脚本连接的是指定的本机 A2A origin，**不会**让包自动出现在 WorkBuddy GUI。脚本用法见 `sh scripts/install-connector.sh --help`。
+列表返回第一页最多100条；查询命令只输出 task ID、名称与状态，不输出 OAuth 或 ACP 凭据。`doctor` 在云端模式检查权限、任务列表及绑定会话可用状态，不创建任务；执行时再验证 ACP 建连与加载能力。
 
-验收时应确认三件事：Agent Card 指向预期的真实 A2A 服务；批准后 Relay 显示在线；最后由有权限的远端调用者发起一个会触达 **WorkBuddy 实际能力**的任务并核对结果。`Logged in`、已保存凭据、443 端口的 WSS 连接或 echo 响应，只证明对应的局部环节，不能代替最后一项。
+新建会话先提交仅要求 `READY` 的初始化指令，待其空闲或完成，再用 ACP `session/prompt` 提交实际任务一次，避免创建接口和 ACP 重复执行同一条业务指令。初始化本身可能使用平台额度。ACP 通过认证 SSE + POST 双通道通信，按 initialize、session/load、session/prompt 顺序调用；旧历史不混入新轮次结果。只有当前 prompt 的最终响应 `stopReason=end_turn` 才报告完成，拒绝/取消分别映射为 rejected/canceled，额度或轮次中断保持 input-required。支持流式文本、产物增量更新及删除；返回产物正文或 `agent:///` 位置，不伪造媒体下载地址。
 
-### 手动 CLI 路径
-
-下面的步骤可让同一台机器上的 WorkBuddy A2A origin 接入 Relay，但不会自动把连接器注册到 WorkBuddy GUI：
-
-1. 安装包依赖并确认 Node.js 22+。从仓库根目录执行：
-
-   ```bash
-   npm ci --prefix plugins/workbuddy
-   node --version
-   ```
-
-   要使用下文的交互式 `workbuddy-a2a` 命令，先在 `plugins/workbuddy` 目录执行 `npm install -g .`，并确认 `workbuddy-a2a` 在 PATH 中；`-g` 仅安装命令入口，运行时仍以 CLI 自身的位置寻找随包的 `vendor/connector`。只走非交互原生 CLI 路径则不需要全局安装。更新此包时保留私有状态目录，退出/卸载前先停止进程；`auth logout` 会移除本地凭据，但不会卸载 npm 包。
-
-2. **只启动一个**使用 `~/.config/a2a-connector/workbuddy.json` 的 Connector 进程。在交互式终端执行：
-
-   ```bash
-   workbuddy-a2a auth login
-   ```
-
-   按提示输入 Relay WSS `/connect` URL 和本机 A2A origin。命令先保存待审批请求，再启动后台 Connector；不要在等待审批时再次执行 `auth login`、`start` 或另开一个原生 CLI 轮询同一状态文件。
-
-   非交互环境可直接运行随包的原生 CLI。以下 `-request-only` 只提交/复用请求并输出公开审批信息，**不会**启动后台轮询；提交后只启动一个 `-auto-pair` 进程，或在获批后用下文的一次性兑换方式。不要同时使用两种方式：
-
-   ```bash
-   node plugins/workbuddy/vendor/connector/cli.js -relay wss://dsh-relay.chuanbota.com/connect -local http://127.0.0.1:9900 -state "$HOME/.config/a2a-connector/workbuddy.json" -request-only
-   node plugins/workbuddy/vendor/connector/cli.js -relay wss://dsh-relay.chuanbota.com/connect -local http://127.0.0.1:9900 -state "$HOME/.config/a2a-connector/workbuddy.json" -auto-pair
-   ```
-
-   在非交互路径中，`workbuddy-settings.json` 不会自动生成，因此 `workbuddy-a2a start` 不能接管该进程，`auth status` 也可能误报未登录。继续用相同的原生 CLI 参数管理它。若本机 origin 需要 Bearer token，在**启动 Connector 的进程环境**中提供 `A2A_LOCAL_TOKEN`；包装 CLI 的 `login`/`start` 会继承当时的环境，但不会保存 token。重开终端、登录会话或服务重启后必须再次注入。不要把 token 放进 `cli.json` 的静态 `env`、shell 历史、命令参数或聊天内容。
-
-3. 交互式路径用 `workbuddy-a2a auth status` 查看审批信息，用 `workbuddy-a2a stop` / `start` 控制后台进程。`start` 会拒绝重复启动同一实例；若提示正在启动或 PID 文件仍指向活进程，先核实该进程，不要再手动起一个原生 CLI。`Logged in` 当前要求凭据文件、PID 文件和进程同时存在；进程退出时即使凭据仍有效也可能显示 `Not logged in`。`start` 打印 `Connector started` 仅表示子进程已派生，仍须按下文检查 Relay 连接。
-
-   WorkBuddy 文件均在 `~/.config/a2a-connector/`：`workbuddy.json` 是含 token 的凭据，`workbuddy.json.pending` 是待审批请求，`workbuddy-settings.json` 保存 relay/local 等非 token 设置，`workbuddy.pid` 记录后台 PID，`workbuddy.stderr.log` 保存子进程输出。它们与 Hermes、DSH 的状态文件彼此独立。不要展示文件正文或把它们提交到仓库。
-
-## WorkBuddy 故障恢复
-
-`Not logged in` 也可能表示 PID 文件不存在、进程已退出，或非交互路径没有 settings 文件；不能单凭这条输出断定凭据失效。先按[通用恢复顺序](shared.md#兑换失败重复申请与安全恢复)停止同一状态路径的进程，并检查是否已有可用凭据。交互式路径可先执行 `workbuddy-a2a stop`；仍要用 `pgrep -fl '^a2a-[0-9a-f]{8}-'` 核对是否有原生 CLI 或旧包进程。
-
-完成停进程和凭据检查后，可以只查看文件名/权限，并归档**已确认失效**的 pending；不要用 `cat`、`jq`、`grep` 展示凭据内容，也不要整目录上传：
+工具审批会返回 `TASK_STATE_INPUT_REQUIRED`，`task` / `adapter task` 的 `metadata.permission` 包含 request ID、工具说明及可选项。收到用户明确选择后，主控可回复：
 
 ```bash
-state_dir="$HOME/.config/a2a-connector"
-ls -ld "$state_dir"
-ls -l "$state_dir"/workbuddy.json "$state_dir"/workbuddy.json.pending "$state_dir"/.state-* 2>/dev/null || true
-# 仅在确认 workbuddy.json 不存在、.pending 已失效且所有相关进程都停止后：
-mv "$state_dir/workbuddy.json.pending" "$state_dir/workbuddy.json.pending.backup-$(date +%Y%m%d-%H%M%S)"
+rtk proxy workbuddy-a2a permission TARGET_AGENT_ID A2A_TASK_ID '"permission-1"' ACTUAL_OPTION_ID
+rtk proxy workbuddy-a2a cancel TARGET_AGENT_ID A2A_TASK_ID
 ```
 
-WorkBuddy 原生 CLI 还支持在已取得 `pair_` 码、且没有另一个兑换进程时，以 `A2A_PAIR_CODE` 和 `-enroll-only` 做一次性兑换；六位确认码不能用于此步骤。不要把 `pair_` 码或本机 Bearer token 放入 `cli.json` 的静态 `env`、命令历史或聊天内容。
+permission 的 request ID 参数为 JSON：字符串带双引号，数字保留数字类型；必须使用原请求提供的 option ID。不得为继续执行而自动批准。取消会向 ACP 发送 session/cancel，并等待真实 cancelled 结束响应，发送取消请求不等于任务已经停止。
 
-WorkBuddy 自带的**出站** A2A 调用能力与本 Connector 的**入站** Relay 隧道方向不同。若只需 WorkBuddy 向外调用 Agent，先确认宿主功能是否已满足需要；若要让远端调用 WorkBuddy PC 本地助理，可评估上文的官方 Open API 授权路径。
+创建/发送结果未知、ACP 断线或 runner 重启后，保留原 A2A 与云端 task ID，不自动重建或重发；需要用户在原云端会话核实。创建响应丢失时，任务元数据保留唯一 `cloudName=A2A-<A2A_TASK_ID>` 供查询平台任务列表。此类未核实任务会阻止新的受控轮次；不会仅凭会话 idle/completed 或历史文字推断当前轮次成功，也不宣称可跨连接恢复丢失的最终 RPC 响应。
 
-## 从 WorkBuddy 调用其他 Agent
+用户检查原云端会话、确认不再执行后，可明确放弃这轮跟踪：`workbuddy-a2a release TARGET_AGENT_ID A2A_TASK_ID`。若创建响应丢失，追加通过 cloudName 找到的云端 task ID；驱动会验证名称匹配及云端已不活跃。该操作仅把未核实记录关闭为 rejected 并释放队列，**不报告执行成功，也不取消远端任务**。不自动调用 release 来绕过未解决状态。
 
-已配对的 WorkBuddy 实例可以复用自身凭据，经 Relay 调用获授权的目标。管理员须先在 Relay `/pair/list` 给**当前 WorkBuddy Agent ID** 授予目标 Agent 的访问权限；否则请求返回 403。目标 ID 从管理员列表或可信的 Agent Card 获取，不通过猜测生成。以下命令从标准输入读取任务，返回 JSON（含状态、任务 ID、上下文 ID 和文本结果）；需要长时间执行的任务在 120 秒后报出任务 ID，先用 `task` 查询其状态再决定是否重试，避免重复执行：
+ACP 地址仅信任官方 `acp.workbuddy.cn/sessions/<id>` 和文档中的 `*.agentos-run.net/acp`，禁止重定向及任意外部凭据目的地。ACP token 过期时，在发送业务 prompt 前通过原 task ID 获取新凭据并重建连接；已尝试发送的业务 prompt 不会自动重试。
+
+## 开放平台 OAuth 与 Relay 配置
+
+Buddy 应用登记回调 `https://dsh-relay.chuanbota.com/oauth/workbuddy/callback`。PC 模式申请 `user.localassistant.readable`、`user.localassistant.invokable`；云端模式申请 `user.task.readable`、`user.task.invokable`。Relay 服务端私有环境配置：
+
+```text
+WORKBUDDY_CLIENT_ID=<应用Client ID>
+WORKBUDDY_CLIENT_SECRET=<应用密钥>
+WORKBUDDY_AGENT_ID=<获批的WorkBuddy Connector Agent ID>
+WORKBUDDY_TOKEN_KEY=<32字节随机数据的Base64编码>
+WORKBUDDY_SCOPES=user.localassistant.readable user.localassistant.invokable
+```
+
+仅云端时，SCOPES 改为 `user.task.readable user.task.invokable`；同一获批 Agent 需要两种能力时配置四个权限并重新授权。Relay 当前将 OAuth 限定给一个 `WORKBUDDY_AGENT_ID`；另一个 instance 是不同 Agent 身份，不能共享或复制凭据。若改用云端实例，须同步把该配置改为其获批 Agent ID；此版本不提供一个 Relay OAuth 配置同时授权多个实例的功能。
+
+密钥仅保存在服务端私有环境；加密密钥须跨重启保留。此版本继续使用一个明确的 `WORKBUDDY_AGENT_ID` 保护应用令牌，其他 Agent 不能取得它们。部署及反向代理路径见 [Relay 说明](../../../a2a-relay/README.md#workbuddy-open-api-oauth-callback)。之后运行：
 
 ```bash
-printf '%s\n' '请审查这个改动' | workbuddy-a2a call reviewer-agent-id
-workbuddy-a2a task reviewer-agent-id <task-id>
+rtk proxy workbuddy-a2a platform login
+rtk proxy workbuddy-a2a platform status
+rtk proxy workbuddy-a2a doctor
 ```
 
-多实例时设置 `A2A_CONNECTOR_INSTANCE`，以选中对应的配对状态。该命令只访问配置的 Relay，并检查 Agent Card 给出的 JSON-RPC 地址仍位于该 Relay 的目标路径下，避免把配对凭据发往任意 URL。它支持文本任务，不提供附件、交互审批或持久的多轮上下文；这些能力需要单独实现和验证。WorkBuddy GUI 是否能直接调用这个命令，取决于插件的发现与工具注册，不能把 CLI 可用等同于 GUI 已集成。
+用户在 `platform login` 输出的官方 URL 授权。`doctor` 按当前模式检查配对、实时隧道、应用授权、所需权限与平台可用状态，全部满足才成功退出；它不提交任务或打印 token。
 
-反方向仍要求一个能把 `SendMessage` 真正转发到目标 WorkBuddy Agent 的本地 A2A origin。当前包没有这样的服务。若目标为 PC 本地助理，可在取得开放平台应用和用户授权后实现 Open API 适配；若目标为此次测试中的沙箱会话，必须先确认该会话的受支持调用入口及会话绑定方式，不能用新建的 echo Agent 冒充它。
+退出接入时先用 `platform logout` 清理 Relay 的加密 OAuth 会话，再用 `auth logout` 停止进程并移除本地配对凭据。
 
-完成安装后，按[通用配对与验证](shared.md#配对与授权边界)检查审批、凭据和连线。
+## WorkBuddy 作为主控
+
+管理员在 `/pair/list` 为当前 WorkBuddy Agent 授予指定目标的调用权限。`targets` 只显示已获授权的目标：
+
+```bash
+rtk proxy workbuddy-a2a targets
+rtk proxy workbuddy-a2a call ACTUAL_TARGET_ID --message-id UNIQUE_REQUEST_ID
+rtk proxy workbuddy-a2a task ACTUAL_TARGET_ID REMOTE_TASK_ID
+```
+
+占位符须替换为实际值。`call` 的任务文本通过 stdin 提供，不放入凭据字段。发送前会保存 message ID 和 Relay request ID 到私有 `workbuddy.json.outbound.json`。结果 JSON 包含 task/context ID、状态、文本和请求编号。
+
+超时或断线后用原错误里的 request ID 查询，不再次发送：
+
+```bash
+rtk proxy workbuddy-a2a outbound RELAY_REQUEST_ID
+```
+
+它优先查询已记录的远端 task，否则查询 Relay 日志恢复晚到结果。同一 `--message-id` 和内容再次调用时只查旧请求；内容不同会拒绝。只有本地明确记录在发送前检查失败（`dispatched:false`）时，修复后才允许用原 ID 再调用。没有日志、日志过期或状态未知，均不证明原任务未执行。
+
+## WorkBuddy 作为受控
+
+管理员给主控 Agent 授予此 WorkBuddy Agent 的调用权限。主控使用 Card 中的 `SendMessage` / `GetTask`；前者返回持久 task ID，任务在后台继续，后者返回状态和结果。也可本机诊断：
+
+```bash
+rtk proxy workbuddy-a2a adapter task TASK_ID
+```
+
+PC API 是用户的一条**共享对话**，不是按 A2A context 隔离的沙箱。adapter 同时只接受一个未完成任务；执行中、等待审批或结果未知时拒绝新任务。同一 context 可在上一轮完成后继续，但不承诺与手动桌面对话隔离。
+
+任务发送前持久化且只发送一次。响应丢失或重启后通过任务标记与历史恢复关联；无法确认则保留未知状态、阻止新任务，不自动重发。记录默认保留7天，最多256条；活动和未知记录不会自动清理，容量不足会停止接收，须先归档终态记录。日志含任务内容和结果，应保持私有权限，不得提交到 Git。
+
+官方历史 API 没有独立完成事件。adapter 要求最终回复为带 `a2aTaskId` 的 JSON，状态为 `completed`、`failed` 或 `input-required`。普通文字、中间消息或其他任务的回复不会被当成完成。30分钟未收到关联结果时显示需要人工检查，仍继续查询原任务。
+
+工具审批和问答在 WorkBuddy 桌面处理，不自动批准。PC 模式下 `CancelTask` 明确报告不支持：当前 PC API 没有取消接口，停止 adapter 不等于停止远端执行。支持文本任务与结果；附件上传及任意并发不在此 PC 路径内。云端模式的完成、审批与取消规则见上节。
+
+## WorkBuddy 客户端连接器包
+
+`cli.json` 声明托管 Node.js 22、非交互安装及 `auth connect` / `auth status` / `auth logout`。GUI 认证不等待 stdin：`auth connect` 启动或复用后台服务，输出 Relay 审批 URL 后退出；后台继续配对，客户端只读轮询 `auth status`。Open API 授权另用 `platform login`。`cli.json.env.A2A_RELAY_URL` 为可调整的非敏感部署地址。
+
+```bash
+rtk proxy python3 scripts/package-workbuddy.py
+```
+
+输出 `dist/workbuddy-a2a-connector-VERSION.zip`。根目录含 `connector-meta.json`、`cli.json`、`icon.svg`、`skills/` 及运行代码。按[官方 CLI + Skill 文档](https://open.workbuddy.cn/docs/connector)上传并通过客户端安装，再加入 Buddy 应用市场。创建 Buddy 应用或全局安装 CLI，不等于注册市场连接器。
+
+本地测试覆盖包结构、两种模式的非交互认证、后台生命周期、真实 Connector 隧道、模拟 PC Open API 和云端 ACP 执行。平台审核、目标客户端安装、真实 OAuth 与真实账号的 PC/云端执行仍须部署后验收；模拟接口通过不代表真实账号已授权。API 契约来源：[WorkBuddy Open API](https://open.workbuddy.cn/docs/openapi)、[ACP prompt turn](https://agentclientprotocol.com/protocol/v1/prompt-turn)。
+
+## 自动安装与诊断
+
+旧 `scripts/install-connector.sh --host workbuddy --local ...` 保留为**已有外部 A2A origin** 的兼容入口，不启动此 PC adapter。使用前确认 Card 指向真实服务，不以 echo 代替 WorkBuddy 执行能力：
+
+```bash
+rtk proxy sh scripts/install-connector.sh install --host workbuddy --relay wss://dsh-relay.chuanbota.com/connect --local http://127.0.0.1:9900
+```
+
+修复配对时遵循[通用恢复顺序](shared.md#兑换失败重复申请与安全恢复)，不可因未知结果重复兑换一次性 pairing code 或覆盖凭据。

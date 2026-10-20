@@ -5,8 +5,8 @@
     "linux": "npm install -g ."
   },
   "auth": {
-    "darwin": "workbuddy-a2a auth login",
-    "linux": "workbuddy-a2a auth login"
+    "darwin": "workbuddy-a2a auth connect",
+    "linux": "workbuddy-a2a auth connect"
   },
   "status": {
     "darwin": "workbuddy-a2a auth status",
@@ -16,5 +16,7 @@
     "darwin": "workbuddy-a2a auth logout",
     "linux": "workbuddy-a2a auth logout"
   },
-  "statusMatch": "Logged in"
+  "statusMatch": "Logged in",
+  "env": { "A2A_RELAY_URL": "wss://dsh-relay.chuanbota.com/connect" },
+  "authUrlDomain": "dsh-relay.chuanbota.com"
 }

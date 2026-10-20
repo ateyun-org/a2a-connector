@@ -16,50 +16,52 @@ flowchart LR
 
 主控连接器 OAuth 只授权 Relay 工具；应用 Client ID/Secret 用于受控侧的 WorkBuddy Open API OAuth。这是两个授权流程。模式和胶囊是行为预设，不创建连接、安装工具或发放调用权限。
 
-## 服务端私有配置
+## 现有部署直接升级
 
-Client Secret 在开放平台创建应用时完整展示一次。当前应用的基础配置页只显示 ID、授权范围和回调地址，没有可见的 Secret 查看/重置入口；如果创建时未保存，须通过平台支持确认恢复或重置方式。不要把 Secret 放进连接器 ZIP、应用配置 ZIP、聊天或 Git。
+新版 Relay 命令行服务默认启用 MCP。继续使用服务器已经加载的 `manifest/config/config.json`，不需要额外配置 `RELAY_MCP_ENABLED=true`，也不需要更换已有管理员凭据。只有明确设置 `relay.mcpEnabled=false` 或 `RELAY_MCP_ENABLED=false` 才关闭；已有非空环境变量仍优先。
 
-在 `a2a-relay` 仓库运行以下命令，创建只属于服务器的 EnvironmentFile。命令生成强管理员凭据和持久加密密钥，不输出它们，也不会覆盖既有文件：
+程序现在读取现有 `workbuddy.clientId` 和 `workbuddy.clientSecret`。未配置的接收端 ID 默认 `chuanbota-workbuddy-cloud`，授权范围默认 PC 与云端的四个完整权限；均与本项目目前的应用配置一致。仍只允许这个准确的受控身份获取上游令牌，不会自动授权全部 Agent。
 
-```bash
-rtk proxy python3 scripts/workbuddy-config.py init --env /private/path/workbuddy.env --client-id ACTUAL_CLIENT_ID --agent-id chuanbota-workbuddy-cloud --mode cloud
-rtk proxy python3 scripts/workbuddy-config.py check --env /private/path/workbuddy.env
+令牌加密密钥优先沿用 `workbuddy.tokenKey` 或 `WORKBUDDY_TOKEN_KEY`。未提供时，程序从应用 Secret 派生用途隔离、重启稳定的32字节密钥，无需额外挂载密钥文件。使用派生密钥时，应用 Secret 轮换后需要重新完成上游授权。已经使用显式密钥的部署必须保留原密钥。
+
+JSON 中的应用凭据属于服务端私有数据，不能进入公开文件、静态包或连接器包。无需把原有 JSON 凭据迁移到环境变量才能运行。`scripts/workbuddy-config.py` 和私有 EnvironmentFile 是可选运维工具，不再是启用 MCP 的前提。
+
+## 自动发布静态发现文件
+
+每次启动会使用实际 `relay.publicUrl` 自动更新：
+
+```text
+程序工作目录/.well-known/oauth-protected-resource/mcp
+程序工作目录/.well-known/oauth-authorization-server
+程序工作目录/manifest/public/.well-known/oauth-protected-resource/mcp
+程序工作目录/manifest/public/.well-known/oauth-authorization-server
 ```
 
-用本地编辑器在该文件的 `WORKBUDDY_CLIENT_SECRET=` 后填写真实 Secret。校验仅检查配置结构，不证明平台已经授权。文件包含：
+它们仅含公开地址和协议能力，和 HTTP 动态发现接口共用同一份定义。更新时仅写这两个文件，保留已有 `.well-known/acme-challenge/`。文件系统只读时记录提示，服务仍正常提供动态接口。
 
-| 字段 | 用途 |
-| --- | --- |
-| `RELAY_MCP_ENABLED=true` | 启用远程 MCP、OAuth discovery 与授权服务 |
-| `RELAY_ADMINTOKEN` | Relay 配对/权限管理的强管理员凭据 |
-| `WORKBUDDY_CLIENT_ID` / `WORKBUDDY_CLIENT_SECRET` | 开放平台应用身份，仅 Relay 持有 |
-| `WORKBUDDY_AGENT_ID` | 已配对受控适配器的准确 Agent ID |
-| `WORKBUDDY_TOKEN_KEY` | 32字节随机数据的 Base64，加密上游令牌，跨部署保留 |
-| `WORKBUDDY_SCOPES` | 云端、PC 或两者的完整 readable/invokable 权限对 |
-
-`--mode desktop` 选择 PC 权限，`--mode both` 申请四个权限；适配器仍需明确选择 desktop 或 cloud 运行。不要因部署新版本而重新生成加密密钥。MCP 启用时，Relay 命令行启动拒绝不足32字符的管理员凭据。
-
-## 部署 Relay 与接收服务
-
-Relay 现在需要 Go 1.25+ 编译；发布包可包含 Linux 二进制，服务器运行时不需要 Go。依赖 SDK 为官方 `github.com/modelcontextprotocol/go-sdk v1.7.0`。
-
-1. 将编译好的 Relay 放在 `/opt/chuanbota/relay/relay`。参考 `a2a-relay/deploy/relay.example.json` 填写真实 Redis 地址、认证及公共 HTTPS origin，保存到 `/etc/chuanbota/relay.json`。保留现有 Redis 数据及 Relay 权限。私有 EnvironmentFile 放在 `/etc/chuanbota/workbuddy.env`，权限0600，只交给 Relay 服务。
-2. 按 `deploy/chuanbota-relay.service` 创建专用服务用户并安装 systemd unit。服务仅监听 `127.0.0.1:8020`，通过现有 HTTPS 反向代理访问。把 `deploy/nginx-workbuddy.conf` 中的 MCP、discovery 和 OAuth 路由合并到现有 server 中；保留已有 `/connect`、`/agents/`、`/pair`、`/pair/list`、`/pairing/`、`/admin/` 和 `/relay/` 路由。不要用示例覆盖现有站点。OAuth 路由关闭记录查询参数的访问日志。
-3. 将 CLI 包解压到 `/opt/chuanbota/workbuddy` 并安装 Node.js 22+ 及包依赖。创建单独的 `chuanbota-connector` 用户和私有目录 `/var/lib/chuanbota-workbuddy`。为该用户设置 `A2A_CONNECTOR_CONFIG_DIR=/var/lib/chuanbota-workbuddy`、`A2A_CONNECTOR_INSTANCE=cloud` 后，用相同身份完成首次 setup：
+发布流程也可以在打包前调用程序导出到发布根目录，此命令不连接 Redis，也不要求应用密钥或管理员凭据：
 
 ```bash
-rtk proxy /usr/bin/node /opt/chuanbota/workbuddy/cli.js setup --mode cloud --relay wss://dsh-relay.chuanbota.com/connect --agent-id chuanbota-workbuddy-cloud --name '传播塔云端受控'
-rtk proxy /usr/bin/node /opt/chuanbota/workbuddy/cli.js auth status
+rtk proxy ./a2a-relay -config deploy/relay.example.json -export-static /path/to/release-webroot
 ```
 
-这些命令必须在接收服务的用户和环境内执行，不要在管理员自己的 HOME 中创建另一套状态。确认 Agent ID 与服务器 `WORKBUDDY_AGENT_ID` 一致，在 `/pair` 核对确认码并批准。
+自动生成发生在程序能访问的文件系统内。若现有发布把工作目录或 `manifest/public` 作为站点目录，发现文件会随之更新；Go 进程不能写入未挂载的宿主机 Nginx 目录。是否已对公网可见需用公开检查确认，不能把容器内生成成功等同于 Nginx 已读取。
 
-二进制、目录所有者、依赖安装和回退顺序见 [部署包操作说明](../../deploy/workbuddy-install.md)。运行 `scripts/package-workbuddy-deployment.py` 可将两个 Linux 架构程序、两种连接器包和公开部署模板打包；脚本只接受明确列出的文件，不收集任何本地私有配置。
+静态内容应以 `application/json` 返回。`a2a-relay/deploy/workbuddy-static/` 和 `dist/workbuddy-discovery-static.zip` 保留为独立发布材料，内含可与证书规则共存的静态路由示例。所有 Nginx 文件都是可选参考，不会由程序擅自改写服务器配置。
 
-4. 同一用户、同一环境执行 `platform login`，由账号持有人在官方授权页面同意；再执行 `doctor`。首次 setup 启动了一个后台 runner，先 `stop`，然后安装 `a2a-connector/deploy/chuanbota-workbuddy.service`，由 systemd 运行前台 `workbuddy-a2a run`。正常运维用 systemd start/stop，不让系统服务与手动后台服务重叠。CLI 的 `run` 保留同一 PID/锁规则，退出释放锁；重启不会重新提交未知任务。
+## 发布后诊断与接收端
 
-PC 模式使用同一个安装流程，换成 `--mode desktop` 并确保受控 PC 在线。云端适配器可以部署在服务器，执行本身不依赖 PC 在线。当前上游 OAuth 仍绑定一个明确的 `WORKBUDDY_AGENT_ID`，不要把它描述成多租户自动授权服务。
+`GET /oauth/workbuddy/health` 或已存在的回调地址加 `?relay_health=1` 可检查新程序，只返回 `mcpEnabled`、`workbuddyConfigured` 等公开状态，不返回应用 Secret、令牌、管理员凭据或 Agent 清单。
+
+在 Relay 仓库运行：
+
+```bash
+rtk proxy python3 scripts/check-workbuddy-deployment.py --base https://dsh-relay.chuanbota.com
+```
+
+新版默认配置中，无令牌 `/mcp` 应返回401及发现 challenge。若新 health 已显示 MCP 开启而公网 `/mcp` 仍404，应定位外层转发或不同 upstream；只有旧接口响应时，需要核对实际运行的程序版本。这类网络问题无法由客户端凭空确定服务器文件路径。
+
+接收端继续使用现有 CLI 的 desktop/cloud 模式、配对、`platform login` 和 `doctor`。接收端 ID 须与 Relay 默认的 `chuanbota-workbuddy-cloud` 或显式配置相同。真实账号授权和管理员目标 ACL 仍是必要步骤，程序不会代替用户批准。
 
 ## 主控 OAuth 与权限
 

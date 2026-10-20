@@ -15,6 +15,7 @@ output = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else root / "dist"
 output.mkdir(parents=True, exist_ok=True)
 for builder in ("package-workbuddy.py", "package-workbuddy-mcp.py"):
     subprocess.run([sys.executable, str(root / "scripts" / builder), str(output)], check=True)
+subprocess.run([sys.executable, str(relay / "scripts/package-workbuddy-static.py")], check=True)
 
 files = {
     "relay/relay-linux-amd64": relay / "dist/relay-linux-amd64",
@@ -24,6 +25,7 @@ files = {
     "relay/nginx-workbuddy.conf": relay / "deploy/nginx-workbuddy.conf",
     "scripts/workbuddy-config.py": relay / "scripts/workbuddy-config.py",
     "scripts/check-workbuddy-deployment.py": relay / "scripts/check-workbuddy-deployment.py",
+    "workbuddy/workbuddy-discovery-static.zip": relay / "dist/workbuddy-discovery-static.zip",
     "workbuddy/chuanbota-workbuddy.service": root / "deploy/chuanbota-workbuddy.service",
     f"workbuddy/workbuddy-a2a-connector-{version}.zip": output / f"workbuddy-a2a-connector-{version}.zip",
     f"workbuddy/chuanbota-a2a-mcp-{version}.zip": output / f"chuanbota-a2a-mcp-{version}.zip",

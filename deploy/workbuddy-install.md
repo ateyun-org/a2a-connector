@@ -1,6 +1,6 @@
 # 传播塔 WorkBuddy 部署包
 
-此包包含 Linux amd64/arm64 Relay、接收端 CLI、远程 MCP 连接器及部署模板。它不会自动修改服务器或提交平台审核。完整授权流程见同目录 `workbuddy-mcp.md`。
+此包包含 Linux amd64/arm64 Relay、接收端 CLI、远程 MCP 连接器及部署模板。新版 Relay 默认启用 MCP，直接读取现有 workbuddy JSON 凭据，并自动生成静态发现文件；现有部署无需新增环境开关。它不会自动修改服务器或提交平台审核。完整授权流程见同目录 `workbuddy-mcp.md`。
 
 ## 部署前
 
@@ -16,8 +16,8 @@ rtk proxy sha256sum -c SHA256SUMS
 
 1. 将所选 `relay/relay-linux-ARCH` 安装为 `/opt/chuanbota/relay/relay`，权限0755。
 2. 参考 `relay/relay.example.json` 合并实际 Redis 和公共 URL 设置到 `/etc/chuanbota/relay.json`，权限0600且服务用户可读。启用 MCP；Redis 配置含密码时也只能保存在服务器。
-3. 首次部署可用 `scripts/workbuddy-config.py init --env /etc/chuanbota/workbuddy.env --client-id ACTUAL_CLIENT_ID --agent-id chuanbota-workbuddy-cloud --mode both` 创建0600私有文件。若已有本地私有配置，应安全复制该文件而不是重新生成。若已有 Relay 管理员凭据，沿用既有强凭据；已有 WorkBuddy 令牌时必须保留原 `WORKBUDDY_TOKEN_KEY`。由账号持有人填写真实 `WORKBUDDY_CLIENT_SECRET`，不用聊天传递。
-4. 执行私有配置 `check`，结果须 ready=true。安装 `relay/chuanbota-relay.service` 到 `/etc/systemd/system/`，核对文件所有者后执行 daemon-reload 和启动。
+3. 以下私有 EnvironmentFile 为可选运维方式；现有 JSON 配置可直接沿用。首次部署可用 `scripts/workbuddy-config.py init --env /etc/chuanbota/workbuddy.env --client-id ACTUAL_CLIENT_ID --agent-id chuanbota-workbuddy-cloud --mode both` 创建0600私有文件。若已有本地私有配置，应安全复制该文件而不是重新生成。若已有 Relay 管理员凭据，沿用既有强凭据；已有 WorkBuddy 令牌时必须保留原 `WORKBUDDY_TOKEN_KEY`。由账号持有人填写真实 `WORKBUDDY_CLIENT_SECRET`，不用聊天传递。
+4. 使用可选私有 env 文件时执行配置 `check`，结果须 ready=true。安装 `relay/chuanbota-relay.service` 到 `/etc/systemd/system/`，核对文件所有者后执行 daemon-reload 和启动。
 5. 把 `relay/nginx-workbuddy.conf` 中的路由合并到现有 HTTPS server，先 `nginx -t`，成功后再 reload；保留原隧道和管理路由。服务端监听127.0.0.1:8020。
 6. 执行 `scripts/check-workbuddy-deployment.py --base https://dsh-relay.chuanbota.com`。该无凭据检查不会产生配对或任务，也不能代替真实账号验收。
 

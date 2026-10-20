@@ -12,6 +12,8 @@ export function taskView(task) {
         metadata: { providerURI: artifact.uri, type: artifact.type, mimeType: artifact.mimeType } }))],
     metadata: { dispatchState: task.dispatchState, remoteMessageId: task.remoteMessageId,
       mode: task.mode || 'desktop', sharedDesktopConversation: task.mode !== 'cloud',
+      ...(task.providerState ? { providerState: task.providerState } : {}),
+      ...(task.blockedReason ? { blockedReason: task.blockedReason } : {}),
       ...(task.mode === 'cloud' ? { remoteTaskId: task.remoteTaskId, sharedCloudSession: task.sharedCloudSession,
         cloudName: task.cloudName, stopReason: task.stopReason, permission: task.permission, trackingReleased: task.trackingReleased } : {}),
       ...(task.lastPollError ? { lastPollError: task.lastPollError } : {}) } };

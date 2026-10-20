@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { callAgent, getAgentTask, listTargets, recoverDispatch, controlAgentTask } from './a2a-client.js';
-import { platformAccessToken, platformAuthorizationURL, platformRequest } from './platform-client.js';
+import { desktopControlInstructions, platformAccessToken, platformSetupURL, platformRelayURL, platformRequest } from './platform-client.js';
 import { acquireStateLock, connectorStatus, lockOwner, ownerAlive } from './vendor/connector/state-lock.js';
 import { loadEnrollment, validateConfig } from './vendor/connector/connector.js';
 import { CloudAPI, cloudTaskId } from "./cloud-api.js";
@@ -216,10 +216,29 @@ async function connect() {
     c = await config();
   }
   if (!(await existingPid())) await start();
+  let enrollment;
+  try { enrollment = await loadEnrollment(state); } catch { /* Pairing may still be pending. */ }
+  if (enrollment && ['desktop', 'cloud'].includes(c.adapter)) {
+    const linked = await platformRequest({ relay: c.relay, allowInsecure: c.allowInsecure, enrollment, endpoint: 'status' });
+    if (!linked.linked) await platformLogin();
+    else {
+      console.log(`WorkBuddy 账号已授权。接入说明：${platformRelayURL(c.relay, 'setup', c.allowInsecure)}?mode=${c.adapter}`);
+      showSetupHints(c);
+    }
+    return;
+  }
   const url = new URL(c.relay);
   url.protocol = url.protocol === 'wss:' ? 'https:' : 'http:';
   url.pathname = '/pair';
   console.log(`Approve this WorkBuddy Agent at ${url.toString()} then use auth status to compare its confirmation code.`);
+  console.log('配对审批完成后，请返回连接器再次点击连接，完成 WorkBuddy 账号授权。');
+  showSetupHints(c);
+}
+
+function showSetupHints(c) {
+  console.log('接入步骤：Relay 身份配对 → WorkBuddy 账号授权 → 连接检查 → 小任务验证。');
+  if (c.adapter === 'desktop') console.log(desktopControlInstructions);
+  else if (c.adapter === 'cloud') console.log('当前为云端执行模式，无需开启电脑端的远程连接开关。');
 }
 
 async function setup(argv) {
@@ -243,9 +262,10 @@ async function setup(argv) {
   await saveSettings(c);
   if (!(await existingPid())) await start();
   console.log(`WorkBuddy ${c.adapter} adapter started. Run auth status for pairing approval, then platform login for WorkBuddy authorization.`);
+  showSetupHints(c);
 }
 
-async function doctor() {
+async function readiness() {
   const c = await config();
   const result = { adapter: c.adapter || 'external', paired: false, tunnelOnline: false, linked: false,
     ...(c.adapter === 'cloud' ? { cloudAvailable: false } : { desktopOnline: false }) };
@@ -271,8 +291,35 @@ async function doctor() {
       } else result.desktopOnline = (await new DesktopAPI({ accessToken: () => platformAccessToken(options) }).status()).online;
     }
   } catch (error) { result.issue = error.message; }
+  result.nextActions = [];
+  if (!result.paired || !result.tunnelOnline) result.nextActions.push({ action: 'pair', command: 'auth connect', message: '先完成 Relay 配对审批并确认连接在线。' });
+  if (result.paired && !result.linked) result.nextActions.push({ action: 'authorize', command: 'platform login', message: 'WorkBuddy 账号尚未授权，请打开授权入口并使用执行任务的账号确认。' });
+  if (c.adapter === 'desktop') {
+    result.desktopRemoteControl = 'manual_check_required';
+    result.nextActions.push({ action: 'confirm_desktop_control', message: desktopControlInstructions });
+    if (result.linked && !result.desktopOnline) result.nextActions.push({ action: 'open_desktop', message: '打开并登录执行任务的电脑端 WorkBuddy。' });
+  }
+  result.connectionReady = result.paired && result.tunnelOnline && result.linked && !!(result.cloudAvailable || result.desktopOnline);
+  return result;
+}
+
+async function doctor() {
+  const result = await readiness();
   console.log(JSON.stringify(result));
-  if (!result.paired || !result.tunnelOnline || !result.linked || !(result.cloudAvailable || result.desktopOnline)) process.exitCode = 1;
+  if (!result.connectionReady) process.exitCode = 1;
+}
+
+async function connectionStatus() {
+  const c = await config();
+  if (!['desktop', 'cloud'].includes(c.adapter)) return status();
+  const result = await readiness();
+  if (result.connectionReady) console.log(`Logged in: ${result.agentId}`);
+  else {
+    console.log(result.linked ? '接收端尚未就绪，请运行 doctor 查看下一步。' : 'WorkBuddy 连接尚未完成，请点击连接完成配对与账号授权。');
+    for (const action of result.nextActions) console.log(action.message);
+    if (result.issue) console.log(result.issue);
+    process.exitCode = 1;
+  }
 }
 
 async function cloudTasks(id) {
@@ -393,9 +440,12 @@ async function platformOptions() {
 }
 
 async function platformLogin() {
-  const authorizationURL = await platformAuthorizationURL(await platformOptions());
-  console.log(`Open this WorkBuddy authorization URL:\n${authorizationURL}`);
-  console.log('After approving, run: workbuddy-a2a platform status');
+  const options = await platformOptions();
+  const c = await config().catch(error => { if (error.code !== 'ENOENT') throw error; return { adapter: 'desktop' }; });
+  const guideURL = await platformSetupURL(options, c.adapter === 'cloud' ? 'cloud' : 'desktop');
+  console.log(`打开接入引导页，按步骤授权并完成设置：\n${guideURL}`);
+  console.log('授权后返回连接器检查状态；命令行请在同一实例运行 doctor。');
+  showSetupHints(c);
 }
 
 async function platformStatus() {
@@ -414,6 +464,7 @@ const command = argv.join(' ');
 try {
   if (argv[0] === 'setup') await setup(argv.slice(1));
   else if (command === 'doctor') await doctor();
+  else if (command === 'connection status') await connectionStatus();
   else if (command === 'targets') console.log(JSON.stringify(await listTargets(await platformOptions())));
   else if (argv.length === 3 && argv[0] === 'adapter' && argv[1] === 'task') await localTask(argv[2]);
   else if (command === 'auth login') await login();
@@ -453,5 +504,5 @@ try {
   else if (command === 'platform login') await platformLogin();
   else if (command === 'platform status') await platformStatus();
   else if (command === 'platform logout') await platformLogout();
-  else throw new Error('Usage: workbuddy-a2a setup --relay <wss-url> [--mode desktop|cloud] [--task-id <cloud-session-id>] [--cwd /workspace] [--name <name>], doctor, targets, auth connect|login|status|logout, platform login|status|logout, start|stop|run, call <target-agent-id> [--message-id <id>] [--context-id <id>] (stdin), outbound <request-id>, task <target-agent-id> <task-id>, adapter task <task-id>, cloud tasks, cloud task <cloud-session-id>, cancel <target-agent-id> <task-id>, release <target-agent-id> <task-id> [recovered-cloud-task-id], permission <target-agent-id> <task-id> <request-id-as-json> <option-id>');
+  else throw new Error('Usage: workbuddy-a2a setup --relay <wss-url> [--mode desktop|cloud] [--task-id <cloud-session-id>] [--cwd /workspace] [--name <name>], doctor, connection status, targets, auth connect|login|status|logout, platform login|status|logout, start|stop|run, call <target-agent-id> [--message-id <id>] [--context-id <id>] (stdin), outbound <request-id>, task <target-agent-id> <task-id>, adapter task <task-id>, cloud tasks, cloud task <cloud-session-id>, cancel <target-agent-id> <task-id>, release <target-agent-id> <task-id> [recovered-cloud-task-id], permission <target-agent-id> <task-id> <request-id-as-json> <option-id>');
 } catch (error) { console.error(error.message); process.exitCode = 1; }

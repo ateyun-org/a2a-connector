@@ -1,15 +1,24 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { terminal } from './task-store.js';
+import { desktopControlInstructions } from './platform-client.js';
 
-const textOf = message => message.content.filter(part => typeof part === 'string').join('\n');
+const textOf = message => message.content.map(part => typeof part === 'string' ? part :
+  part?.type === 'text' && typeof part.text === 'string' ? part.text : '').filter(Boolean).join('\n');
+const typeOf = message => message.msg_type || message.metadata?.msgType || '';
 const timestamp = () => new Date().toISOString();
 const marker = id => `[A2A_TASK:${id}]`;
+const channelSetupErrors = new Set([
+  'This channel is not configured. Please complete the setup in Claw Settings and try again.',
+  '该通道尚未配置，请先在「Claw 设置」中完成配置后重试。',
+]);
+const channelRejected = message => message.metadata?.state === 'exec_approval' &&
+  channelSetupErrors.has(textOf(message).trim());
 export class BridgeError extends Error {
   constructor(code, message) { super(message); this.code = code; }
 }
 
 function finalResult(message, id) {
-  if (message.role !== 'assistant' || message.msg_type !== 'text') return null;
+  if (message.role !== 'assistant' || !['', 'text'].includes(typeOf(message))) return null;
   let text = textOf(message).trim();
   if (text.startsWith('```json\n') && text.endsWith('\n```')) text = text.slice(8, -4).trim();
   let value;
@@ -98,7 +107,10 @@ export class DesktopBridge {
     return this.store.transact(tasks => {
       const task = tasks.find(item => item.id === id);
       if (!task) throw new BridgeError(-32001, 'Task not found');
-      Object.assign(task, update, { updatedAt: timestamp() });
+      // A successful empty poll is not evidence of remote task progress.
+      if (Object.entries(update).some(([key, value]) => task[key] !== value)) {
+        Object.assign(task, update, { updatedAt: timestamp() });
+      }
       return task;
     });
   }
@@ -158,12 +170,28 @@ export class DesktopBridge {
       if (result) {
         const state = { completed: 'TASK_STATE_COMPLETED', failed: 'TASK_STATE_FAILED', 'input-required': 'TASK_STATE_INPUT_REQUIRED' }[result.result.status];
         await this.patch(id, { state, dispatchState: 'sent', output: result.result.text.slice(0, 256 * 1024),
-          resultMessageId: result.message.message_id, lastPollError: undefined });
+          resultMessageId: result.message.message_id, providerState: undefined, blockedReason: undefined, lastPollError: undefined });
       } else {
-        const permission = messages.some(message => /permission|ask[_-]?question/i.test(message.msg_type || ''));
+        // The desktop conversation is shared. Uncorrelated approvals/errors
+        // after another user's message must not be assigned to this task.
+        let turn = [...messages].sort((a, b) => (Date.parse(a.created_at) || 0) - (Date.parse(b.created_at) || 0));
+        const anchor = turn.findIndex(message => message.message_id === task.remoteMessageId);
+        if (anchor >= 0) turn = turn.slice(anchor + 1);
+        const nextUser = turn.findIndex(message => message.role === 'user');
+        if (nextUser >= 0) turn = turn.slice(0, nextUser);
+        const blocked = turn.filter(message => message.role === 'assistant' &&
+          (/permission|ask[_-]?question/i.test(typeOf(message)) || message.metadata?.state === 'exec_approval' ||
+            channelRejected(message))).at(-1);
         const overdue = Date.now() - Date.parse(task.createdAt) >= this.resultTimeoutMs;
-        await this.patch(id, { ...(permission && task.remoteMessageId ? {
-          state: 'TASK_STATE_INPUT_REQUIRED', output: 'WorkBuddy requires user input or approval. Respond in the WorkBuddy desktop, then query this task again.' } : overdue ? {
+        await this.patch(id, { ...(blocked && task.remoteMessageId ? {
+          // WorkBuddy's inbound policy emits this exact localized rejection
+          // before starting execution (using its shared exec_approval state).
+          // Ordinary approvals remain unresolved; never infer success here.
+          state: channelRejected(blocked) ? 'TASK_STATE_REJECTED' : 'TASK_STATE_INPUT_REQUIRED',
+          output: `${textOf(blocked).trim().slice(0, 256 * 1024) || 'WorkBuddy requires user input or approval.'}\n${channelRejected(blocked) ? `The desktop channel rejected this message before execution. ${desktopControlInstructions} 此任务未自动重发。` : 'Inspect the original WorkBuddy desktop task; tracking continues without resubmitting.'}`,
+          providerState: typeof blocked.metadata?.state === 'string' ? blocked.metadata.state.slice(0, 128) : undefined,
+          blockedReason: channelRejected(blocked) ? 'workbuddy_channel_not_configured' : 'workbuddy_approval_required',
+        } : overdue ? {
           state: 'TASK_STATE_INPUT_REQUIRED', output: 'No correlated final result has arrived. Inspect the original task in WorkBuddy; tracking continues without resubmitting.' } : {}), lastPollError: undefined });
       }
     } catch {

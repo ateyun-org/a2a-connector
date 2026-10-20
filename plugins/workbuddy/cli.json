@@ -9,8 +9,8 @@
     "linux": "workbuddy-a2a auth connect"
   },
   "status": {
-    "darwin": "workbuddy-a2a auth status",
-    "linux": "workbuddy-a2a auth status"
+    "darwin": "workbuddy-a2a connection status",
+    "linux": "workbuddy-a2a connection status"
   },
   "unAuth": {
     "darwin": "workbuddy-a2a auth logout",

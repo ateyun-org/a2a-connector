@@ -53,6 +53,8 @@ rtk proxy ./a2a-relay -config deploy/relay.example.json -export-static /path/to/
 
 ## 发布后诊断与接收端
 
+用户接入引导页位于 `/oauth/workbuddy/setup`，复用现有 `/oauth/` 路由。新的 CLI/Skill 提交包会主动显示账号授权与桌面连接许可的步骤；授权回调也继续显示后续设置，不再仅提示“授权完成，可以关闭”。桌面和云端分别引导，开关确认仍由用户完成。此次引导需升级 Relay 和 CLI/Skill 包，不要求新增服务器配置。
+
 `GET /oauth/workbuddy/health` 或已存在的回调地址加 `?relay_health=1` 可检查新程序，只返回 `mcpEnabled`、`workbuddyConfigured` 等公开状态，不返回应用 Secret、令牌、管理员凭据或 Agent 清单。
 
 在 Relay 仓库运行：

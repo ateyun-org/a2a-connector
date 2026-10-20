@@ -14,6 +14,7 @@ assert metadata['type'] == 'cli' and metadata['version'] == package['version']
 assert cli['runtime'] == {'type': 'node', 'version': '22'}
 for platform in ('darwin', 'linux'):
     assert cli['auth'][platform] == 'workbuddy-a2a auth connect'
+    assert cli['status'][platform] == 'workbuddy-a2a connection status'
     assert platform in cli['init'] and platform in cli['status'] and platform in cli['unAuth']
 assert all(field in metadata for field in ('description', 'description_zh', 'description_en'))
 

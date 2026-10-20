@@ -8,6 +8,10 @@
 
 ## 安装与启动
 
+首次接入时，CLI 会显示配对、账号授权和执行模式对应的设置顺序。GUI 的 `auth connect` 在配对完成后提供接入引导页；`platform login` 也进入同一引导页。页面先跳转 WorkBuddy 官方账号授权，回调成功后继续显示桌面远程连接设置和检查步骤。云端模式不要求桌面远程连接开关。
+
+连接器 GUI 使用 `connection status` 同时检查配对、实时隧道、WorkBuddy 账号授权和当前模式的平台可用状态，未完成账号授权时不会匹配「Logged in」。`auth status` 仍只用于配对诊断。配对审批完成后若连接器还提示未连接，再点一次连接即可进入账号授权。`doctor` 的 `nextActions` 给出缺失步骤；桌面开关只能人工确认，不把在线状态当成远程控制已启用。
+
 先阅读[通用配对说明](shared.md)。在仓库根目录安装依赖与 CLI，要求 Node.js 22+：
 
 ```bash
@@ -90,6 +94,10 @@ rtk proxy workbuddy-a2a doctor
 ```
 
 用户在 `platform login` 输出的官方 URL 授权。`doctor` 按当前模式检查配对、实时隧道、应用授权、所需权限与平台可用状态，全部满足才成功退出；它不提交任务或打印 token。
+
+`desktopOnline=true` 仅证明桌面客户端在线，不证明其入站 Claw 通道已启用。若历史返回“该通道尚未配置 / This channel is not configured”，应先在桌面端检查对应通道设置；对于被关闭的微信小程序通道，在左下角“连接移动端 → 小程序”面板检查“允许移动端连接此设备”。启用是用户的访问控制选择，安装程序不自动改写 WorkBuddy 设置。
+
+桌面消息历史兼容字符串和 `{type:"text",text:"..."}` 文本块，以及空 `msg_type`。匹配任务 ID 的最终 JSON 才能报告任务完成；`metadata.state=exec_approval` 的审批会报告 input-required。桌面入站策略返回的明确“通道尚未配置”拒绝报告 rejected，保留原任务及提供方原因，不自动重发。成功空轮询不再刷新任务进度时间戳。相关设置入口见[官方多端协同说明](https://www.workbuddy.cn/docs/workbuddymini/features/Multidevice)。
 
 退出接入时先用 `platform logout` 清理 Relay 的加密 OAuth 会话，再用 `auth logout` 停止进程并移除本地配对凭据。
 

@@ -49,6 +49,8 @@ rtk proxy ./a2a-relay -config deploy/relay.example.json -export-static /path/to/
 
 静态内容应以 `application/json` 返回。`a2a-relay/deploy/workbuddy-static/` 和 `dist/workbuddy-discovery-static.zip` 保留为独立发布材料，内含可与证书规则共存的静态路由示例。所有 Nginx 文件都是可选参考，不会由程序擅自改写服务器配置。
 
+新客户端优先使用 `/mcp` 的401响应中指定的 `/oauth/mcp/resource-metadata`，由 Relay 动态返回 JSON。该文档指向带路径的授权服务 issuer `https://dsh-relay.chuanbota.com/oauth`；按 MCP 标准依次尝试发现地址，可回退到 `/oauth/.well-known/openid-configuration`。这两处动态文档复用现有 `/oauth/` 转发，避开根目录静态文件被服务器标记为 `text/plain` 的问题。原有根级发现接口和两个静态文件继续保留，不更改原来的授权、令牌受众或权限。[MCP 标准规定的发现顺序](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#authorization-server-metadata-discovery)
+
 ## 发布后诊断与接收端
 
 `GET /oauth/workbuddy/health` 或已存在的回调地址加 `?relay_health=1` 可检查新程序，只返回 `mcpEnabled`、`workbuddyConfigured` 等公开状态，不返回应用 Secret、令牌、管理员凭据或 Agent 清单。
@@ -76,7 +78,7 @@ MCP 地址：`https://dsh-relay.chuanbota.com/mcp`。
 3. 管理员仅选择需要调用的目标。这个主控身份不需要运行入站隧道，管理列表显示 offline 并不代表 MCP 主控离线；其可调用目标的隧道需要在线。
 4. 用户在原授权页确认，客户端得到 MCP OAuth token。没有目标权限时可以认证，但 `a2a_targets` 为空，不能派发任务。工具中不提供管理员操作，也不自动增加权限。
 
-支持 WorkBuddy 私有协议回调 `workbuddy://workbuddy/mcp/connector:chuanbota-a2a/oauth/callback`、平台分配的 `oc_...` 连接器 ID 回调和精确注册的 HTTP loopback 回调。回调必须先精确注册，不能在授权时更换。拒绝 plain PKCE、重定向不匹配和其他资源的 token。默认只接受配置中的公共 Host、同源请求与无 Origin 的原生客户端；浏览器客户端来源须在 `mcpAllowedOrigins` 中明确配置。
+支持 WorkBuddy 私有协议回调 `workbuddy://workbuddy/mcp/connector:chuanbota-a2a/oauth/callback`、平台分配的 `oc_...` 连接器 ID 回调和精确注册的 HTTP loopback 回调。回调必须先精确注册，不能在授权时更换。拒绝 plain PKCE、重定向不匹配和其他资源的 token。允许反向代理将 Host 改为内部上游地址，不要求新增代理配置。默认允许同源请求与无 Origin 的原生客户端；浏览器客户端来源须在 `mcpAllowedOrigins` 中明确配置，重复 Origin 也拒绝。所有请求仍需有效的 MCP 令牌和目标权限；Host 与转发请求头不参与 OAuth 地址或令牌受众生成。
 
 ## 绑定到 Buddy 应用
 

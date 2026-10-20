@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "chuanbota-a2a": {
+      "type": "streamableHttp",
+      "url": "https://dsh-relay.chuanbota.com/mcp",
+      "timeout": 30000
+    }
+  }
+}

@@ -1,0 +1,28 @@
+[Unit]
+Description=Chuanbota WorkBuddy receiving adapter and A2A tunnel
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=chuanbota-connector
+Group=chuanbota-connector
+WorkingDirectory=/opt/chuanbota/workbuddy
+Environment=A2A_CONNECTOR_CONFIG_DIR=/var/lib/chuanbota-workbuddy
+Environment=A2A_CONNECTOR_INSTANCE=cloud
+# Upstream application secrets are intentionally confined to the Relay service.
+ExecStart=/usr/bin/node /opt/chuanbota/workbuddy/cli.js run
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+KillMode=control-group
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+StateDirectory=chuanbota-workbuddy
+StateDirectoryMode=0700
+ReadWritePaths=/var/lib/chuanbota-workbuddy
+
+[Install]
+WantedBy=multi-user.target

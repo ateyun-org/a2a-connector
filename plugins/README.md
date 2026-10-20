@@ -8,6 +8,7 @@ Choose a host from the [installation index](../AGENT_INSTALL.md). Shared pairing
 | `hermes`    | Python hook/tool shim launching Node 22+; detects native A2A and provisions quiet-CLI compatibility only when absent. `ws` is vendored. |
 | `dsh`       | One Cordis plugin starts the native DSH A2A service and Relay Connector together; configured `agents` add outbound A2A delegation. DSH SDKs stay in peer dependencies to share host instances. |
 | `workbuddy` | CLI + Skill with Node 22; starts an authenticated desktop or cloud ACP adapter and Connector together, with durable incoming/outgoing tracking. |
+| `workbuddy-mcp` | Remote OAuth MCP + Skill for Buddy application binding; calls authorized Relay targets without a local CLI installation. |
 
 After changing the canonical Connector `src/`, run `node scripts/sync-plugins.mjs` from the repository root. All four packages carry generated Connector sources in `vendor/connector/`. Do not edit those copies directly. The native DSH adapter is package-specific and is not copied to other hosts. To bump versions across the root package and all host plugins, run `./bump-version.sh <version|patch|minor|major>`.
 

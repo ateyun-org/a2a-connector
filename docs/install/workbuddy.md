@@ -1,5 +1,7 @@
 # Tencent WorkBuddy 接入任务协作
 
+若目标是把能力绑定到“传播塔” Buddy 应用，使用新增的[远程 MCP 应用接入指南](workbuddy-mcp.md)。本页介绍受控适配器和 CLI 诊断；CLI ZIP 与 MCP 连接器 ZIP 是不同的分发包。服务管理器可用 `workbuddy-a2a run` 以前台方式运行既有实例。
+
 `plugins/workbuddy` 支持两个方向：WorkBuddy 主控通过 Relay 调用其他已授权 Agent；WorkBuddy 受控通过内置 A2A adapter 执行任务。受控端有 `desktop`（PC 本地助理 Open API）与 `cloud`（云端任务 Open API + ACP）两种模式。`setup` 启动 adapter 和一个 Connector，不要求预先准备外部 A2A origin。
 
 云端模式可以新建会话，也能绑定已有云端 task ID；同一 A2A context 的后续轮次复用对应云端会话。两种模式都可以在具备 Node.js 22 和持续网络连接的主机运行；云端受控执行无需 PC 助理在线。WorkBuddy 云端作为主控时，须在其可执行命令的环境内安装 CLI、配对并获得目标访问权限；仅填写应用提示词不会授予工具能力。

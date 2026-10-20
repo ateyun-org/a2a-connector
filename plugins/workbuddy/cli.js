@@ -107,6 +107,54 @@ async function stop() {
   } catch (error) { if (error.code !== 'ENOENT' && error.code !== 'ESRCH') throw error; }
   finally { await lock.release(); }
 }
+
+// Foreground lifecycle for service managers; the runner still owns its native lock.
+async function runForeground() {
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  const lock = await acquireStateLock(startLock.slice(0, -5));
+  let child, exited, marked = false, released = false;
+  const forwardSignal = signal => child?.kill(signal);
+  const onTerm = () => forwardSignal('SIGTERM');
+  const onInt = () => forwardSignal('SIGINT');
+  process.once('SIGTERM', onTerm);
+  process.once('SIGINT', onInt);
+  try {
+    if (await existingPid()) throw new Error('Connector already running; stop it before starting the service');
+    const c = await config();
+    if (!['desktop', 'cloud'].includes(c.adapter)) throw new Error('Foreground run requires a built-in desktop or cloud adapter');
+    child = spawn(binary, [runner, settings, state], { stdio: ['ignore', 'inherit', 'inherit', 'ipc'], env: process.env });
+    exited = new Promise(resolve => {
+      child.once('exit', (code, signal) => resolve({ code, signal }));
+      child.once('error', () => resolve({ code: 78 }));
+    });
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('WorkBuddy service startup timed out')), 7000);
+      const done = error => { clearTimeout(timer); error ? reject(error) : resolve(); };
+      child.once('error', () => done(new Error('WorkBuddy runner could not start')));
+      child.once('exit', () => done(new Error('WorkBuddy runner exited before startup completed')));
+      child.on('message', value => {
+        if (value?.type === 'workbuddy_ready') done();
+        if (value?.type === 'workbuddy_start_failed') done(new Error('WorkBuddy runner configuration is unavailable'));
+      });
+    });
+    await writeFile(pidFile, String(child.pid), { mode: 0o600, flag: 'wx' });
+    marked = true;
+    if (child.connected) child.disconnect();
+    await lock.release(); released = true;
+    const outcome = await exited;
+    process.exitCode = outcome.code ?? (['SIGTERM', 'SIGINT'].includes(outcome.signal) ? 0 : 1);
+  } finally {
+    child?.kill('SIGTERM');
+    if (exited) await exited;
+    if (marked) {
+      try { if ((await readFile(pidFile, 'utf8')) === String(child.pid)) await unlink(pidFile); }
+      catch (error) { if (error.code !== 'ENOENT') throw error; }
+    }
+    if (!released) await lock.release();
+    process.removeListener('SIGTERM', onTerm);
+    process.removeListener('SIGINT', onInt);
+  }
+}
 async function status() {
   try {
     const enrollment = await loadEnrollment(state);
@@ -377,6 +425,7 @@ try {
     console.log('Logged out');
   } else if (command === 'start') { await start(); console.log('Connector started'); }
   else if (command === 'stop') { await stop(); console.log('Connector stopped'); }
+  else if (command === 'run') await runForeground();
   else if (argv[0] === 'call' && argv.length >= 2) {
     let messageId, contextId;
     for (let i = 2; i < argv.length; i += 2) {
@@ -404,5 +453,5 @@ try {
   else if (command === 'platform login') await platformLogin();
   else if (command === 'platform status') await platformStatus();
   else if (command === 'platform logout') await platformLogout();
-  else throw new Error('Usage: workbuddy-a2a setup --relay <wss-url> [--mode desktop|cloud] [--task-id <cloud-session-id>] [--cwd /workspace] [--name <name>], doctor, targets, auth connect|login|status|logout, platform login|status|logout, start|stop, call <target-agent-id> [--message-id <id>] [--context-id <id>] (stdin), outbound <request-id>, task <target-agent-id> <task-id>, adapter task <task-id>, cloud tasks, cloud task <cloud-session-id>, cancel <target-agent-id> <task-id>, release <target-agent-id> <task-id> [recovered-cloud-task-id], permission <target-agent-id> <task-id> <request-id-as-json> <option-id>');
+  else throw new Error('Usage: workbuddy-a2a setup --relay <wss-url> [--mode desktop|cloud] [--task-id <cloud-session-id>] [--cwd /workspace] [--name <name>], doctor, targets, auth connect|login|status|logout, platform login|status|logout, start|stop|run, call <target-agent-id> [--message-id <id>] [--context-id <id>] (stdin), outbound <request-id>, task <target-agent-id> <task-id>, adapter task <task-id>, cloud tasks, cloud task <cloud-session-id>, cancel <target-agent-id> <task-id>, release <target-agent-id> <task-id> [recovered-cloud-task-id], permission <target-agent-id> <task-id> <request-id-as-json> <option-id>');
 } catch (error) { console.error(error.message); process.exitCode = 1; }

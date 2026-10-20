@@ -59,6 +59,19 @@ for (const mode of ['desktop', 'cloud']) test(`${mode} setup pairs without an ex
   await assert.rejects(run(process.execPath, [cli, 'start'], { env }), /already running/);
   await run(process.execPath, [cli, 'stop'], { env, timeout: 10000 });
   await assert.rejects(readFile(join(directory, 'workbuddy.pid')), { code: 'ENOENT' });
+  const foreground = spawn(process.execPath, [cli, 'run'], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+  let foregroundDiagnostics = '';
+  foreground.stdout.resume(); foreground.stderr.on('data', chunk => { foregroundDiagnostics += chunk; });
+  const foregroundExit = new Promise(resolve => foreground.once('close', (code, signal) => resolve({ code, signal })));
+  t.after(async () => { foreground.kill('SIGTERM'); await foregroundExit; });
+  await waitRead(join(directory, 'workbuddy.pid'));
+  await assert.rejects(run(process.execPath, [cli, 'start'], { env }), /already running/);
+  const foregroundStatus = await run(process.execPath, [cli, 'auth', 'status'], { env });
+  assert.match(foregroundStatus.stdout, /Awaiting approval/);
+  foreground.kill('SIGTERM');
+  assert.equal((await foregroundExit).code, 0, foregroundDiagnostics);
+  await assert.rejects(readFile(join(directory, 'workbuddy.pid')), { code: 'ENOENT' });
+  assert.equal(requests, 1, 'foreground restart must reuse the original pending pairing request');
 });
 
 function inputRun(args, text, env) {

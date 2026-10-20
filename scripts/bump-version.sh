@@ -289,8 +289,9 @@ if (!noLock) {
 if (!noPlugins) {
   console.log('\n\x1b[1m[Plugin Manifests]\x1b[0m');
 
-  // Workbuddy connector-meta.json
-  const wbMeta = path.join(rootDir, 'plugins', 'workbuddy', 'connector-meta.json');
+  // WorkBuddy CLI and remote MCP connector manifests.
+  for (const host of ['workbuddy', 'workbuddy-mcp']) {
+  const wbMeta = path.join(rootDir, 'plugins', host, 'connector-meta.json');
   if (fs.existsSync(wbMeta)) {
     const content = fs.readFileSync(wbMeta, 'utf8');
     let json = JSON.parse(content);
@@ -306,6 +307,7 @@ if (!noPlugins) {
         unchangedCount++;
       }
     }
+  }
   }
 
   // Hermes plugin.yaml

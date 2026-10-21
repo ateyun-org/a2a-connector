@@ -77,6 +77,12 @@ ACP 地址仅信任官方 `acp.workbuddy.cn/sessions/<id>`、文档中的 `*.age
 
 对于业务指令已发送但结束回执丢失的自有新建会话，`workbuddy-a2a reconcile TARGET_AGENT_ID A2A_TASK_ID`（A2A 方法 `ReconcileCloudTask`）仅连接并回放原会话，不创建任务、不发送 prompt。必须唯一匹配创建时间之后的原始用户指令及提供方轮次 ID，再找到该轮次唯一的明确 endTurn，才更新终态；重复同文指令、错误轮次、没有结束信号或外部绑定会话均保持未核实。`providerCompletionSignal` 标明实时通知或只读回放核实的依据。
 
+接收端重启后会自动对符合上述条件的原任务执行只读核实；断线后的未知结果也会每30秒重试核实。普通 `GetTask` 会触发后台检查，不需要接收端获得调用自身的 ACL，也不要求主控先调用 reconcile。核实必须恢复对应轮次的结果正文；只有平台 completed、旧的流式片段或缺失 endTurn，均不能报告成功。`metadata.recoveryState=pending/awaiting_evidence` 表示等待原会话证据，主控应继续查询原 task ID，不重新派发；核实成功后为 verified，普通 GetTask 返回恢复后的完整正文并释放串行队列。无法核实的记录仍阻止新任务，不自动 release。接收端停机或沙箱休眠时无法恢复，须先恢复接收进程。
+
+恢复正文与确认终态分别处理：若已唯一匹配原提供方轮次并回放出正文，但 endTurn 缺失或冲突，GetTask 仍返回已恢复的内容，标明 `recoveryState=output_recovered`、`completionVerified=false`、`recoveryBlockedReason`（missing_end_turn / conflicting_end_turn / unconfirmed_stop_reason）。状态继续为 input-required，不把正文当作已验证完成的结果。`recoveryEndTurnCount` 区分没有结束事件和重复事件；相同提供方轮次、相同 stopReason 的重复通知按幂等证据处理，冲突的原因仍拒绝确认。
+
+适配器也按官方协议读取原沙箱 `/api/session/artifacts?sessionId=<原云端ID>`，恢复断线期间漏掉的历史产物。返回数据必须属于原会话；产物正文和 agent:/// 位置可回传，签名 URL 和 task ticket 不写入任务记录。会话产物本身不证明原业务轮次完成，即使没有 endTurn 也可在 GetTask 的 artifacts 中查看，`artifactRecoveryState=recovered` 标明恢复来源。
+
 ## 开放平台 OAuth 与 Relay 配置
 
 Buddy 应用登记回调 `https://dsh-relay.chuanbota.com/oauth/workbuddy/callback`。PC 模式申请 `user.localassistant.readable`、`user.localassistant.invokable`；云端模式申请 `user.task.readable`、`user.task.invokable`。Relay 服务端私有环境配置：

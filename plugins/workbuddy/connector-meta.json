@@ -7,7 +7,7 @@
   "description_en": "Delegate tasks to authorized agents and receive WorkBuddy desktop or cloud tasks through an A2A Relay.",
   "source": "dsh-a2a-connector",
   "type": "cli",
-  "version": "0.5.3",
+  "version": "0.5.5",
   "minWorkbuddyVersion": "4.24.0",
   "examples_zh": [
     "把 WorkBuddy 接入任务协作网络",

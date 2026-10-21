@@ -14,7 +14,7 @@ async function fixture(t, options = {}, taskId) {
   const provider = await cloudProvider(t, options);
   const directory = await mkdtemp(join(tmpdir(), 'workbuddy-cloud-'));
   const store = new TaskStore(join(directory, 'tasks.json'));
-  const bridge = new CloudBridge({ ...provider, store, taskId, resultTimeoutMs: options.timeoutMs || 2000 });
+  const bridge = new CloudBridge({ ...provider, store, taskId, autoRecover: false, resultTimeoutMs: options.timeoutMs || 2000 });
   await bridge.start();
   t.after(async () => { await bridge.close(); await rm(directory, { recursive: true, force: true }); });
   return { ...provider, bridge, store };
@@ -156,6 +156,164 @@ test('read-only reconciliation requires the exact prompt and its unique authorit
   await assert.rejects(f.bridge.reconcile(initial.id), /Only an unresolved/);
 });
 
+function originalReplay(task, { result = 'Full recovered report', ending = true } = {}) {
+  const params = { sessionId: task.remoteTaskId, _meta: { timestamp: new Date().toISOString(),
+    'codebuddy.ai': { requestId: 'recovered-original-turn', mode: 'history' } } };
+  return [
+    { method: 'session/update', params: { ...params, update: { sessionUpdate: 'user_message_chunk',
+      content: { type: 'text', text: task.prompt } } } },
+    ...(result === undefined ? [] : [{ method: 'session/update', params: { ...params,
+      update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: result } } } }]),
+    ...(ending ? [{ method: 'session/endTurn', params: { ...params, stopReason: 'end_turn' } }] : []),
+  ];
+}
+
+test('receiver restart automatically recovers a later provider result through normal GetTask without self ACL or resubmission', async t => {
+  const options = { hold: true, timeoutMs: 25 };
+  const f = await fixture(t, options);
+  const initial = await f.bridge.submit(message('restart-result-recovery'));
+  const unknown = await wait(f.bridge, initial.id, task => task.dispatchState === 'unknown');
+  await f.bridge.patch(initial.id, { answer: 'Now generating the report.' });
+  await f.bridge.close();
+  f.sessions.get(unknown.remoteTaskId).status = 'completed';
+  options.replayEvents = originalReplay(unknown, { ending: false });
+  const restarted = new CloudBridge({ ...f, store: new TaskStore(f.store.path), recoveryIntervalMs: 25 });
+  t.after(() => restarted.close());
+  await restarted.start();
+  const adapter = createWorkBuddyAdapter({ bridge: restarted, token: 'r'.repeat(32) });
+  await new Promise(resolve => adapter.server.listen(0, '127.0.0.1', resolve));
+  t.after(() => adapter.close());
+  const getTask = async () => {
+    const response = await fetch(`http://127.0.0.1:${adapter.server.address().port}/rpc`, {
+      method: 'POST', headers: { authorization: `Bearer ${'r'.repeat(32)}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'GetTask', params: { id: initial.id } }),
+    });
+    return (await response.json()).result;
+  };
+  await wait(restarted, initial.id, task => task.recoveryState === 'output_recovered');
+  assert.equal((await getTask()).status.state, 'TASK_STATE_INPUT_REQUIRED', 'REST completed alone cannot prove this turn completed');
+  options.replayEvents = originalReplay(unknown);
+  let result;
+  for (let i = 0; i < 200; i++) {
+    result = await getTask();
+    if (result.status.state === 'TASK_STATE_COMPLETED') break;
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  assert.equal(result.status.state, 'TASK_STATE_COMPLETED');
+  assert.equal(result.status.message.parts[0].text, 'Full recovered report');
+  assert.equal(result.metadata.providerCompletionSignal, 'reconciled_session/endTurn');
+  assert.equal(result.metadata.recoveryState, 'verified');
+  assert.equal(result.id, initial.id); assert.equal(result.metadata.remoteTaskId, unknown.remoteTaskId);
+  assert.equal(f.creations.length, 1); assert.equal(f.prompts.length, 1);
+  assert.doesNotMatch(await readFile(f.store.path, 'utf8'), /oauth-secret|acp-secret/);
+  const next = await restarted.submit(message('queue-unblocked'));
+  assert.equal(next.state, 'TASK_STATE_SUBMITTED');
+});
+
+test('reconciliation never substitutes a partial live answer for missing replay result text', async t => {
+  const options = { hold: true, timeoutMs: 25 };
+  const f = await fixture(t, options);
+  const initial = await f.bridge.submit(message('missing-result'));
+  const unknown = await wait(f.bridge, initial.id, task => task.dispatchState === 'unknown');
+  await f.bridge.patch(initial.id, { answer: 'Now generating the report.' });
+  options.replayEvents = originalReplay(unknown, { result: '' });
+  await assert.rejects(f.bridge.reconcile(initial.id), /No correlated result text/);
+  assert.equal((await f.bridge.get(initial.id)).state, 'TASK_STATE_INPUT_REQUIRED');
+  assert.equal(f.prompts.length, 1);
+});
+
+test('a live receiver recovers a disconnected turn without requiring a runner restart', async t => {
+  const options = { disconnect: true };
+  const f = await fixture(t, options);
+  f.bridge.autoRecover = true;
+  f.bridge.recoveryIntervalMs = 25;
+  const initial = await f.bridge.submit(message('recover-without-restart'));
+  const unknown = await wait(f.bridge, initial.id, task => task.dispatchState === 'unknown');
+  options.replayEvents = originalReplay(unknown);
+  const result = await wait(f.bridge, initial.id, completed);
+  assert.equal(result.output, 'Full recovered report');
+  assert.equal(result.recoveryState, 'verified');
+  assert.equal(f.prompts.length, 1); assert.equal(f.creations.length, 1);
+});
+
+test('missing endTurn still exposes correlated replay text and original-session REST artifacts without claiming completion', async t => {
+  const options = { hold: true, timeoutMs: 25 };
+  const f = await fixture(t, options);
+  const initial = await f.bridge.submit(message('recover-content-without-end'));
+  const unknown = await wait(f.bridge, initial.id, task => task.dispatchState === 'unknown');
+  f.sessions.get(unknown.remoteTaskId).status = 'completed';
+  options.replayEvents = originalReplay(unknown, { ending: false });
+  options.artifactEntries = [{ sessionId: unknown.remoteTaskId, event: 'created',
+    url: 'https://private.example/signed?token=artifact-secret', artifact: {
+      type: 'overview', uri: 'agent:///artifacts/report.md', text: 'Original stored report', token: 'artifact-secret' } }];
+  await assert.rejects(f.bridge.reconcile(initial.id), /matched=0/);
+  const recovered = await f.bridge.get(initial.id);
+  assert.equal(recovered.state, 'TASK_STATE_INPUT_REQUIRED');
+  assert.equal(recovered.completionVerified, false);
+  assert.equal(recovered.providerState, 'completed');
+  assert.equal(recovered.recoveryBlockedReason, 'missing_end_turn');
+  assert.match(recovered.output, /completion remains unverified/);
+  assert.match(recovered.output, /Full recovered report/);
+  assert.equal(taskView(recovered).artifacts[0].parts[0].text, 'Original stored report');
+  assert.equal(recovered.artifactRecoveryState, 'recovered');
+  assert.equal(f.creations.length, 1); assert.equal(f.prompts.length, 1);
+  assert.doesNotMatch(await readFile(f.store.path, 'utf8'), /artifact-secret|private\.example|oauth-secret|acp-secret/);
+  await assert.rejects(f.bridge.submit(message('still-blocked')), /unresolved/);
+});
+
+test('identical repeated endTurn evidence is idempotent, conflicting reasons remain unresolved with recovered text', async t => {
+  const options = { hold: true, timeoutMs: 25 };
+  const f = await fixture(t, options);
+  const initial = await f.bridge.submit(message('duplicate-ending'));
+  const unknown = await wait(f.bridge, initial.id, task => task.dispatchState === 'unknown');
+  options.replayEvents = originalReplay(unknown);
+  options.replayEvents.push({ ...options.replayEvents.at(-1), params: { ...options.replayEvents.at(-1).params, stopReason: 'refusal' } });
+  await assert.rejects(f.bridge.reconcile(initial.id), /distinctReasons=2/);
+  assert.equal((await f.bridge.get(initial.id)).recoveryBlockedReason, 'conflicting_end_turn');
+  options.replayEvents.pop(); options.replayEvents.push(options.replayEvents.at(-1));
+  assert.equal((await f.bridge.reconcile(initial.id)).state, 'TASK_STATE_COMPLETED');
+  assert.equal(f.prompts.length, 1);
+});
+
+test('artifact reads refresh only expired ACP tickets and reject wrong sessions, incomplete lists and untrusted hosts', async () => {
+  const origin = 'https://65225-0123456789abcdef0123456789abcdef.e2b.sh5.sandbox.cloudstudio.club';
+  const credentials = { task_id: 'original', link: origin + '/acp', token: 'acp-secret' };
+  let requests = 0, refreshes = 0;
+  const api = new CloudAPI({ accessToken: async () => ({}), fetchImpl: async (url, options) => {
+    assert.equal(url.origin, origin); assert.equal(url.pathname, '/api/session/artifacts');
+    assert.equal(url.searchParams.get('sessionId'), 'original');
+    assert.equal(options.redirect, 'manual'); assert.equal(options.headers.Authorization, 'Bearer acp-secret');
+    requests++;
+    return requests === 1 ? new Response(null, { status: 401 }) : Response.json({ code: 0,
+      data: { sessionId: 'original', artifacts: [], pagination: { hasMore: false } } });
+  } });
+  api.get = async () => { refreshes++; return credentials; };
+  assert.deepEqual(await api.artifacts('original', { credentials }), []);
+  assert.equal(requests, 2); assert.equal(refreshes, 1);
+  await assert.rejects(api.artifacts('original', { credentials: { ...credentials, link: 'https://evil.example/acp' } }), /Untrusted/);
+  for (const data of [{ sessionId: 'other', artifacts: [] }, { sessionId: 'original', artifacts: [], pagination: { hasMore: true } }]) {
+    api.fetch = async () => Response.json({ code: 0, data });
+    await assert.rejects(api.artifacts('original', { credentials }), /Invalid or incomplete/);
+  }
+});
+
+test('concurrent reconciliation shares one provider load and shutdown cancels recovery timers', async t => {
+  const options = { hold: true, timeoutMs: 25 };
+  const f = await fixture(t, options);
+  const initial = await f.bridge.submit(message('coalesced-recovery'));
+  const unknown = await wait(f.bridge, initial.id, task => task.dispatchState === 'unknown');
+  options.replayEvents = originalReplay(unknown);
+  const before = f.calls.filter(call => call.method === 'session/load').length;
+  const results = await Promise.all([f.bridge.reconcile(initial.id), f.bridge.reconcile(initial.id)]);
+  assert.ok(results.every(completed));
+  assert.equal(f.calls.filter(call => call.method === 'session/load').length, before + 1);
+  assert.equal(f.prompts.length, 1);
+  const restarted = new CloudBridge({ ...f, store: f.store });
+  restarted.scheduleRecovery(initial.id, 10000);
+  await restarted.close();
+  assert.equal(restarted.recoveryTimers.size, 0);
+});
+
 test('cloud permission requires an explicit valid option and exposes no automatic approval', async t => {
   const f = await fixture(t, { permission: true }, 'existing');
   const task = await f.bridge.submit(message('permission'));
@@ -186,7 +344,7 @@ test('disconnection and restart preserve unresolved tasks without repeating crea
   const initial = await f.bridge.submit(message('disconnect'));
   await wait(f.bridge, initial.id, value => value.dispatchState === 'unknown');
   await f.bridge.close();
-  const restarted = new CloudBridge({ ...f, store: f.store });
+  const restarted = new CloudBridge({ ...f, store: f.store, autoRecover: false });
   await restarted.start();
   t.after(() => restarted.close());
   assert.equal((await restarted.submit(message('disconnect'))).id, initial.id);

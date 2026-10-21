@@ -53,6 +53,12 @@ export async function cloudProvider(t, options = {}) {
       res.writeHead(404); res.end('{}'); return;
     }
     assert.equal(req.headers.authorization, 'Bearer acp-secret');
+    if (url.pathname === '/api/session/artifacts') {
+      const id = url.searchParams.get('sessionId');
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ code: 0, data: { sessionId: id, artifacts: options.artifactEntries || [],
+        pagination: { hasMore: false } } })); return;
+    }
     const id = url.pathname.split('/').at(-1);
     if (!sessions.has(id)) { res.writeHead(404); res.end(); return; }
     if (req.method === 'GET') {

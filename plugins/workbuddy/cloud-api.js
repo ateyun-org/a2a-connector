@@ -1,4 +1,5 @@
 import { setTimeout as delay } from 'node:timers/promises';
+import { acpURL } from './acp-client.js';
 
 export function cloudTaskId(id) {
   if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(id)) throw new Error('Invalid WorkBuddy cloud task ID');
@@ -20,7 +21,7 @@ export class CloudAPI {
     if ((!test && base.origin !== 'https://www.workbuddy.cn') || base.pathname !== '/openapi/v2/' ||
         base.username || base.password || base.search || base.hash) throw new Error('Invalid WorkBuddy API origin');
     if (typeof accessToken !== 'function') throw new Error('WorkBuddy token provider is required');
-    Object.assign(this, { base, accessToken, fetch: fetchImpl });
+    Object.assign(this, { base, accessToken, fetch: fetchImpl, allowInsecure });
   }
 
   async request(path, { body, signal } = {}) {
@@ -71,6 +72,52 @@ export class CloudAPI {
     const data = await this.request('tasks', { body: { prompt, name }, signal });
     cloudTaskId(data.task_id);
     return data;
+  }
+
+  async artifacts(id, { credentials, signal } = {}) {
+    cloudTaskId(id);
+    let current = credentials || await this.get(id, signal);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (current.task_id !== id || typeof current.token !== 'string' || !current.token) throw new Error('Invalid artifact credentials');
+      const url = acpURL(current.link, this.allowInsecure);
+      if (url.pathname !== '/acp' && !this.allowInsecure) throw new Error('Artifact API is unavailable for this ACP endpoint');
+      url.pathname = '/api/session/artifacts';
+      url.searchParams.set('sessionId', id);
+      url.searchParams.set('limit', '128');
+      const response = await this.fetch(url, { redirect: 'manual', headers: { Authorization: `Bearer ${current.token}`, Accept: 'application/json' },
+        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(15000)]) : AbortSignal.timeout(15000) });
+      if (response.status === 401 && attempt === 0) {
+        await response.body?.cancel(); current = await this.get(id, signal); continue;
+      }
+      if (!response.ok) { await response.body?.cancel(); throw new Error(`Cloud artifact request HTTP ${response.status}`); }
+      const chunks = []; let size = 0;
+      for await (const chunk of response.body) {
+        size += chunk.length;
+        if (size > 4 * 1024 * 1024) throw new Error('Cloud artifacts exceed response limit');
+        chunks.push(chunk);
+      }
+      let value;
+      try { value = JSON.parse(Buffer.concat(chunks).toString('utf8')); }
+      catch { throw new Error('Invalid cloud artifact response'); }
+      const data = value?.data;
+      if (value.code !== 0 || data?.sessionId !== id || !Array.isArray(data.artifacts) ||
+          data.artifacts.length > 128 || data.pagination?.hasMore === true) throw new Error('Invalid or incomplete cloud artifact list');
+      const artifacts = new Map();
+      for (const entry of data.artifacts) {
+        const artifact = entry?.artifact;
+        if (entry?.sessionId !== id || !['created', 'updated', 'deleted'].includes(entry.event) ||
+            typeof artifact?.uri !== 'string' || !artifact.uri.startsWith('agent:///') || artifact.uri.length > 2048 ||
+            !['plan', 'tasks', 'media', 'overview'].includes(artifact.type)) throw new Error('Invalid cloud artifact entry');
+        if (entry.event === 'deleted') { artifacts.delete(artifact.uri); continue; }
+        const safe = { uri: artifact.uri, type: artifact.type };
+        for (const key of ['name', 'title', 'description', 'mimeType', 'text', 'size', 'createdAt', 'updatedAt']) {
+          if (typeof artifact[key] === 'string' || typeof artifact[key] === 'number') safe[key] = artifact[key];
+        }
+        if (Buffer.byteLength(JSON.stringify(safe)) > 256 * 1024) throw new Error('Cloud artifact exceeds journal limit');
+        artifacts.set(safe.uri, safe);
+      }
+      return [...artifacts.values()]; // Never persist task tickets, signed URLs, or unknown provider fields.
+    }
   }
 
   async ready(id, { signal, timeoutMs = 120000, pollMs = 2000, newlyCreated = false, onStatus = async () => {} } = {}) {

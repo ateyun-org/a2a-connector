@@ -18,6 +18,11 @@ export function taskView(task) {
         cloudName: task.cloudName, stopReason: task.stopReason, permission: task.permission, trackingReleased: task.trackingReleased,
         failureStage: task.failureStage, businessPromptAttempted: task.businessPromptAttempted,
         providerRequestId: task.providerRequestId, providerCompletionSignal: task.providerCompletionSignal } : {}),
+      ...(task.mode === 'cloud' && task.recoveryState ? { recoveryState: task.recoveryState,
+        recoveryLastAttemptAt: task.recoveryLastAttemptAt } : {}),
+      ...(task.mode === 'cloud' ? { completionVerified: task.completionVerified,
+        recoveryBlockedReason: task.recoveryBlockedReason, recoveryEndTurnCount: task.recoveryEndTurnCount,
+        artifactRecoveryState: task.artifactRecoveryState } : {}),
       ...(task.lastPollError ? { lastPollError: task.lastPollError } : {}) } };
 }
 
@@ -57,7 +62,9 @@ export function createWorkBuddyAdapter({ token, bridge, name = 'WorkBuddy Deskto
       if (['SendMessage', 'message/send'].includes(body.method)) {
         reply({ task: taskView(await bridge.submit(params.message)) }); return;
       }
-      if (['GetTask', 'tasks/get'].includes(body.method)) { reply(taskView(await bridge.get(params.id))); return; }
+      if (['GetTask', 'tasks/get'].includes(body.method)) {
+        reply(taskView(await (bridge.refreshTask ? bridge.refreshTask(params.id) : bridge.get(params.id)))); return;
+      }
       if (body.method === 'ListTasks') {
         if (params.pageToken) throw new BridgeError(-32602, 'Pagination is not supported');
         reply({ tasks: (await bridge.store.list()).filter(task => !params.contextId || task.contextId === params.contextId).map(taskView), nextPageToken: '' }); return;

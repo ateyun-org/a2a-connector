@@ -8,6 +8,9 @@ const now = () => new Date().toISOString();
 const bootstrap = 'Initialize this A2A cloud session only. Reply READY and wait for the next instruction. Do not execute tools or any other task.';
 const endState = reason => ({ end_turn: 'TASK_STATE_COMPLETED', refusal: 'TASK_STATE_REJECTED',
   cancelled: 'TASK_STATE_CANCELED' }[reason] || 'TASK_STATE_INPUT_REQUIRED');
+const recoverable = task => task?.state === 'TASK_STATE_INPUT_REQUIRED' && task.dispatchState === 'unknown' &&
+  task.businessPromptAttempted === true && task.promptRequestId !== undefined && task.remoteTaskId &&
+  !task.sharedCloudSession && task.cloudName === `A2A-${task.id}`;
 const providerRequestId = params => params?._meta?.['codebuddy.ai']?.requestId ||
   params?._meta?.['codebuddy.ai/conversationRequestId'] || params?.update?._meta?.['codebuddy.ai/conversationRequestId'];
 const userText = params => {
@@ -18,14 +21,18 @@ const userText = params => {
 
 /** Serialized cloud turns. Only the matching session/prompt response completes a turn. */
 export class CloudBridge {
-  constructor({ api, store, taskId, cwd = '/workspace', clientFactory, resultTimeoutMs = 30 * 60000 }) {
+  constructor({ api, store, taskId, cwd = '/workspace', clientFactory, resultTimeoutMs = 30 * 60000,
+    autoRecover = true, recoveryIntervalMs = 30000 }) {
     if (taskId !== undefined) cloudTaskId(taskId);
     if (typeof cwd !== 'string' || !cwd.startsWith('/') || cwd.length > 1024 || /[\u0000-\u001f]/.test(cwd)) throw new Error('Invalid cloud working directory');
-    Object.assign(this, { api, store, taskId, cwd, resultTimeoutMs });
+    if (!Number.isFinite(recoveryIntervalMs) || recoveryIntervalMs < 1) throw new Error('Invalid recovery interval');
+    Object.assign(this, { api, store, taskId, cwd, resultTimeoutMs, autoRecover, recoveryIntervalMs });
     this.controller = new AbortController();
     this.clientFactory = clientFactory || (options => new ACPClient(options));
     this.operations = new Set();
     this.clients = new Map();
+    this.reconciliations = new Map();
+    this.recoveryTimers = new Map();
     this.mode = 'cloud';
   }
 
@@ -37,6 +44,41 @@ export class CloudBridge {
         task.permission = undefined; task.updatedAt = now();
       }
     });
+    for (const task of await this.store.list()) if (recoverable(task)) this.scheduleRecovery(task.id);
+  }
+
+  scheduleRecovery(id, delayMs = 0) {
+    if (!this.autoRecover || this.controller.signal.aborted || this.recoveryTimers.has(id) || this.reconciliations.has(id)) return;
+    const timer = setTimeout(() => {
+      this.recoveryTimers.delete(id);
+      const operation = (async () => {
+        try {
+          if (!recoverable(await this.get(id))) return;
+          try { await this.reconcile(id); }
+          catch {
+            // Preserve unknown outcomes. Neither missing history nor a transport error justifies resubmission.
+            await this.store.transact(tasks => {
+              const task = tasks.find(value => value.id === id);
+              if (recoverable(task)) Object.assign(task, { recoveryState: task.recoveredOutput ? 'output_recovered' :
+                task.artifactRecoveryState === 'recovered' ? 'artifacts_recovered' : 'awaiting_evidence',
+                recoveryLastAttemptAt: now() });
+            });
+          }
+          if (recoverable(await this.get(id))) this.scheduleRecovery(id, this.recoveryIntervalMs);
+        } catch { /* A journal failure must not escape a background recovery operation. */ }
+      })();
+      this.operations.add(operation);
+      operation.finally(() => this.operations.delete(operation)).catch(() => {});
+    }, delayMs);
+    timer.unref?.();
+    this.recoveryTimers.set(id, timer);
+  }
+
+  async refreshTask(id) {
+    const task = await this.get(id);
+    if (recoverable(task)) this.scheduleRecovery(id);
+    // GetTask stays responsive while the receiver reads the original provider history.
+    return recoverable(task) && this.autoRecover ? { ...task, recoveryState: task.recoveryState || 'pending' } : task;
   }
 
   async get(id) {
@@ -198,7 +240,10 @@ export class CloudBridge {
         output: mayHaveExecuted ? `Cloud ${stage} failed (${reason}). ` +
           (businessPromptAttempted ? 'Business prompt outcome requires verification. ' : 'The business prompt was not sent. ') +
           'Inspect the original cloud session; no creation or prompt was repeated.' : error.message });
-    } finally { this.clients.delete(id); await client?.close(); }
+    } finally {
+      this.clients.delete(id); await client?.close();
+      if (recoverable(await this.get(id))) this.scheduleRecovery(id, this.recoveryIntervalMs);
+    }
   }
 
   async resume(id) {
@@ -232,14 +277,35 @@ export class CloudBridge {
   }
 
   async reconcile(id) {
+    if (this.reconciliations.has(id)) return this.reconciliations.get(id);
+    const operation = this.reconcileOriginal(id);
+    this.reconciliations.set(id, operation);
+    this.operations.add(operation);
+    operation.finally(() => {
+      this.reconciliations.delete(id); this.operations.delete(operation);
+    }).catch(() => {});
+    return operation;
+  }
+
+  async reconcileOriginal(id) {
     const task = await this.get(id);
-    if (task.state !== 'TASK_STATE_INPUT_REQUIRED' || task.dispatchState !== 'unknown' ||
-        !task.businessPromptAttempted || task.promptRequestId === undefined || !task.remoteTaskId ||
-        task.sharedCloudSession || task.cloudName !== `A2A-${id}` || this.clients.has(id)) {
+    if (!recoverable(task) || this.clients.has(id)) {
       throw new BridgeError(-32002, 'Only an unresolved prompted task in its own original cloud session can be reconciled');
     }
     const credentials = await this.api.get(task.remoteTaskId, this.controller.signal);
     if (credentials.name !== task.cloudName) throw new BridgeError(-32002, 'Original cloud session name does not match');
+    if (this.api.artifacts) {
+      try {
+        const artifacts = await this.api.artifacts(task.remoteTaskId, { credentials, signal: this.controller.signal });
+        await this.store.transact(tasks => {
+          const current = tasks.find(value => value.id === id);
+          if (recoverable(current) && current.remoteTaskId === task.remoteTaskId) Object.assign(current, {
+            artifacts, artifactRecoveryState: artifacts.length ? 'recovered' : 'empty', providerState: credentials.status });
+        });
+      } catch {
+        // Optional artifact recovery must not prevent ACP history recovery or leak upstream URLs.
+      }
+    }
     const users = [], endings = [], answers = [];
     const client = this.clientFactory({ signal: this.controller.signal, onEvent: async message => {
       const params = message.params;
@@ -264,8 +330,24 @@ export class CloudBridge {
       throw new BridgeError(-32002, 'Original prompt cannot be uniquely matched to a provider turn; result remains unresolved');
     }
     const matchingEnds = endings.filter(ending => ending.requestId === users[0]);
-    if (matchingEnds.length !== 1 || endState(matchingEnds[0].stopReason) === 'TASK_STATE_INPUT_REQUIRED') {
-      throw new BridgeError(-32002, 'No unique authoritative endTurn exists for the original prompt; result remains unresolved');
+    const output = answers.filter(answer => answer.requestId === users[0]).map(answer => answer.text).join('');
+    const stopReasons = [...new Set(matchingEnds.map(ending => ending.stopReason))];
+    await this.store.transact(tasks => {
+      const current = tasks.find(value => value.id === id);
+      if (!recoverable(current) || current.promptRequestId !== task.promptRequestId || current.remoteTaskId !== task.remoteTaskId) return;
+      const recoveredText = 'Recovered original cloud output; completion remains unverified.\n\n' + output;
+      if (output.trim() && current.output !== recoveredText) current.updatedAt = now();
+      Object.assign(current, { providerState: credentials.status, providerRequestId: users[0],
+        recoveryEndTurnCount: matchingEnds.length, completionVerified: false,
+        recoveryBlockedReason: stopReasons.length > 1 ? 'conflicting_end_turn' : matchingEnds.length ? 'unconfirmed_stop_reason' : 'missing_end_turn',
+        ...(output.trim() ? { recoveredOutput: true, recoveryState: 'output_recovered',
+          output: recoveredText } : {}) });
+    });
+    if (stopReasons.length !== 1 || endState(stopReasons[0]) === 'TASK_STATE_INPUT_REQUIRED') {
+      throw new BridgeError(-32002, `No unique authoritative endTurn exists for the original prompt (matched=${matchingEnds.length}, distinctReasons=${stopReasons.length}); result remains unresolved`);
+    }
+    if (endState(stopReasons[0]) === 'TASK_STATE_COMPLETED' && !output.trim()) {
+      throw new BridgeError(-32002, 'No correlated result text was recovered; result remains unresolved');
     }
     return this.store.transact(tasks => {
       const current = tasks.find(value => value.id === id);
@@ -273,10 +355,10 @@ export class CloudBridge {
           current.promptRequestId !== task.promptRequestId || current.remoteTaskId !== task.remoteTaskId) {
         throw new BridgeError(-32002, 'Cloud task changed during reconciliation');
       }
-      Object.assign(current, { state: endState(matchingEnds[0].stopReason), dispatchState: 'sent',
-        stopReason: matchingEnds[0].stopReason, providerRequestId: users[0],
+      Object.assign(current, { state: endState(stopReasons[0]), dispatchState: 'sent',
+        stopReason: stopReasons[0], providerRequestId: users[0],
         providerCompletionSignal: 'reconciled_session/endTurn', failureStage: undefined, blockedReason: undefined,
-        output: answers.filter(answer => answer.requestId === users[0]).map(answer => answer.text).join('') || current.answer || '',
+        recoveryState: 'verified', recoveryLastAttemptAt: now(), completionVerified: true, recoveryBlockedReason: undefined, output,
         updatedAt: now() });
       return current;
     });
@@ -326,6 +408,8 @@ export class CloudBridge {
 
   async close() {
     this.controller.abort();
+    for (const timer of this.recoveryTimers.values()) clearTimeout(timer);
+    this.recoveryTimers.clear();
     await Promise.allSettled([...this.clients.values()].map(client => client.close()));
     await Promise.allSettled(this.operations);
   }

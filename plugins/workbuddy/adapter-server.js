@@ -15,7 +15,8 @@ export function taskView(task) {
       ...(task.providerState ? { providerState: task.providerState } : {}),
       ...(task.blockedReason ? { blockedReason: task.blockedReason } : {}),
       ...(task.mode === 'cloud' ? { remoteTaskId: task.remoteTaskId, sharedCloudSession: task.sharedCloudSession,
-        cloudName: task.cloudName, stopReason: task.stopReason, permission: task.permission, trackingReleased: task.trackingReleased } : {}),
+        cloudName: task.cloudName, stopReason: task.stopReason, permission: task.permission, trackingReleased: task.trackingReleased,
+        failureStage: task.failureStage, businessPromptAttempted: task.businessPromptAttempted } : {}),
       ...(task.lastPollError ? { lastPollError: task.lastPollError } : {}) } };
 }
 

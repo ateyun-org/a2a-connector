@@ -60,6 +60,41 @@ test('cloud binds only the specified task, refreshes expired ACP credentials and
   assert.equal(f.calls.filter(call => call.method === 'session/load')[0].params.sessionId, 'existing');
 });
 
+test('live gateway working sessions initialize with numeric IDs, Accept headers and versionless load heartbeats', async t => {
+  const f = await fixture(t, { createdStatus: 'working', gatewayQuirks: true });
+  const initial = await f.bridge.submit(message('live-working-session'));
+  const result = await wait(f.bridge, initial.id, completed);
+  assert.equal(f.creations.length, 1); assert.equal(f.prompts.length, 1);
+  assert.equal(result.output, '云端实际结果');
+  assert.equal(result.businessPromptAttempted, true);
+  assert.equal(typeof result.promptRequestId, 'number');
+  assert.deepEqual(f.calls.map(call => call.id), [1, 2, 3]);
+});
+
+test('bound working sessions remain blocked while newly created credential-ready sessions can load ACP', async () => {
+  const api = new CloudAPI({ accessToken: async () => ({ accessToken: 'secret', scope: 'user.task.readable user.task.invokable' }),
+    fetchImpl: async () => Response.json({ task_id: 'busy', status: 'working', link: 'https://acp.workbuddy.cn/sessions/busy', token: 'acp-secret' }) });
+  await assert.rejects(api.ready('busy', { timeoutMs: 0 }), /not ready/);
+  const statuses = [];
+  assert.equal((await api.ready('busy', { newlyCreated: true, onStatus: async status => statuses.push(status) })).task_id, 'busy');
+  assert.deepEqual(statuses, ['working']);
+});
+
+test('pre-prompt ACP load failure reports its stage without sending or repeating business work', async t => {
+  const f = await fixture(t, { rejectLoad: true });
+  const initial = await f.bridge.submit(message('load-failure'));
+  const result = await wait(f.bridge, initial.id, task => task.state === 'TASK_STATE_INPUT_REQUIRED');
+  assert.equal(result.failureStage, 'load');
+  assert.equal(result.blockedReason, 'cloud_acp_load_failed');
+  assert.equal(result.businessPromptAttempted, false);
+  assert.match(result.output, /business prompt was not sent/);
+  assert.equal(f.creations.length, 1); assert.equal(f.prompts.length, 0);
+  assert.equal(taskView(result).metadata.failureStage, 'load');
+  await f.bridge.submit(message('load-failure'));
+  assert.equal(f.creations.length, 1); assert.equal(f.prompts.length, 0);
+  assert.doesNotMatch(await readFile(f.store.path, 'utf8'), /acp-secret|oauth-secret/);
+});
+
 test('cloud permission requires an explicit valid option and exposes no automatic approval', async t => {
   const f = await fixture(t, { permission: true }, 'existing');
   const task = await f.bridge.submit(message('permission'));
@@ -172,6 +207,11 @@ test('cloud API validates scopes, response shape, task identity and token destin
   assert.throws(() => new CloudAPI({ accessToken: token, baseURL: 'https://evil.example/openapi/v2/' }), /origin/);
   for (const link of ['https://evil.example/acp', 'https://acp.workbuddy.cn.evil.example/sessions/a', 'https://acp.workbuddy.cn/sessions/a?token=x', 'http://127.0.0.1/acp']) assert.throws(() => acpURL(link), /Untrusted/);
   assert.equal(acpURL('https://65225-test.ap-guangzhou.agentos-run.net/acp').protocol, 'https:');
+  const cloudStudio = '65225-0f38f9aa204147de88151dbac19b6b24.e2b.sh5.sandbox.cloudstudio.club';
+  assert.equal(acpURL(`https://${cloudStudio}/acp`).hostname, cloudStudio);
+  for (const link of [`https://${cloudStudio}.evil.example/acp`, `https://${cloudStudio}/other`,
+    `https://${cloudStudio}/acp?token=secret`, 'https://tenant.cloudstudio.club/acp',
+    'https://65225-bad.e2b.sh5.sandbox.cloudstudio.club/acp']) assert.throws(() => acpURL(link), /Untrusted/);
   let sends = 0;
   const missing = new CloudAPI({ accessToken: async () => ({ accessToken: 'secret', scope: 'user.task.readable' }), fetchImpl: async () => { sends++; } });
   await assert.rejects(missing.list(), /permissions/); assert.equal(sends, 0);

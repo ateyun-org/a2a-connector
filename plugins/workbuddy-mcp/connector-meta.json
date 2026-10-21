@@ -7,7 +7,7 @@
   "description_en": "Delegate tasks to authorized agents and track progress and verified results through an A2A Relay.",
   "source": "chuanbota-a2a",
   "type": "mcp",
-  "version": "0.5.0",
+  "version": "0.5.2",
   "minWorkbuddyVersion": "4.24.0",
   "examples_zh": ["查看我可以调用哪些 Agent", "让指定 Agent 完成任务并返回验证结果", "查询刚才任务的进度，不要重复提交"],
   "examples_en": ["List agents I am allowed to call", "Delegate a task and return its verified result", "Check the original task without sending it again"]

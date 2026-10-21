@@ -31,7 +31,7 @@ export async function cloudProvider(t, options = {}) {
         const body = JSON.parse(raw); creations.push(body);
         if (options.uncertainCreate) { req.socket.destroy(); return; }
         const id = `cloud-${sessions.size + 1}`;
-        const task = { task_id: id, name: body.name, status: 'completed', token: 'acp-secret', link: `${origin}/sessions/${id}` };
+        const task = { task_id: id, name: body.name, status: options.createdStatus || 'completed', token: 'acp-secret', link: `${origin}/sessions/${id}` };
         sessions.set(id, task); res.writeHead(201); res.end(JSON.stringify(task)); return;
       }
       const id = url.pathname.split('/').at(-1);
@@ -52,12 +52,23 @@ export async function cloudProvider(t, options = {}) {
     assert.ok(stream);
     let raw = ''; for await (const chunk of req) raw += chunk;
     const rpc = JSON.parse(raw); calls.push(rpc);
+    if (options.gatewayQuirks) {
+      assert.match(req.headers.accept, /application\/json/);
+      assert.match(req.headers.accept, /text\/event-stream/);
+      assert.equal(typeof rpc.id, 'number');
+    }
+    if (rpc.method === 'session/load' && options.rejectLoad) { res.writeHead(400); res.end(); return; }
     if (rpc.method === 'session/prompt' && options.rejectPrompt) {
       prompts.push(rpc); res.writeHead(401); res.end(); return;
     }
     res.writeHead(202); res.end();
     if (rpc.method === 'initialize') emit(stream, { id: rpc.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true } } });
     else if (rpc.method === 'session/load') {
+      if (options.gatewayQuirks) {
+        stream.write('data: {"jsonrpc":"","method":"_codebuddy.ai/loadHeartbeat","params":{}}\r\n\r\n');
+        stream.write(`data: ${JSON.stringify({ jsonrpc: '', method: 'session/update', params: {
+          sessionId: id, update: { sessionUpdate: 'session_info_update' } } })}\r\n\r\n`);
+      }
       emit(stream, { method: 'session/update', params: { sessionId: id,
         update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'OLD REPLAY' } } } });
       emit(stream, { id: rpc.id, result: {} });

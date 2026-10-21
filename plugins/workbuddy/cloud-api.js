@@ -73,14 +73,18 @@ export class CloudAPI {
     return data;
   }
 
-  async ready(id, { signal, timeoutMs = 120000, pollMs = 2000 } = {}) {
+  async ready(id, { signal, timeoutMs = 120000, pollMs = 2000, newlyCreated = false, onStatus = async () => {} } = {}) {
     const deadline = Date.now() + timeoutMs;
     do {
       const task = await this.get(id, signal);
+      await onStatus(task.status);
       if (['failed', 'archived', 'deleted'].includes(task.status)) throw new Error('Cloud session is unavailable');
       if (task.status === 'pending') throw new Error('Cloud session requires input in WorkBuddy before a new turn can start');
       // Never overlap the creation/bootstrap turn or another caller's active turn.
-      if (task.link && task.token && ['idle', 'completed'].includes(task.status)) return task;
+      // A newly created API session can stay "working" until ACP is loaded.
+      // Do not apply this exception to bound sessions or existing contexts.
+      if (task.link && task.token && (['idle', 'completed'].includes(task.status) ||
+          (newlyCreated && task.status === 'working'))) return task;
       if (Date.now() >= deadline) break;
       await delay(pollMs, undefined, { signal });
     } while (!signal?.aborted);

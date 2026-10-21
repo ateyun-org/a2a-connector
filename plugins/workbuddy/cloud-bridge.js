@@ -121,22 +121,33 @@ export class CloudBridge {
   }
 
   async dispatch(id) {
-    let mayHaveExecuted = false, client;
+    let mayHaveExecuted = false, client, newlyCreated = false, stage = 'preflight';
+    let businessPromptAttempted = false;
     try {
       let task = await this.get(id);
       if (!task.remoteTaskId) {
         // Preflight authorization before crossing the non-repeatable creation boundary.
         await this.api.list({ page: 1, size: 1, signal: this.controller.signal });
         await this.patch(id, { dispatchState: 'creating', cloudName: `A2A-${id}` });
+        stage = 'create';
         mayHaveExecuted = true;
         const created = await this.api.create({ name: `A2A-${id}`, prompt: bootstrap }, this.controller.signal);
         task = await this.patch(id, { remoteTaskId: created.task_id, dispatchState: 'created' });
+        newlyCreated = true;
       }
-      let credentials = await this.api.ready(task.remoteTaskId, { signal: this.controller.signal });
+      stage = 'ready';
+      let credentials = await this.api.ready(task.remoteTaskId, { signal: this.controller.signal, newlyCreated,
+        onStatus: async status => {
+          const current = await this.get(id);
+          if (current.providerState !== status) await this.patch(id, { providerState: status });
+        } });
       for (let attempt = 0; attempt < 2; attempt++) {
         client = this.clientFactory({ signal: this.controller.signal, onEvent: event => this.event(id, event) });
         this.clients.set(id, client);
-        try { await client.connect(credentials); await client.load(task.remoteTaskId, this.cwd); break; }
+        try {
+          stage = 'connect'; await client.connect(credentials);
+          stage = 'load'; await client.load(task.remoteTaskId, this.cwd); break;
+        }
         catch (error) {
           await client.close();
           if (error.status !== 401 || attempt !== 0) throw error;
@@ -144,18 +155,27 @@ export class CloudBridge {
         }
       }
       // Durable write comes before POST. Recovery never automatically repeats this RPC.
-      await this.patch(id, { dispatchState: 'sent', state: 'TASK_STATE_WORKING', promptRequestId: `prompt-${id}`, answer: '', output: '' });
+      const promptRequestId = client.allocateRequestId();
+      await this.patch(id, { dispatchState: 'sent', state: 'TASK_STATE_WORKING', promptRequestId,
+        businessPromptAttempted: true, answer: '', output: '' });
       mayHaveExecuted = true;
+      businessPromptAttempted = true; stage = 'prompt';
       const result = await client.request('session/prompt', { sessionId: task.remoteTaskId,
-        prompt: [{ type: 'text', text: task.prompt }] }, { id: `prompt-${id}`, timeoutMs: this.resultTimeoutMs });
+        prompt: [{ type: 'text', text: task.prompt }] }, { id: promptRequestId, timeoutMs: this.resultTimeoutMs });
       task = await this.get(id);
       const state = { end_turn: 'TASK_STATE_COMPLETED', refusal: 'TASK_STATE_REJECTED', cancelled: 'TASK_STATE_CANCELED' }[result.stopReason] || 'TASK_STATE_INPUT_REQUIRED';
       await this.patch(id, { state, dispatchState: 'sent', stopReason: result.stopReason,
         permission: undefined, output: task.answer || (state === 'TASK_STATE_COMPLETED' ? 'Cloud turn completed without text output.' : `Cloud turn ended: ${result.stopReason || 'unknown'}. Inspect it before continuing.`) });
     } catch (error) {
+      const reason = { preflight: 'cloud_preflight_failed', create: 'cloud_creation_uncertain',
+        ready: 'cloud_session_not_ready', connect: 'cloud_acp_connect_failed',
+        load: 'cloud_acp_load_failed', prompt: 'cloud_prompt_outcome_unknown' }[stage];
       await this.patch(id, { state: mayHaveExecuted ? 'TASK_STATE_INPUT_REQUIRED' : 'TASK_STATE_FAILED',
         dispatchState: mayHaveExecuted ? 'unknown' : 'not-sent', permission: undefined,
-        output: mayHaveExecuted ? 'Cloud task outcome requires verification. Inspect the original cloud session; no task or prompt was repeated.' : error.message });
+        failureStage: stage, blockedReason: reason, businessPromptAttempted,
+        output: mayHaveExecuted ? `Cloud ${stage} failed (${reason}). ` +
+          (businessPromptAttempted ? 'Business prompt outcome requires verification. ' : 'The business prompt was not sent. ') +
+          'Inspect the original cloud session; no creation or prompt was repeated.' : error.message });
     } finally { this.clients.delete(id); await client?.close(); }
   }
 

@@ -1,10 +1,10 @@
-import { randomUUID } from 'node:crypto';
-
 export function acpURL(link, allowInsecure = false) {
   const url = new URL(link);
   const provider = url.protocol === 'https:' && !url.port &&
     ((url.hostname === 'acp.workbuddy.cn' && /^\/sessions\/[A-Za-z0-9_-]+$/.test(url.pathname)) ||
-      (url.hostname.endsWith('.agentos-run.net') && url.pathname === '/acp'));
+      (url.hostname.endsWith('.agentos-run.net') && url.pathname === '/acp') ||
+      // Current WorkBuddy Open API also issues Cloud Studio E2B sandbox links.
+      (/^65225-[a-f0-9]{32}\.e2b\.[a-z0-9-]+\.sandbox\.cloudstudio\.club$/.test(url.hostname) && url.pathname === '/acp'));
   const test = allowInsecure && url.protocol === 'http:' && ['127.0.0.1', '[::1]'].includes(url.hostname);
   if ((!provider && !test) || url.username || url.password || url.search || url.hash) throw new Error('Untrusted WorkBuddy ACP address');
   return url;
@@ -44,6 +44,7 @@ export class ACPClient {
     Object.assign(this, { fetch: fetchImpl, allowInsecure, signal, onEvent });
     this.controller = new AbortController();
     this.pending = new Map();
+    this.nextRequestId = 1;
   }
 
   async connect({ link, token }) {
@@ -67,7 +68,12 @@ export class ACPClient {
     this.pump = (async () => {
       try {
         for await (const message of sseMessages(response.body)) {
-          if (message?.jsonrpc !== '2.0') throw new Error('Invalid ACP RPC envelope');
+          // The live gateway emits notifications with jsonrpc:"" during load.
+          // Only known notifications may omit the version; responses stay strict.
+          const providerNotification = message?.id === undefined &&
+            ['', undefined].includes(message?.jsonrpc) && typeof message?.method === 'string' &&
+            (message.method === 'session/update' || message.method.startsWith('_codebuddy.ai/'));
+          if (message?.jsonrpc !== '2.0' && !providerNotification) throw new Error('Invalid ACP RPC envelope');
           if (!message.method && this.pending.has(message.id)) {
             const entry = this.pending.get(message.id);
             this.pending.delete(message.id);
@@ -90,7 +96,8 @@ export class ACPClient {
     let response;
     try {
       response = await this.fetch(this.url, { method: 'POST', redirect: 'manual',
-        headers: { Authorization: `Bearer ${this.token}`, 'Content-Type': 'application/json', 'Acp-Connection-Id': this.connectionId },
+        headers: { Authorization: `Bearer ${this.token}`, 'Content-Type': 'application/json',
+          Accept: 'application/json, text/event-stream', 'Acp-Connection-Id': this.connectionId },
         body: JSON.stringify(message), signal: AbortSignal.any([this.controller.signal,
           ...(this.signal ? [this.signal] : []), AbortSignal.timeout(15000)]) });
     } catch { throw new Error('WorkBuddy ACP send outcome is unknown; do not repeat the prompt'); }
@@ -102,7 +109,9 @@ export class ACPClient {
     }
   }
 
-  async request(method, params, { id = randomUUID(), timeoutMs = 30000 } = {}) {
+  allocateRequestId() { return this.nextRequestId++; }
+
+  async request(method, params, { id = this.allocateRequestId(), timeoutMs = 30000 } = {}) {
     let entry;
     const result = new Promise((resolve, reject) => { entry = { resolve, reject }; });
     result.catch(() => {});

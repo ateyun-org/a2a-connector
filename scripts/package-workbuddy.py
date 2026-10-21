@@ -26,7 +26,7 @@ files += list((plugin / 'skills').rglob('*.md'))
 files += list((plugin / 'vendor' / 'connector').glob('*.js'))
 files += list((plugin / 'vendor' / 'connector').glob('*.json'))
 required = {'cli.js', 'runner.js', 'adapter-server.js', 'desktop-api.js', 'desktop-bridge.js',
-            'cloud-api.js', 'cloud-bridge.js', 'acp-client.js',
+            'cloud-api.js', 'cloud-bridge.js', 'acp-client.js', 'hybrid-bridge.js', 'receiver-runtime.js', 'hosted.js',
             'task-store.js', 'connector-meta.json', 'cli.json', 'package.json', 'icon.svg',
             'skills/a2a-connector/SKILL.md', 'vendor/connector/cli.js', 'vendor/connector/connector.js'}
 names = {str(file.relative_to(plugin)) for file in files}

@@ -52,7 +52,11 @@ export async function cloudProvider(t, options = {}) {
       if (sessions.has(id)) { res.end(JSON.stringify(sessions.get(id))); return; }
       res.writeHead(404); res.end('{}'); return;
     }
-    assert.equal(req.headers.authorization, 'Bearer acp-secret');
+    // Concurrent installer discovery can probe neighboring loopback ports. Only ACP/artifact routes use this ticket.
+    if (!url.pathname.startsWith('/sessions/') && url.pathname !== '/api/session/artifacts') {
+      res.writeHead(404); res.end(); return;
+    }
+    assert.equal(req.headers.authorization, 'Bearer acp-secret', `${req.method} ${url.pathname}`);
     if (url.pathname === '/api/session/artifacts') {
       const id = url.searchParams.get('sessionId');
       res.setHeader('content-type', 'application/json');

@@ -30,6 +30,7 @@ test('WorkBuddy can call an authorized Relay target and poll its task', async t 
     const body = JSON.parse(raw);
     if (body.method === 'SendMessage') {
       assert.equal(body.params.message.parts[0].text, 'review this');
+      assert.equal(body.params.message.metadata.workbuddyMode, 'desktop');
       res.end(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: { task: {
         id: 'task-1', contextId: 'context-1', status: { state: 'TASK_STATE_WORKING' } } } }));
       return;
@@ -41,7 +42,7 @@ test('WorkBuddy can call an authorized Relay target and poll its task', async t 
       status: { state: 'TASK_STATE_COMPLETED', message: { parts: [{ text: 'review complete' }] } } } }));
   });
   const result = await callAgent({ relay, allowInsecure: true, enrollment, targetId: 'reviewer',
-    prompt: 'review this', pollIntervalMs: 1 });
+    prompt: 'review this', executionMode: 'desktop', pollIntervalMs: 1 });
   assert.deepEqual(result, { targetId: 'reviewer', taskId: 'task-1', contextId: 'context-1',
     state: 'TASK_STATE_COMPLETED', text: 'review complete' });
   assert.equal(polls, 1);

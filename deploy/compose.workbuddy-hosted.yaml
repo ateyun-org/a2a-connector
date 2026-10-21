@@ -1,0 +1,16 @@
+services:
+  workbuddy:
+    build:
+      context: ./workbuddy
+      dockerfile: Dockerfile
+    init: true
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - workbuddy-state:/data
+volumes:
+  workbuddy-state:

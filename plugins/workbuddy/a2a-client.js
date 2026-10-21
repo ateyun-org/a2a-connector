@@ -114,15 +114,16 @@ export async function getAgentTask(options, taskId) {
 }
 
 export async function callAgent({ relay, allowInsecure = false, enrollment, targetId, prompt,
-  pollIntervalMs = 2000, deadlineMs = 120000, messageId = randomUUID(), contextId, relayRequestId, onTask, onDispatch }) {
+  pollIntervalMs = 2000, deadlineMs = 120000, messageId = randomUUID(), contextId, executionMode, relayRequestId, onTask, onDispatch }) {
   if (typeof prompt !== 'string' || !prompt.trim()) throw new Error('task text is required on stdin');
   if (typeof messageId !== 'string' || !messageId.trim() || messageId.length > 256) throw new Error('invalid message ID');
   if (contextId !== undefined && (typeof contextId !== 'string' || !contextId || contextId.length > 256)) throw new Error('invalid context ID');
+  if (executionMode !== undefined && !['cloud', 'desktop'].includes(executionMode)) throw new Error('invalid WorkBuddy execution mode');
   if (relayRequestId !== undefined && !/^[0-9a-f]{32}$/.test(relayRequestId)) throw new Error('invalid Relay request ID');
   const rpc = await openRPC({ relay, allowInsecure, enrollment, targetId, relayRequestId });
   await onDispatch?.();
   let result = await rpc('SendMessage', { message: { messageId, role: 'ROLE_USER',
-    ...(contextId ? { contextId } : {}), parts: [{ text: prompt }] } });
+    ...(contextId ? { contextId } : {}), ...(executionMode ? { metadata: { workbuddyMode: executionMode } } : {}), parts: [{ text: prompt }] } });
   const firstTask = taskFrom(result);
   if (!firstTask) return { targetId, state: 'MESSAGE', text: resultText(result) };
   if (typeof firstTask.id !== 'string' || !firstTask.id) throw new Error('A2A task has no ID');

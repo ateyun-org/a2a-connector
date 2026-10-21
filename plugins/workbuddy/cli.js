@@ -339,7 +339,7 @@ async function localTask(id) {
   console.log(JSON.stringify(taskView(task)));
 }
 
-async function call(targetId, messageId = randomUUID(), contextId) {
+async function call(targetId, messageId = randomUUID(), contextId, executionMode) {
   if (typeof messageId !== 'string' || !messageId.trim() || messageId.length > 256) throw new Error('invalid message ID');
   const c = await config();
   const enrollment = await loadEnrollment(state);
@@ -350,7 +350,9 @@ async function call(targetId, messageId = randomUUID(), contextId) {
   }
   if (!prompt.trim()) throw new Error('task text is required on stdin');
   const store = new TaskStore(state + '.outbound.json');
-  const fingerprint = createHash('sha256').update(JSON.stringify(contextId ? [targetId, prompt, contextId] : [targetId, prompt])).digest('hex');
+  const identity = contextId ? [targetId, prompt, contextId] : [targetId, prompt];
+  if (executionMode) identity.push({ workbuddyMode: executionMode });
+  const fingerprint = createHash('sha256').update(JSON.stringify(identity)).digest('hex');
   let created = false;
   const record = await store.transact(tasks => {
     const prior = tasks.find(value => value.messageId === messageId);
@@ -377,7 +379,7 @@ async function call(targetId, messageId = randomUUID(), contextId) {
   let sending = false;
   try {
     result = await callAgent({ relay: c.relay, allowInsecure: c.allowInsecure,
-      enrollment, targetId, prompt, messageId, contextId, relayRequestId: record.id,
+      enrollment, targetId, prompt, messageId, contextId, executionMode, relayRequestId: record.id,
       onDispatch: async () => { await update({ dispatchState: 'dispatching' }); sending = true; },
       onTask: task => update({ remoteTaskId: task.taskId, state: task.state, dispatchState: 'sent' }) });
     await update({ state: result.state === 'MESSAGE' ? 'TASK_STATE_COMPLETED' : result.state, dispatchState: 'sent', result });
@@ -478,15 +480,17 @@ try {
   else if (command === 'stop') { await stop(); console.log('Connector stopped'); }
   else if (command === 'run') await runForeground();
   else if (argv[0] === 'call' && argv.length >= 2) {
-    let messageId, contextId;
+    let messageId, contextId, executionMode;
     for (let i = 2; i < argv.length; i += 2) {
       if (!argv[i + 1]) throw new Error('Missing call option value');
       if (argv[i] === '--message-id') messageId = argv[i + 1];
       else if (argv[i] === '--context-id') contextId = argv[i + 1];
+      else if (argv[i] === '--mode') executionMode = argv[i + 1];
       else throw new Error('Unknown call option');
     }
     if (contextId !== undefined && (!contextId || contextId.length > 256)) throw new Error('Invalid context ID');
-    await call(argv[1], messageId, contextId);
+    if (executionMode !== undefined && !['cloud', 'desktop'].includes(executionMode)) throw new Error('Invalid WorkBuddy execution mode');
+    await call(argv[1], messageId, contextId, executionMode);
   }
   else if (command === 'cloud tasks') await cloudTasks();
   else if (argv.length === 3 && argv[0] === 'cloud' && argv[1] === 'task') await cloudTasks(argv[2]);
@@ -506,5 +510,5 @@ try {
   else if (command === 'platform login') await platformLogin();
   else if (command === 'platform status') await platformStatus();
   else if (command === 'platform logout') await platformLogout();
-  else throw new Error('Usage: workbuddy-a2a setup --relay <wss-url> [--mode desktop|cloud] [--task-id <cloud-session-id>] [--cwd /workspace] [--name <name>], doctor, connection status, targets, auth connect|login|status|logout, platform login|status|logout, start|stop|run, call <target-agent-id> [--message-id <id>] [--context-id <id>] (stdin), outbound <request-id>, task <target-agent-id> <task-id>, adapter task <task-id>, cloud tasks, cloud task <cloud-session-id>, cancel <target-agent-id> <task-id>, release <target-agent-id> <task-id> [recovered-cloud-task-id], resume <target-agent-id> <task-id>, reconcile <target-agent-id> <task-id>, permission <target-agent-id> <task-id> <request-id-as-json> <option-id>');
+  else throw new Error('Usage: workbuddy-a2a setup --relay <wss-url> [--mode desktop|cloud] [--task-id <cloud-session-id>] [--cwd /workspace] [--name <name>], doctor, connection status, targets, auth connect|login|status|logout, platform login|status|logout, start|stop|run, call <target-agent-id> [--message-id <id>] [--context-id <id>] [--mode cloud|desktop] (stdin), outbound <request-id>, task <target-agent-id> <task-id>, adapter task <task-id>, cloud tasks, cloud task <cloud-session-id>, cancel <target-agent-id> <task-id>, release <target-agent-id> <task-id> [recovered-cloud-task-id], resume <target-agent-id> <task-id>, reconcile <target-agent-id> <task-id>, permission <target-agent-id> <task-id> <request-id-as-json> <option-id>');
 } catch (error) { console.error(error.message); process.exitCode = 1; }

@@ -34,11 +34,15 @@ export function createWorkBuddyAdapter({ token, bridge, name = 'WorkBuddy Deskto
     const supplied = Buffer.from(req.headers.authorization || '');
     if (expected.length !== supplied.length || !timingSafeEqual(expected, supplied)) { json(401, { error: 'unauthorized' }); return; }
     if (req.method === 'GET' && req.url === '/.well-known/agent-card.json') {
-      const cloud = bridge.mode === 'cloud';
-      json(200, { name, description: cloud ? 'WorkBuddy cloud task execution through authorized Open API and ACP; durable serialized turns, explicit approvals and authoritative completion.' : 'WorkBuddy PC local assistant via authorized Open API; serialized text tasks, durable tracking and explicit result correlation. Desktop approvals remain interactive.',
+      const cloud = bridge.mode === 'cloud', hybrid = bridge.mode === 'hybrid';
+      json(200, { name, description: hybrid ? 'Server-hosted WorkBuddy execution through official cloud and PC APIs. Select message.metadata.workbuddyMode=cloud|desktop; no A2A service is required on the user computer.' : cloud ? 'WorkBuddy cloud task execution through authorized Open API and ACP; durable serialized turns, explicit approvals and authoritative completion.' : 'WorkBuddy PC local assistant via authorized Open API; serialized text tasks, durable tracking and explicit result correlation. Desktop approvals remain interactive.',
         version: '1.0.0', supportedInterfaces: [{ url: `http://127.0.0.1:${server.address().port}/rpc`, protocolBinding: 'JSONRPC', protocolVersion: '1.0' }],
         capabilities: {}, defaultInputModes: ['text/plain'], defaultOutputModes: ['text/plain'],
-        skills: [{ id: cloud ? 'workbuddy-cloud' : 'workbuddy-desktop', name: cloud ? 'Cloud task execution' : 'Desktop task execution', description: 'Execute authorized WorkBuddy tasks and return verified task results.', tags: ['workbuddy', cloud ? 'cloud' : 'desktop', 'tasks'] }] });
+        ...(hybrid ? { metadata: { defaultExecutionMode: bridge.defaultMode, executionModeField: 'message.metadata.workbuddyMode', serverHosted: true } } : {}),
+        skills: (hybrid ? ['cloud', 'desktop'] : [cloud ? 'cloud' : 'desktop']).map(mode => ({ id: `workbuddy-${mode}`,
+          name: mode === 'cloud' ? 'Cloud task execution' : 'Desktop task execution',
+          description: `Execute authorized WorkBuddy ${mode} tasks and return verified results.${hybrid ? ` Set message.metadata.workbuddyMode=${mode}.` : ''}`,
+          tags: ['workbuddy', mode, 'tasks'] })) });
       return;
     }
     if (req.method !== 'POST' || req.url !== '/rpc') { json(404, { error: 'not_found' }); return; }
@@ -60,6 +64,11 @@ export function createWorkBuddyAdapter({ token, bridge, name = 'WorkBuddy Deskto
     const params = body.params || {};
     try {
       if (['SendMessage', 'message/send'].includes(body.method)) {
+        const requestedMode = params.message?.metadata?.workbuddyMode;
+        if (requestedMode !== undefined && (!['cloud', 'desktop'].includes(requestedMode) ||
+            (bridge.mode !== 'hybrid' && requestedMode !== (bridge.mode === 'cloud' ? 'cloud' : 'desktop')))) {
+          throw new BridgeError(-32602, 'Requested execution mode is not supported by this WorkBuddy receiver');
+        }
         reply({ task: taskView(await bridge.submit(params.message)) }); return;
       }
       if (['GetTask', 'tasks/get'].includes(body.method)) {

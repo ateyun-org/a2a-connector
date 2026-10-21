@@ -1,5 +1,7 @@
 # Tencent WorkBuddy 接入任务协作
 
+服务端统一托管云端/电脑端执行请优先使用[托管接入指南](workbuddy-hosted.md)：一个 WorkBuddy 接入身份支持两种执行位置，用户电脑无需运行本项目 A2A 服务或 Connector。下面保留单模式接收端和历史 CLI 配置的操作说明。
+
 若目标是把能力绑定到“传播塔” Buddy 应用，使用新增的[远程 MCP 应用接入指南](workbuddy-mcp.md)。本页介绍受控适配器和 CLI 诊断；CLI ZIP 与 MCP 连接器 ZIP 是不同的分发包。服务管理器可用 `workbuddy-a2a run` 以前台方式运行既有实例。
 
 `plugins/workbuddy` 支持两个方向：WorkBuddy 主控通过 Relay 调用其他已授权 Agent；WorkBuddy 受控通过内置 A2A adapter 执行任务。受控端有 `desktop`（PC 本地助理 Open API）与 `cloud`（云端任务 Open API + ACP）两种模式。`setup` 启动 adapter 和一个 Connector，不要求预先准备外部 A2A origin。
@@ -95,9 +97,9 @@ WORKBUDDY_TOKEN_KEY=<32字节随机数据的Base64编码>
 WORKBUDDY_SCOPES=user.localassistant.readable user.localassistant.invokable
 ```
 
-仅云端时，SCOPES 改为 `user.task.readable user.task.invokable`；同一获批 Agent 需要两种能力时配置四个权限并重新授权。Relay 当前将 OAuth 限定给一个 `WORKBUDDY_AGENT_ID`；另一个 instance 是不同 Agent 身份，不能共享或复制凭据。若改用云端实例，须同步把该配置改为其获批 Agent ID；此版本不提供一个 Relay OAuth 配置同时授权多个实例的功能。
+仅云端时，SCOPES 改为 `user.task.readable user.task.invokable`；同一获批 Agent 需要两种能力时配置四个权限并重新授权。`WORKBUDDY_AGENT_ID` / workbuddy.agentId 保留原单身份兼容；新版 workbuddy.agentIds 可显式列出多个获批身份，与单身份配置取并集。另一个身份有自己的账号授权和凭据，不能复制其他用户凭据；不支持通配允许所有 Agent。
 
-密钥仅保存在服务端私有环境；加密密钥须跨重启保留。此版本继续使用一个明确的 `WORKBUDDY_AGENT_ID` 保护应用令牌，其他 Agent 不能取得它们。部署及反向代理路径见 [Relay 说明](../../../a2a-relay/README.md#workbuddy-open-api-oauth-callback)。之后运行：
+密钥仅保存在服务端私有环境；加密密钥须跨重启保留。只有明确允许的接入身份可使用 OAuth，各身份只能读取认证后自身索引的应用令牌。部署及反向代理路径见 [Relay 说明](../../../a2a-relay/README.md#workbuddy-open-api-oauth-callback)。之后运行：
 
 ```bash
 rtk proxy workbuddy-a2a platform login

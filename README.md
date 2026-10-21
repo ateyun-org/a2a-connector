@@ -60,7 +60,7 @@ The credential and pending request ID are stored in private `0600` files under t
 
 ## Host plugins
 
-For Buddy application binding, `plugins/workbuddy-mcp` supplies the remote OAuth MCP connector. It exposes authorized A2A tools through the Relay's `/mcp`, with no client runtime or app secret in its package. The existing `plugins/workbuddy` CLI remains the PC/cloud receiving adapter and diagnostic path. See [application binding, private server configuration and deployment](docs/install/workbuddy-mcp.md). Marketplace review, real account grants and deployment are separate from local protocol tests.
+For Buddy application binding, `plugins/workbuddy-mcp` supplies the remote OAuth MCP connector. It exposes authorized A2A tools through the Relay's `/mcp`, with no client runtime or app secret in its package. WorkBuddy's [hosted receiving service](docs/install/workbuddy-hosted.md) can run multiple isolated identities on a shared server and route each identity to official cloud/PC APIs; the user's PC needs no A2A/Connector process. The existing `plugins/workbuddy` CLI remains the single-mode receiving adapter and diagnostic path. See [application binding, private server configuration and deployment](docs/install/workbuddy-mcp.md). Marketplace review, real account grants and deployment are separate from local protocol tests.
 
 `plugins/openclaw`, `plugins/dsh`, and `plugins/workbuddy` are JavaScript integrations. `plugins/hermes` is a thin Python entry point that launches the same JavaScript client. Before installing or packing a plugin from this source tree, run:
 

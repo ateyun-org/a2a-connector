@@ -6,6 +6,15 @@ import { cloudTaskId } from './cloud-api.js';
 
 const now = () => new Date().toISOString();
 const bootstrap = 'Initialize this A2A cloud session only. Reply READY and wait for the next instruction. Do not execute tools or any other task.';
+const endState = reason => ({ end_turn: 'TASK_STATE_COMPLETED', refusal: 'TASK_STATE_REJECTED',
+  cancelled: 'TASK_STATE_CANCELED' }[reason] || 'TASK_STATE_INPUT_REQUIRED');
+const providerRequestId = params => params?._meta?.['codebuddy.ai']?.requestId ||
+  params?._meta?.['codebuddy.ai/conversationRequestId'] || params?.update?._meta?.['codebuddy.ai/conversationRequestId'];
+const userText = params => {
+  const blocks = params?._meta?.['codebuddy.ai']?.extra?.sourceContentBlocks;
+  return Array.isArray(blocks) && blocks.every(block => block.type === 'text' && typeof block.text === 'string')
+    ? blocks.map(block => block.text).join('\n') : params?.update?.content?.text;
+};
 
 /** Serialized cloud turns. Only the matching session/prompt response completes a turn. */
 export class CloudBridge {
@@ -92,13 +101,26 @@ export class CloudBridge {
         options: params.options, toolCall: params.toolCall }, output: 'Cloud task requires an explicit user decision. Review the permission details before responding.' });
     } else if (message.method === 'session/update') {
       const update = message.params.update;
+      const providerId = providerRequestId(message.params);
+      if (task.dispatchState === 'sent' && update?.sessionUpdate === 'user_message_chunk' &&
+          message.params._meta?.['codebuddy.ai']?.mode !== 'history' && userText(message.params) === task.prompt &&
+          typeof providerId === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(providerId) && !task.providerRequestId) {
+        await this.patch(id, { providerRequestId: providerId });
+      }
       // session/load replays old conversation chunks. Capture only this prompt's live output.
-      if (task.dispatchState === 'sent' && update?.sessionUpdate === 'agent_message_chunk' && update.content?.type === 'text') {
+      if (task.dispatchState === 'sent' && update?.sessionUpdate === 'agent_message_chunk' && update.content?.type === 'text' &&
+          message.params._meta?.['codebuddy.ai']?.mode !== 'history' &&
+          (!task.providerRequestId || !providerId || providerId === task.providerRequestId)) {
         if (typeof update.content.text !== 'string') return;
         if (Buffer.byteLength((task.answer || '') + update.content.text) > 512 * 1024) throw new Error('Cloud output exceeds journal limit');
         await this.patch(id, { answer: (task.answer || '') + update.content.text,
           ...(task.permission ? {} : { output: (task.answer || '') + update.content.text }) });
       }
+    } else if (message.method === 'session/endTurn' && task.dispatchState === 'sent' &&
+        task.providerRequestId && providerRequestId(message.params) === task.providerRequestId &&
+        message.params._meta?.['codebuddy.ai']?.mode !== 'history' && typeof message.params.stopReason === 'string') {
+      await this.patch(id, { providerCompletionSignal: 'session/endTurn' });
+      this.clients.get(id)?.resolveNotificationResponse(task.promptRequestId, { stopReason: message.params.stopReason });
     } else if (message.method === '_codebuddy.ai/artifact' && task.dispatchState === 'sent') {
       const { artifact, event } = message.params;
       if (!artifact || typeof artifact.uri !== 'string' || !artifact.uri.startsWith('agent:///') || artifact.uri.length > 2048 ||
@@ -120,8 +142,8 @@ export class CloudBridge {
     }
   }
 
-  async dispatch(id) {
-    let mayHaveExecuted = false, client, newlyCreated = false, stage = 'preflight';
+  async dispatch(id, { resumeCreated = false } = {}) {
+    let mayHaveExecuted = resumeCreated, client, newlyCreated = resumeCreated, stage = 'preflight';
     let businessPromptAttempted = false;
     try {
       let task = await this.get(id);
@@ -163,7 +185,7 @@ export class CloudBridge {
       const result = await client.request('session/prompt', { sessionId: task.remoteTaskId,
         prompt: [{ type: 'text', text: task.prompt }] }, { id: promptRequestId, timeoutMs: this.resultTimeoutMs });
       task = await this.get(id);
-      const state = { end_turn: 'TASK_STATE_COMPLETED', refusal: 'TASK_STATE_REJECTED', cancelled: 'TASK_STATE_CANCELED' }[result.stopReason] || 'TASK_STATE_INPUT_REQUIRED';
+      const state = endState(result.stopReason);
       await this.patch(id, { state, dispatchState: 'sent', stopReason: result.stopReason,
         permission: undefined, output: task.answer || (state === 'TASK_STATE_COMPLETED' ? 'Cloud turn completed without text output.' : `Cloud turn ended: ${result.stopReason || 'unknown'}. Inspect it before continuing.`) });
     } catch (error) {
@@ -177,6 +199,87 @@ export class CloudBridge {
           (businessPromptAttempted ? 'Business prompt outcome requires verification. ' : 'The business prompt was not sent. ') +
           'Inspect the original cloud session; no creation or prompt was repeated.' : error.message });
     } finally { this.clients.delete(id); await client?.close(); }
+  }
+
+  async resume(id) {
+    const eligible = task => task?.mode === 'cloud' && task.state === 'TASK_STATE_INPUT_REQUIRED' &&
+      task.dispatchState === 'unknown' && task.promptRequestId === undefined &&
+      task.businessPromptAttempted !== true && task.remoteTaskId && !task.sharedCloudSession &&
+      task.cloudName === `A2A-${id}`;
+    const prior = await this.get(id);
+    if (!eligible(prior) || this.clients.has(id)) {
+      throw new BridgeError(-32002, 'Only a newly created cloud task with no attempted business prompt can be resumed');
+    }
+    const remote = await this.api.get(prior.remoteTaskId, this.controller.signal);
+    if (remote.name !== prior.cloudName || ['failed', 'archived', 'deleted', 'pending'].includes(remote.status)) {
+      throw new BridgeError(-32002, 'Original cloud session is unavailable or requires user input; inspect it before resuming');
+    }
+    const task = await this.store.transact(tasks => {
+      const current = tasks.find(value => value.id === id);
+      if (!eligible(current) || this.clients.has(id) || current.remoteTaskId !== remote.task_id ||
+          tasks.some(value => value.id !== id && !terminal(value))) {
+        throw new BridgeError(-32002, 'Cloud task changed or another turn is unresolved; resume was not started');
+      }
+      Object.assign(current, { state: 'TASK_STATE_WORKING', dispatchState: 'created',
+        failureStage: undefined, blockedReason: undefined, businessPromptAttempted: false,
+        output: 'Resuming the original cloud session before its first business prompt.', updatedAt: now() });
+      return current;
+    });
+    const operation = this.dispatch(id, { resumeCreated: true });
+    this.operations.add(operation);
+    operation.catch(() => {}).finally(() => this.operations.delete(operation));
+    return task;
+  }
+
+  async reconcile(id) {
+    const task = await this.get(id);
+    if (task.state !== 'TASK_STATE_INPUT_REQUIRED' || task.dispatchState !== 'unknown' ||
+        !task.businessPromptAttempted || task.promptRequestId === undefined || !task.remoteTaskId ||
+        task.sharedCloudSession || task.cloudName !== `A2A-${id}` || this.clients.has(id)) {
+      throw new BridgeError(-32002, 'Only an unresolved prompted task in its own original cloud session can be reconciled');
+    }
+    const credentials = await this.api.get(task.remoteTaskId, this.controller.signal);
+    if (credentials.name !== task.cloudName) throw new BridgeError(-32002, 'Original cloud session name does not match');
+    const users = [], endings = [], answers = [];
+    const client = this.clientFactory({ signal: this.controller.signal, onEvent: async message => {
+      const params = message.params;
+      if (params?.sessionId !== task.remoteTaskId) return;
+      const requestId = providerRequestId(params);
+      if (typeof requestId !== 'string') return;
+      if (message.method === 'session/update' && params.update?.sessionUpdate === 'user_message_chunk' &&
+          userText(params) === task.prompt && Date.parse(params._meta?.timestamp) >= Date.parse(task.createdAt)) users.push(requestId);
+      if (message.method === 'session/update' && params.update?.sessionUpdate === 'agent_message_chunk' &&
+          typeof params.update.content?.text === 'string') {
+        if (answers.reduce((size, item) => size + Buffer.byteLength(item.text), 0) + Buffer.byteLength(params.update.content.text) > 512 * 1024) {
+          throw new Error('Cloud replay exceeds journal limit');
+        }
+        answers.push({ requestId, text: params.update.content.text });
+      }
+      if (message.method === 'session/endTurn' && typeof params.stopReason === 'string') endings.push({ requestId, stopReason: params.stopReason });
+    } });
+    this.clients.set(id, client);
+    try { await client.connect(credentials); await client.load(task.remoteTaskId, this.cwd); }
+    finally { this.clients.delete(id); await client.close(); }
+    if (users.length !== 1 || (task.providerRequestId && task.providerRequestId !== users[0])) {
+      throw new BridgeError(-32002, 'Original prompt cannot be uniquely matched to a provider turn; result remains unresolved');
+    }
+    const matchingEnds = endings.filter(ending => ending.requestId === users[0]);
+    if (matchingEnds.length !== 1 || endState(matchingEnds[0].stopReason) === 'TASK_STATE_INPUT_REQUIRED') {
+      throw new BridgeError(-32002, 'No unique authoritative endTurn exists for the original prompt; result remains unresolved');
+    }
+    return this.store.transact(tasks => {
+      const current = tasks.find(value => value.id === id);
+      if (current?.state !== 'TASK_STATE_INPUT_REQUIRED' || current.dispatchState !== 'unknown' ||
+          current.promptRequestId !== task.promptRequestId || current.remoteTaskId !== task.remoteTaskId) {
+        throw new BridgeError(-32002, 'Cloud task changed during reconciliation');
+      }
+      Object.assign(current, { state: endState(matchingEnds[0].stopReason), dispatchState: 'sent',
+        stopReason: matchingEnds[0].stopReason, providerRequestId: users[0],
+        providerCompletionSignal: 'reconciled_session/endTurn', failureStage: undefined, blockedReason: undefined,
+        output: answers.filter(answer => answer.requestId === users[0]).map(answer => answer.text).join('') || current.answer || '',
+        updatedAt: now() });
+      return current;
+    });
   }
 
   async respondPermission(id, requestId, optionId) {

@@ -492,6 +492,8 @@ try {
   else if (argv.length === 3 && argv[0] === 'cloud' && argv[1] === 'task') await cloudTasks(argv[2]);
   else if (argv.length === 3 && argv[0] === 'cancel') console.log(JSON.stringify(await controlAgentTask({ ...(await platformOptions()), targetId: argv[1] }, 'CancelTask', { id: argv[2] })));
   else if ([3, 4].includes(argv.length) && argv[0] === 'release') console.log(JSON.stringify(await controlAgentTask({ ...(await platformOptions()), targetId: argv[1] }, 'ReleaseCloudTask', { id: argv[2], cloudTaskId: argv[3] })));
+  else if (argv.length === 3 && argv[0] === 'resume') console.log(JSON.stringify(await controlAgentTask({ ...(await platformOptions()), targetId: argv[1] }, 'ResumeCloudTask', { id: argv[2] })));
+  else if (argv.length === 3 && argv[0] === 'reconcile') console.log(JSON.stringify(await controlAgentTask({ ...(await platformOptions()), targetId: argv[1] }, 'ReconcileCloudTask', { id: argv[2] })));
   else if (argv.length === 5 && argv[0] === 'permission') {
     // Request IDs are transported as JSON so both numeric and string ACP IDs remain exact.
     let requestId;
@@ -504,5 +506,5 @@ try {
   else if (command === 'platform login') await platformLogin();
   else if (command === 'platform status') await platformStatus();
   else if (command === 'platform logout') await platformLogout();
-  else throw new Error('Usage: workbuddy-a2a setup --relay <wss-url> [--mode desktop|cloud] [--task-id <cloud-session-id>] [--cwd /workspace] [--name <name>], doctor, connection status, targets, auth connect|login|status|logout, platform login|status|logout, start|stop|run, call <target-agent-id> [--message-id <id>] [--context-id <id>] (stdin), outbound <request-id>, task <target-agent-id> <task-id>, adapter task <task-id>, cloud tasks, cloud task <cloud-session-id>, cancel <target-agent-id> <task-id>, release <target-agent-id> <task-id> [recovered-cloud-task-id], permission <target-agent-id> <task-id> <request-id-as-json> <option-id>');
+  else throw new Error('Usage: workbuddy-a2a setup --relay <wss-url> [--mode desktop|cloud] [--task-id <cloud-session-id>] [--cwd /workspace] [--name <name>], doctor, connection status, targets, auth connect|login|status|logout, platform login|status|logout, start|stop|run, call <target-agent-id> [--message-id <id>] [--context-id <id>] (stdin), outbound <request-id>, task <target-agent-id> <task-id>, adapter task <task-id>, cloud tasks, cloud task <cloud-session-id>, cancel <target-agent-id> <task-id>, release <target-agent-id> <task-id> [recovered-cloud-task-id], resume <target-agent-id> <task-id>, reconcile <target-agent-id> <task-id>, permission <target-agent-id> <task-id> <request-id-as-json> <option-id>');
 } catch (error) { console.error(error.message); process.exitCode = 1; }

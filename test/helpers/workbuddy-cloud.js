@@ -8,6 +8,13 @@ export async function cloudProvider(t, options = {}) {
   let rejectedToken = false;
   const emit = (res, message) => res.write(`data: ${JSON.stringify({ jsonrpc: '2.0', ...message })}\r\n\r\n`);
   const finish = (stream, request, stopReason = options.stopReason || 'end_turn') => {
+    if (options.providerEndTurn) {
+      for (const meta of [{ 'codebuddy.ai': { requestId: 'unrelated-provider-turn' } },
+        { 'codebuddy.ai': { requestId: `provider-${request.id}`, mode: 'history' } }]) {
+        emit(stream, { method: 'session/update', params: { sessionId: request.params.sessionId, _meta: meta,
+          update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'WRONG PROVIDER OR HISTORY' } } } });
+      }
+    }
     emit(stream, { method: 'session/update', params: { sessionId: 'unrelated', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'WRONG' } } } });
     emit(stream, { method: 'session/update', params: { sessionId: request.params.sessionId,
       update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '云端实际结果' } } } });
@@ -16,6 +23,13 @@ export async function cloudProvider(t, options = {}) {
         artifact: { uri: 'agent:///artifacts/result.md', name: 'result.md', type: 'overview', text } } });
     }
     sessions.get(request.params.sessionId).status = 'completed';
+    if (options.providerEndTurn) {
+      for (const requestId of ['unrelated-provider-turn', `provider-${request.id}`]) {
+        emit(stream, { method: 'session/endTurn', params: { sessionId: request.params.sessionId,
+          stopReason, _meta: { 'codebuddy.ai': { requestId } } } });
+      }
+      return;
+    }
     emit(stream, { id: request.id, result: { stopReason } });
   };
   const server = createServer(async (req, res) => {
@@ -64,6 +78,7 @@ export async function cloudProvider(t, options = {}) {
     res.writeHead(202); res.end();
     if (rpc.method === 'initialize') emit(stream, { id: rpc.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true } } });
     else if (rpc.method === 'session/load') {
+      for (const event of options.replayEvents || []) emit(stream, event);
       if (options.gatewayQuirks) {
         stream.write('data: {"jsonrpc":"","method":"_codebuddy.ai/loadHeartbeat","params":{}}\r\n\r\n');
         stream.write(`data: ${JSON.stringify({ jsonrpc: '', method: 'session/update', params: {
@@ -74,6 +89,9 @@ export async function cloudProvider(t, options = {}) {
       emit(stream, { id: rpc.id, result: {} });
     } else if (rpc.method === 'session/prompt') {
       prompts.push(rpc); sessions.get(id).status = 'working';
+      if (options.providerEndTurn) emit(stream, { method: 'session/update', params: { sessionId: id,
+        _meta: { 'codebuddy.ai': { requestId: `provider-${rpc.id}`, mode: 'live' } },
+        update: { sessionUpdate: 'user_message_chunk', content: rpc.params.prompt[0] } } });
       if (options.disconnect) { stream.end(); return; }
       if (options.permission) {
         options.waiting = { stream, rpc };

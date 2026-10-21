@@ -96,7 +96,7 @@ function presentTask(targetId, task) {
 }
 
 export async function controlAgentTask(options, method, params) {
-  if (!['RespondPermission', 'CancelTask', 'ReleaseCloudTask'].includes(method)) throw new Error('Unsupported task control method');
+  if (!['RespondPermission', 'CancelTask', 'ReleaseCloudTask', 'ResumeCloudTask', 'ReconcileCloudTask'].includes(method)) throw new Error('Unsupported task control method');
   const rpc = await openRPC(options);
   const task = taskFrom(await rpc(method, params));
   if (!task) throw new Error('A2A task control returned no task');

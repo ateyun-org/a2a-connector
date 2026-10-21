@@ -111,6 +111,14 @@ export class ACPClient {
 
   allocateRequestId() { return this.nextRequestId++; }
 
+  resolveNotificationResponse(id, result) {
+    const entry = this.pending.get(id);
+    if (!entry) return false;
+    this.pending.delete(id);
+    entry.resolve(result);
+    return true;
+  }
+
   async request(method, params, { id = this.allocateRequestId(), timeoutMs = 30000 } = {}) {
     let entry;
     const result = new Promise((resolve, reject) => { entry = { resolve, reject }; });

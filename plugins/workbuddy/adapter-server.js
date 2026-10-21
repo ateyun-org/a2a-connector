@@ -16,7 +16,8 @@ export function taskView(task) {
       ...(task.blockedReason ? { blockedReason: task.blockedReason } : {}),
       ...(task.mode === 'cloud' ? { remoteTaskId: task.remoteTaskId, sharedCloudSession: task.sharedCloudSession,
         cloudName: task.cloudName, stopReason: task.stopReason, permission: task.permission, trackingReleased: task.trackingReleased,
-        failureStage: task.failureStage, businessPromptAttempted: task.businessPromptAttempted } : {}),
+        failureStage: task.failureStage, businessPromptAttempted: task.businessPromptAttempted,
+        providerRequestId: task.providerRequestId, providerCompletionSignal: task.providerCompletionSignal } : {}),
       ...(task.lastPollError ? { lastPollError: task.lastPollError } : {}) } };
 }
 
@@ -70,6 +71,12 @@ export function createWorkBuddyAdapter({ token, bridge, name = 'WorkBuddy Deskto
       }
       if (body.method === 'ReleaseCloudTask' && bridge.release) {
         reply(taskView(await bridge.release(params.id, params.cloudTaskId))); return;
+      }
+      if (body.method === 'ResumeCloudTask' && bridge.resume) {
+        reply(taskView(await bridge.resume(params.id))); return;
+      }
+      if (body.method === 'ReconcileCloudTask' && bridge.reconcile) {
+        reply(taskView(await bridge.reconcile(params.id))); return;
       }
       error(-32601, 'Method not found');
     } catch (failure) {

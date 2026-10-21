@@ -95,6 +95,67 @@ test('pre-prompt ACP load failure reports its stage without sending or repeating
   assert.doesNotMatch(await readFile(f.store.path, 'utf8'), /acp-secret|oauth-secret/);
 });
 
+test('explicit resume reuses an unprompted original session once and rejects concurrent recovery', async t => {
+  const options = { rejectLoad: true };
+  const f = await fixture(t, options);
+  const initial = await f.bridge.submit(message('resume-before-prompt'));
+  const blocked = await wait(f.bridge, initial.id, task => task.state === 'TASK_STATE_INPUT_REQUIRED');
+  options.rejectLoad = false;
+  const attempts = await Promise.allSettled([f.bridge.resume(initial.id), f.bridge.resume(initial.id)]);
+  assert.equal(attempts.filter(result => result.status === 'fulfilled').length, 1);
+  const result = await wait(f.bridge, initial.id, completed);
+  assert.equal(result.id, initial.id); assert.equal(result.remoteTaskId, blocked.remoteTaskId);
+  assert.equal(f.creations.length, 1); assert.equal(f.prompts.length, 1);
+  assert.equal(result.blockedReason, undefined);
+  await assert.rejects(f.bridge.resume(initial.id), /no attempted business prompt/);
+});
+
+test('resume refuses an uncertain prompt that may already have executed', async t => {
+  const f = await fixture(t, { disconnect: true });
+  const initial = await f.bridge.submit(message('cannot-resend'));
+  await wait(f.bridge, initial.id, task => task.state === 'TASK_STATE_INPUT_REQUIRED');
+  await assert.rejects(f.bridge.resume(initial.id), /no attempted business prompt/);
+  assert.equal(f.creations.length, 1); assert.equal(f.prompts.length, 1);
+});
+
+test('provider endTurn completes only the live matching provider turn after its echoed user prompt', async t => {
+  const f = await fixture(t, { providerEndTurn: true, gatewayQuirks: true });
+  const initial = await f.bridge.submit(message('provider-end-turn'));
+  const result = await wait(f.bridge, initial.id, completed);
+  assert.equal(result.providerRequestId, 'provider-3');
+  assert.equal(result.providerCompletionSignal, 'session/endTurn');
+  assert.equal(result.stopReason, 'end_turn');
+  assert.equal(result.output, '云端实际结果');
+  assert.equal(f.prompts.length, 1);
+});
+
+test('read-only reconciliation requires the exact prompt and its unique authoritative provider endTurn', async t => {
+  const options = { hold: true, timeoutMs: 25 };
+  const f = await fixture(t, options);
+  const initial = await f.bridge.submit(message('reconcile-original'));
+  const unknown = await wait(f.bridge, initial.id, task => task.state === 'TASK_STATE_INPUT_REQUIRED');
+  const params = { sessionId: unknown.remoteTaskId, _meta: { timestamp: new Date().toISOString(),
+    'codebuddy.ai': { requestId: 'provider-original', mode: 'history' } } };
+  options.replayEvents = [
+    { method: 'session/update', params: { ...params, update: { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: unknown.prompt } } } },
+    { method: 'session/update', params: { ...params, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Verified original result' } } } },
+    { method: 'session/endTurn', params: { ...params, stopReason: 'end_turn', _meta: { 'codebuddy.ai': { requestId: 'wrong-turn' } } } },
+  ];
+  await assert.rejects(f.bridge.reconcile(initial.id), /No unique authoritative/);
+  assert.equal((await f.bridge.get(initial.id)).state, 'TASK_STATE_INPUT_REQUIRED');
+  options.replayEvents.push(options.replayEvents[0]);
+  await assert.rejects(f.bridge.reconcile(initial.id), /uniquely matched/);
+  options.replayEvents.pop();
+  options.replayEvents[2].params._meta['codebuddy.ai'].requestId = 'provider-original';
+  const result = await f.bridge.reconcile(initial.id);
+  assert.equal(result.state, 'TASK_STATE_COMPLETED');
+  assert.equal(result.providerCompletionSignal, 'reconciled_session/endTurn');
+  assert.equal(result.output, 'Verified original result');
+  assert.equal(result.remoteTaskId, unknown.remoteTaskId);
+  assert.equal(f.creations.length, 1); assert.equal(f.prompts.length, 1);
+  await assert.rejects(f.bridge.reconcile(initial.id), /Only an unresolved/);
+});
+
 test('cloud permission requires an explicit valid option and exposes no automatic approval', async t => {
   const f = await fixture(t, { permission: true }, 'existing');
   const task = await f.bridge.submit(message('permission'));

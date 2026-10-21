@@ -54,7 +54,7 @@ rtk proxy env A2A_CONNECTOR_INSTANCE=cloud workbuddy-a2a cloud task ACTUAL_CLOUD
 
 列表返回第一页最多100条；查询命令只输出 task ID、名称与状态，不输出 OAuth 或 ACP 凭据。`doctor` 在云端模式检查权限、任务列表及绑定会话可用状态，不创建任务；执行时再验证 ACP 建连与加载能力。
 
-新建会话先提交仅要求 `READY` 的初始化指令，待其空闲或完成，再用 ACP `session/prompt` 提交实际任务一次，避免创建接口和 ACP 重复执行同一条业务指令。初始化本身可能使用平台额度。ACP 通过认证 SSE + POST 双通道通信，按 initialize、session/load、session/prompt 顺序调用；旧历史不混入新轮次结果。只有当前 prompt 的最终响应 `stopReason=end_turn` 才报告完成，拒绝/取消分别映射为 rejected/canceled，额度或轮次中断保持 input-required。支持流式文本、产物增量更新及删除；返回产物正文或 `agent:///` 位置，不伪造媒体下载地址。
+新建会话先提交仅要求 `READY` 的初始化指令，取得 ACP 凭据并加载会话后，再用 ACP `session/prompt` 提交实际任务一次，避免创建接口和 ACP 重复执行同一条业务指令。初始化本身可能使用平台额度。ACP 通过认证 SSE + POST 双通道通信，按 initialize、session/load、session/prompt 顺序调用；旧历史不混入新轮次结果。只有当前 prompt 的最终响应或严格关联到当前提供方轮次的 `session/endTurn` 通知携带 `stopReason=end_turn` 才报告完成，拒绝/取消分别映射为 rejected/canceled，额度或轮次中断保持 input-required。提供方轮次 ID 必须来自实时回显且与原指令完全匹配的 user_message_chunk；其他轮次、历史通知和无关联结束事件均不完成当前任务。支持流式文本、产物增量更新及删除；返回产物正文或 `agent:///` 位置，不伪造媒体下载地址。
 
 工具审批会返回 `TASK_STATE_INPUT_REQUIRED`，`task` / `adapter task` 的 `metadata.permission` 包含 request ID、工具说明及可选项。收到用户明确选择后，主控可回复：
 
@@ -69,7 +69,13 @@ permission 的 request ID 参数为 JSON：字符串带双引号，数字保留�
 
 用户检查原云端会话、确认不再执行后，可明确放弃这轮跟踪：`workbuddy-a2a release TARGET_AGENT_ID A2A_TASK_ID`。若创建响应丢失，追加通过 cloudName 找到的云端 task ID；驱动会验证名称匹配及云端已不活跃。该操作仅把未核实记录关闭为 rejected 并释放队列，**不报告执行成功，也不取消远端任务**。不自动调用 release 来绕过未解决状态。
 
-ACP 地址仅信任官方 `acp.workbuddy.cn/sessions/<id>` 和文档中的 `*.agentos-run.net/acp`，禁止重定向及任意外部凭据目的地。ACP token 过期时，在发送业务 prompt 前通过原 task ID 获取新凭据并重建连接；已尝试发送的业务 prompt 不会自动重试。
+ACP 地址仅信任官方 `acp.workbuddy.cn/sessions/<id>`、文档中的 `*.agentos-run.net/acp`，以及实际 Open API 返回的 `65225-<32位十六进制沙箱ID>.e2b.<区域>.sandbox.cloudstudio.club/acp`。仅允许 HTTPS，禁止查询参数、重定向及任意外部凭据目的地。ACP token 过期时，在发送业务 prompt 前通过原 task ID 获取新凭据并重建连接；已尝试发送的业务 prompt 不会自动重试。
+
+新创建的会话在返回 ACP 凭据后可能持续显示 `working`，此时可进入 initialize/load；绑定会话和已有 context 仍要求平台空闲，避免与其他轮次重叠。网关请求使用数字 ID 和明确的 Accept 请求头，并兼容加载期间空 jsonrpc 版本的已知通知；RPC 响应仍严格校验。
+
+失败回执通过 `metadata.failureStage`、`blockedReason`、`businessPromptAttempted` 和 `providerState` 区分创建、等待凭据、建连、加载和业务发送阶段，不暴露上游凭据。对明确未尝试发送业务指令的新建会话，主控可显式调用 `workbuddy-a2a resume TARGET_AGENT_ID A2A_TASK_ID`（A2A 方法 `ResumeCloudTask`），复用原 task/context/remoteTask ID。它核对云端会话名称并原子认领恢复；任何已有 promptRequestId、业务发送标记、未知创建结果或外部绑定会话均拒绝恢复。此命令需要与其他任务控制操作相同的目标 ACL，不会自动执行，也不代替用户审批。
+
+对于业务指令已发送但结束回执丢失的自有新建会话，`workbuddy-a2a reconcile TARGET_AGENT_ID A2A_TASK_ID`（A2A 方法 `ReconcileCloudTask`）仅连接并回放原会话，不创建任务、不发送 prompt。必须唯一匹配创建时间之后的原始用户指令及提供方轮次 ID，再找到该轮次唯一的明确 endTurn，才更新终态；重复同文指令、错误轮次、没有结束信号或外部绑定会话均保持未核实。`providerCompletionSignal` 标明实时通知或只读回放核实的依据。
 
 ## 开放平台 OAuth 与 Relay 配置
 

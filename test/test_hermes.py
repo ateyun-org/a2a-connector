@@ -16,6 +16,9 @@ spec.loader.exec_module(plugin)
 
 
 class Context:
+    def register_skill(self, name, path):
+        self.skill = (name, path)
+
     def register_tool(self, **kwargs):
         pass
 
@@ -40,6 +43,24 @@ class HermesTests(unittest.TestCase):
         }, clear=True)
         self.env.start()
         self.addCleanup(self.env.stop)
+
+    def test_register_exposes_complete_relay_skill_without_starting_a_runner(self):
+        ctx = Context()
+        with patch.object(plugin, "_self_check_once"), patch.object(plugin, "_start") as start:
+            plugin.register(ctx)
+        start.assert_not_called()
+        name, path = ctx.skill
+        self.assertEqual(name, "relay-calling")
+        self.assertTrue(path.is_file())
+        self.assertTrue((path.parent / "references/relay-http.md").is_file())
+
+    def test_older_hermes_can_still_register_tools_without_skill_api(self):
+        ctx = Context()
+        ctx.register_skill = None
+        with patch.object(plugin, "_self_check_once"), self.assertLogs(plugin.__name__, level="WARNING") as logs:
+            plugin.register(ctx)
+        self.assertTrue(callable(ctx.hook))
+        self.assertIn(str(plugin._ROOT / "skills/relay-calling/SKILL.md"), " ".join(logs.output))
 
     def test_missing_environment_is_an_error_at_registration_and_hook(self):
         del os.environ["A2A_RELAY_URL"]

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, stat } from 'node:fs/promises';
+import { mkdtemp, rm, stat, readFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DesktopBridge } from '../plugins/workbuddy/desktop-bridge.js';
@@ -33,6 +34,42 @@ async function fixture(t, overrides = {}) {
   t.after(() => bridge.close());
   return { bridge, store, api, history, sent };
 }
+
+test('the Hermes skill HTTP examples create, deduplicate and read an actual adapter task', async t => {
+  const guide = await readFile(new URL('../plugins/hermes/skills/relay-calling/references/relay-http.md', import.meta.url), 'utf8');
+  const examples = [...guide.matchAll(/```json\n([\s\S]*?)\n```/g)].map(match => JSON.parse(match[1]));
+  const send = examples.find(example => example.method === 'SendMessage');
+  const get = examples.find(example => example.method === 'GetTask');
+  assert.ok(send && get, 'the shipped skill must include executable send and read examples');
+  const f = await fixture(t);
+  const token = 'local-test-only-'.padEnd(32, 'x');
+  const adapter = createWorkBuddyAdapter({ token, bridge: f.bridge });
+  await new Promise(resolve => adapter.server.listen(0, '127.0.0.1', resolve));
+  t.after(() => adapter.close());
+  const rpc = async body => {
+    const response = await fetch(`http://127.0.0.1:${adapter.server.address().port}/rpc`, {
+      method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    assert.equal(response.status, 200);
+    return response.json();
+  };
+  send.params.message.messageId = randomUUID();
+  send.params.message.parts[0].text = 'Verify skill request with "quotes" and\na newline';
+  const created = await rpc(send);
+  assert.equal(created.error, undefined);
+  const taskID = created.result.task.id;
+  assert.ok(taskID);
+  await eventually(() => f.bridge.get(taskID), task => task.dispatchState === 'sent');
+  assert.equal((await rpc(send)).result.task.id, taskID);
+  assert.equal(f.sent.length, 1);
+  get.params.id = taskID;
+  assert.equal((await rpc(get)).result.id, taskID);
+  const invalid = structuredClone(send);
+  invalid.params.message.role = 'user';
+  assert.equal((await rpc(invalid)).error.code, -32602);
+  assert.equal(f.sent.length, 1, 'invalid wire role must not dispatch another task');
+});
 
 test('desktop adapter durably deduplicates sends and correlates only its final response', async t => {
   const f = await fixture(t);

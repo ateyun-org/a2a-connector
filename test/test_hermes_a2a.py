@@ -125,6 +125,8 @@ class HermesA2ATests(unittest.TestCase):
             self.assertTrue((installed / "vendor/connector/node_modules/ws/package.json").exists())
             self.assertTrue((installed / "runner.js").exists())
             self.assertTrue((installed / "host_support.py").exists())
+            self.assertTrue((installed / "skills/relay-calling/SKILL.md").is_file())
+            self.assertTrue((installed / "skills/relay-calling/references/relay-http.md").is_file())
             self.assertEqual(json.loads((installed / "host-runtime.json").read_text())["python"], "/actual/hermes/python")
             self.assertEqual(json.loads((installed / "package.json").read_text())["type"], "module")
             self.assertEqual(config.read_text(), "existing: settings\n")

@@ -16,7 +16,7 @@
 
 ## 安装前检查
 
-1. 确认目标 Agent 已启动，并从 Connector 所在机器访问本机 origin 下的 `/.well-known/agent-card.json`。HTTP 状态应为 200，响应 JSON 应包含非空 `name`。`name` 同时用于审批页显示和自动生成 Agent ID；同机多实例应使用可区分的名称。origin 还须提供 `POST /rpc` A2A v1.0 JSON-RPC 2.0 接口（`SendMessage`、`GetTask`、`CancelTask`、`ListTasks`），否则即使隧道在线也无法完成任务。若两个 Agent 自带的 A2A 服务都试图监听 9900，必须先在服务的启动配置中为它们指定不同端口或启用该服务自身的动态绑定；Connector 只连接现有端口，不负责启动或改变该服务。
+1. 确认目标 Agent 已启动，并从 Connector 所在机器访问本机 origin 下的 `/.well-known/agent-card.json`。HTTP 状态应为 200，响应 JSON 应包含非空 `name`。`name` 用于显示；企业模式的 ID 以控制台为准，同机多实例应使用可区分的名称。origin 还须提供 `POST /rpc` A2A v1.0 JSON-RPC 2.0 接口，至少支持文本 `SendMessage` 和 `GetTask`。取消、列举等扩展按接收端实际能力判断；企业 Relay 不开放 `ListTasks`，不能用它验证派单权限。若两个 Agent 自带的 A2A 服务都试图监听 9900，必须先在服务的启动配置中为它们指定不同端口或启用该服务自身的动态绑定；Connector 只连接现有端口，不负责启动或改变该服务。
 2. 确认本机 Agent Card 中的 A2A 接口地址确实可由 Connector 进程访问。若 Agent 还没有本机 A2A HTTP endpoint，先按宿主文档配置 adapter；完成后重新检查，再配对。
 3. 确认 Relay URL 使用 `wss://` 且路径为 `/connect`。`allowInsecure` / `-allow-insecure` 只允许到 Relay 使用 `ws://`，不会改变本机 origin 的 HTTP 配置；生产环境不要启用。
 4. 优先复用已安装的 Connector 和现有配对身份。不要为了重试而重复配对；批准已有 Agent ID 会轮换该 Agent 的凭据。
@@ -41,7 +41,7 @@ rtk proxy sh scripts/install-connector.sh install --host HOST \
 同机多实例使用各自的 `--instance` 和 `--expect-name`。OpenClaw/Hermes/DSH 可用 `--state` 指定独立凭据文件，脚本启动的是独立 Connector，不会替你安装宿主插件或 adapter，也不要与宿主已有 Connector 共用同一身份并发运行。WorkBuddy 使用包装 CLI 的固定实例路径；`A2A_CONNECTOR_CONFIG_DIR` 可指定私有状态目录，并由安装器及包装 CLI 一致使用。
 
 4. 完成后清除调用环境的 `A2A_PAIR_CODE`。使用同样的 `--host`、`--instance`/`--state` 执行 `status` 或 `stop`；再次 `install --enterprise --expect-agent-id ...` 可在不带票据时复用已保存凭据启动。进程运行不等于已连接，仍需核对隧道和实际授权请求。
-5. 返回企业控制台验证连接，并给目标分配成员、用户组及必要的机器调用权限。
+5. 返回企业控制台验证连接。在**目标 Agent** 的「谁能访问」（旧版按钮为「授权」）中选择实际调用方，分别授予查看、调用、读取任务等需要的动作。方向为「调用方 → 目标」，不能在调用方行里选目标来代替；个人调用方还需要绑定成员的有效成员/用户组权限。入站连接、上游账号授权和出站调用权限分别验证。
 
 票据错误、超时或响应丢失时安装器会停止，不自动兑换第二次。先检查本机凭据和可能的私有 `.state-*`，不要直接生成新票据或重复安装。若返回身份与预期不符，已保存的状态保留供核对，隧道不会启动。新票据兑换会轮换凭据并断开旧连接。
 
@@ -102,7 +102,9 @@ DSH、OpenClaw 的受管理 Connector 与 Hermes runner 内的 CLI 在异常退�
 
 ## 通道边界
 
-本 Connector 接收 Relay 转发到本机 A2A origin 的入站流量。获授权的调用者可经 Relay 对该 origin 发送 `GET`、`POST`、`PUT`、`DELETE`、`PATCH` 请求及任意路径；仅安装 Connector 不会限制 origin 的路由。把 origin 限定在 `127.0.0.1`，并由本机 A2A 服务执行身份、方法和路径检查。若本机接口启用 Bearer 认证，使用足够长的随机 token 并通过进程环境传给 Connector。Connector 默认请求/响应正文上限为 16 MiB；`-max-request-body <bytes>` 可缩小入站请求限额。DSH 内置 adapter 与其隧道默认统一为 1 MiB（`maxRequestBodyBytes`），当前缓冲整个正文，不支持 SSE 流式传输；普通断线会自动重连。若主机设置了 HTTP 代理，仍需从 Connector 所在进程环境实测本机 `127.0.0.1` origin 可达；当前 Connector 没有显式的代理或 `NO_PROXY` 配置逻辑。
+本 Connector 接收 Relay 转发到本机 A2A origin 的入站流量。企业 Relay 按已知 A2A 操作检查动作权限及任务/上下文归属，不能将一次 Agent 授权理解为任意 HTTP 路由访问权限。旧版 Relay 的通用代理范围更宽；Connector 本身不代替本机路由权限检查。把 origin 限定在 `127.0.0.1`，并由本机 A2A 服务执行身份、方法和路径检查。若本机接口启用 Bearer 认证，使用足够长的随机 token 并通过进程环境传给 Connector。Connector 默认请求/响应正文上限为 16 MiB；`-max-request-body <bytes>` 可缩小入站请求限额。DSH 内置 adapter 与其隧道默认统一为 1 MiB（`maxRequestBodyBytes`），当前缓冲整个正文，不支持 SSE 流式传输；普通断线会自动重连。若主机设置了 HTTP 代理，仍需从 Connector 所在进程环境实测本机 `127.0.0.1` origin 可达；当前 Connector 没有显式的代理或 `NO_PROXY` 配置逻辑。
+
+远程调用及收据恢复见 [Relay HTTP 协议](../../plugins/hermes/skills/relay-calling/references/relay-http.md)。必须保留稳定 messageId、实际 caller/target ID、Relay 收据 ID 及返回的任务 ID。企业模式支持收据；单次 404、GetTask 403 或 ListTasks 不支持不能推出「没有调用权限」或「任务没有执行」。只读检查不自动发送测试任务。
 
 ## 完成检查
 

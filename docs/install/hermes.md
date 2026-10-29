@@ -2,6 +2,8 @@
 
 开始前阅读[通用配对与验证](shared.md)。Connector 优先使用当前 Hermes 自带的官方 A2A；只有确认没有官方模块时才安装和启动兼容服务。官方模块未启用、不可达或认证失败，都不会触发兼容模式。
 
+企业 Relay 使用[企业票据接入](shared.md#企业模式票据接入)，不要调用旧配对工具继续等待审批。独立企业安装器只运行 Connector，不安装宿主插件或 skill；需要本页的插件管理和调用 skill 时，还应在实际 Hermes profile 安装/升级插件并加载它，避免另起同状态的第二个 Connector。下文配对工具只适用于旧版流程；远程调用说明见「日常管理与排错」。
+
 ## 安装前检查
 
 使用实际 Hermes Python、实际 home/profile 和 Node.js 22+。Windows 使用原生路径，例如 `D:/Program Files/nodejs/node.exe`；从当前机器检测实际安装位置，不要假定 C 盘，也不要给原生 Python 传 Git Bash 的 `/c/...` 路径。参数列表直接交给 subprocess，带空格的路径无需额外 shell 转义。
@@ -74,6 +76,10 @@ python scripts/install-hermes.py --check --home /actual/hermes/home \
 6. 使用 `a2a_connector_status` 或 `/a2a_connector status` 验证 `running`、`paired` 和 `tunnelOnline`。这三个状态分别表示 runner 存活、凭据已保存、CLI 的近期连接健康信息确认隧道在线。最后按[通用验证](shared.md#按顺序验证与排错)执行实际 A2A 请求。
 
 ## 日常管理与排错
+
+插件随包提供远程调用 skill，安装和 `--upgrade` 都会复制 `skills/relay-calling/`。新版 Hermes 加载插件时通过 `ctx.register_skill` 注册；远程派单或排查 Relay 前，先调用 `skill_view("a2a-connector:relay-calling")`，按其中链接读取 HTTP 请求、权限和收据恢复说明。`a2a_connector_status` 的工具说明也会提示加载它。旧 Hermes 没有注册 API 时，插件仍可管理 Connector，并提示直接读取安装目录的 `skills/relay-calling/SKILL.md`。插件 skill 是显式加载的；不能把安装成功当作当前会话已读到新说明。见 [Hermes 官方插件 skill 机制](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/developer-guide/plugins/index.md#bundle-skills)。
+
+该 skill 区分企业 `/console` 和旧版配对流程，给出 caller → target 的授权方向，以及精确的 `ROLE_USER`、`params.message`、`messageId` 和文本 parts。企业 Relay 不开放 `ListTasks`；GetTask 需要本身份的任务归属；企业仍支持带幂等键的请求收据。不要因这些状态反复重配对或要求管理员重复授权。Hermes 内置 A2A 工具未注册时可使用 skill 中的 HTTPS 协议，不擅自修改宿主配置启用另一套身份。
 
 | 命令 | 行为 |
 | --- | --- |

@@ -43,6 +43,8 @@ OpenClaw hosts can run `node scripts/install-openclaw.mjs`: it detects the host'
 
 Hermes hosts can use `python3 scripts/install-hermes.py --hermes-python /path/to/hermes/.venv/bin/python`. It inspects the actual host installation and includes compatibility A2A only when native A2A is absent. The plugin defaults to `A2A_LOCAL_URL=auto`, reuses native A2A when available, and uses isolated quiet CLI sessions otherwise. See [Hermes installation](docs/install/hermes.md) for profiles, native authentication and older CLI requirements.
 
+Hermes also ships [the Relay calling skill](plugins/hermes/skills/relay-calling/SKILL.md), registered as `a2a-connector:relay-calling`. Load it explicitly before delegation; it covers enterprise permission direction, direct HTTP when host tools are unavailable, valid message envelopes, owned-task reads and durable receipts. WorkBuddy CLI/MCP skills carry the same enterprise boundaries through their respective clients. Updating source does not update an already installed plugin or load the new skill into an existing remote session.
+
 DSH hosts can use one `dsh-a2a-connector` entry, which starts its bundled native A2A service and Relay Connector together and registers outbound A2A delegation when `agents` are configured; see [DSH installation and service setup](docs/install/dsh.md). WorkBuddy's `workbuddy-a2a setup --relay <url>` starts its built-in PC adapter and Connector together; add `--mode cloud` for cloud Open API + ACP execution; see [WorkBuddy setup and OAuth](docs/install/workbuddy.md). For an independently managed A2A origin, start the standalone Connector with automatic pairing:
 
 ```bash

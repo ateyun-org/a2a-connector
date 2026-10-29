@@ -76,9 +76,9 @@ MCP 地址：`https://dsh-relay.chuanbota.com/mcp`。
 用户在 WorkBuddy 点击连接后：
 
 1. MCP 客户端发现服务并注册，打开 Relay 授权页。
-2. 授权页展示新建的 `wbmcp-...` 主控身份和确认码。管理员在 `/pair` 核对并批准；授权页的状态检查完成一次性配对兑换，使身份可在 `/pair/list` 中设置目标。
-3. 管理员仅选择需要调用的目标。这个主控身份不需要运行入站隧道，管理列表显示 offline 并不代表 MCP 主控离线；其可调用目标的隧道需要在线。
-4. 用户在原授权页确认，客户端得到 MCP OAuth token。没有目标权限时可以认证，但 `a2a_targets` 为空，不能派发任务。工具中不提供管理员操作，也不自动增加权限。
+2. 企业模式要求用户登录 Relay、选择其所属企业并确认 OAuth，Relay 创建或复用该成员的个人 MCP Controller。它和已有 Connector 的身份可能不同，授权时核对准确 Agent ID。旧版 Redis-only Relay 才会展示 `wbmcp-...` 身份和确认码，经过 `/pair` 核对批准后在 `/pair/list` 分配目标。
+3. 企业管理员在 `/console` 的**目标 Agent** 行点击「谁能访问」，选择这个 MCP Controller 为机器调用方并授予所需动作；个人 Controller 的机器授权还需与绑定成员的有效成员/用户组权限取交集。这个主控身份不需要运行入站隧道，显示按需连接不代表主控不可用；目标接收端的连接状态另行检查。
+4. 用户在原授权页确认，客户端得到 MCP OAuth token。可以认证但没有可发现目标时 `a2a_targets` 为空；能够读取卡片也不表示拥有所有任务动作。`a2a_send` 需要调用权限，`a2a_task` 需要读取权限及本身份的任务归属。企业模式不开放 ListTasks，但支持 `a2a_request` 收据恢复。工具中不提供管理员操作，也不自动增加权限。
 
 支持 WorkBuddy 私有协议回调 `workbuddy://workbuddy/mcp/connector:chuanbota-a2a/oauth/callback`、平台分配的 `oc_...` 连接器 ID 回调和精确注册的 HTTP loopback 回调。回调必须先精确注册，不能在授权时更换。拒绝 plain PKCE、重定向不匹配和其他资源的 token。允许反向代理将 Host 改为内部上游地址，不要求新增代理配置。默认允许同源请求与无 Origin 的原生客户端；浏览器客户端来源须在 `mcpAllowedOrigins` 中明确配置，重复 Origin 也拒绝。所有请求仍需有效的 MCP 令牌和目标权限；Host 与转发请求头不参与 OAuth 地址或令牌受众生成。
 

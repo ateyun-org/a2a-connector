@@ -250,12 +250,17 @@ def _command(raw_args):
 def register(ctx):
     if os.environ.get("A2A_CONNECTOR_CHILD") == "1":
         return
+    skill = _ROOT / "skills/relay-calling/SKILL.md"
+    if callable(getattr(ctx, "register_skill", None)):
+        ctx.register_skill("relay-calling", skill)
+    else:
+        logging.getLogger(__name__).warning("Hermes does not expose register_skill; read the Relay calling guide at %s before remote delegation", skill)
     _self_check_once()
     schema = {"name": "a2a_connector_pair", "description": "Start the managed Connector and show its active pairing approval; no Gateway restart. Optionally redeem a manual pair_ code.",
               "parameters": {"type": "object", "properties": {"code": {"type": "string"}}}}
     ctx.register_tool(name="a2a_connector_pair", toolset="a2a_connector", schema=schema, handler=_tool)
     ctx.register_tool(name="a2a_connector_status", toolset="a2a_connector",
-                      schema={"name": "a2a_connector_status", "description": "Read Connector process, pairing and live tunnel health without restarting or changing anything.", "parameters": {"type": "object", "properties": {}}},
+                      schema={"name": "a2a_connector_status", "description": "Read Connector process, pairing and live tunnel health without restarting or changing anything. Before remote A2A delegation or Relay troubleshooting, load skill_view('a2a-connector:relay-calling') for enterprise permissions, exact SendMessage format and durable receipt recovery; this status tool does not send tasks.", "parameters": {"type": "object", "properties": {}}},
                       handler=lambda *_args, **_kwargs: _command("status"))
     ctx.register_command("a2a_connector", handler=_command, description="Pair, start, stop, inspect or diagnose the Connector")
     def on_session_start(**kwargs):

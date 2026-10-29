@@ -45,6 +45,10 @@ Hermes hosts can use `python3 scripts/install-hermes.py --hermes-python /path/to
 
 Hermes also ships [the Relay calling skill](plugins/hermes/skills/relay-calling/SKILL.md), registered as `a2a-connector:relay-calling`. Load it explicitly before delegation; it covers enterprise permission direction, direct HTTP when host tools are unavailable, valid message envelopes, owned-task reads and durable receipts. WorkBuddy CLI/MCP skills carry the same enterprise boundaries through their respective clients. Updating source does not update an already installed plugin or load the new skill into an existing remote session.
 
+OpenClaw ships [a2a-relay-calling](plugins/openclaw/skills/a2a-relay-calling/SKILL.md), declared in its plugin manifest and included in both native and compatibility installations. Hermes and OpenClaw package their HTTP references from [the shared Relay protocol](docs/relay-http.md); run `rtk proxy node scripts/sync-plugins.mjs` after protocol changes so both stay current.
+
+DSH's native outbound tool descriptions and [packaged calling skill](plugins/dsh/skills/a2a-relay-calling/SKILL.md) cover the same enterprise rules; its HTTP reference also comes from the shared source. See [the complete distribution/loading inventory](plugins/README.md#relay-instruction-coverage) for all five host/client packages and the standalone CLI.
+
 DSH hosts can use one `dsh-a2a-connector` entry, which starts its bundled native A2A service and Relay Connector together and registers outbound A2A delegation when `agents` are configured; see [DSH installation and service setup](docs/install/dsh.md). WorkBuddy's `workbuddy-a2a setup --relay <url>` starts its built-in PC adapter and Connector together; add `--mode cloud` for cloud Open API + ACP execution; see [WorkBuddy setup and OAuth](docs/install/workbuddy.md). For an independently managed A2A origin, start the standalone Connector with automatic pairing:
 
 ```bash

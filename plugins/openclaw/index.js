@@ -69,7 +69,7 @@ export default {
       },
     });
     api.registerTool({
-      name: 'a2a_connector_status', description: 'Inspect Connector process and inbound WSS tunnel health with recent bounded logs.',
+      name: 'a2a_connector_status', description: 'Inspect Connector process and inbound WSS tunnel health with recent bounded logs. Before remote Relay delegation or troubleshooting, read the a2a-relay-calling skill for enterprise grants, valid SendMessage parameters and durable receipt recovery; this status tool does not send tasks.',
       parameters: { type: 'object', properties: {}, additionalProperties: false },
       async execute() {
         await prepare();

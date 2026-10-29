@@ -35,8 +35,8 @@ async function fixture(t, overrides = {}) {
   return { bridge, store, api, history, sent };
 }
 
-test('the Hermes skill HTTP examples create, deduplicate and read an actual adapter task', async t => {
-  const guide = await readFile(new URL('../plugins/hermes/skills/relay-calling/references/relay-http.md', import.meta.url), 'utf8');
+async function verifySkillHTTPExamples(t, guidePath) {
+  const guide = await readFile(new URL(guidePath, import.meta.url), 'utf8');
   const examples = [...guide.matchAll(/```json\n([\s\S]*?)\n```/g)].map(match => JSON.parse(match[1]));
   const send = examples.find(example => example.method === 'SendMessage');
   const get = examples.find(example => example.method === 'GetTask');
@@ -69,7 +69,12 @@ test('the Hermes skill HTTP examples create, deduplicate and read an actual adap
   invalid.params.message.role = 'user';
   assert.equal((await rpc(invalid)).error.code, -32602);
   assert.equal(f.sent.length, 1, 'invalid wire role must not dispatch another task');
-});
+}
+
+for (const [host, skill] of [['hermes', 'relay-calling'], ['openclaw', 'a2a-relay-calling'], ['dsh', 'a2a-relay-calling']]) {
+  test(`the ${host} skill HTTP examples create, deduplicate and read an actual adapter task`, t =>
+    verifySkillHTTPExamples(t, `../plugins/${host}/skills/${skill}/references/relay-http.md`));
+}
 
 test('desktop adapter durably deduplicates sends and correlates only its final response', async t => {
   const f = await fixture(t);

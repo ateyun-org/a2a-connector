@@ -216,7 +216,7 @@ test('Relay target grant denial identifies the paired controller without leaking
   const a2a = new A2AOrchestrator({ ...config, connectorState: join(directory, 'absent.json'),
     agents: [{ id: 'coder', card: 'https://relay.example/agents/coder/.well-known/agent-card.json' }] },
   { fetchImpl: async () => new Response(JSON.stringify({ error: 'access_denied', agentId: 'local-dsh', token: 'TOP_SECRET' }), { status: 403 }) });
-  await assert.rejects(() => a2a.discover('coder'), /access_denied.*local-dsh.*pair\/list/);
+  await assert.rejects(() => a2a.discover('coder'), /access_denied.*local-dsh.*discover.*console.*调用方 → 目标/);
   const [listed] = await a2a.listAgents();
   assert.equal(listed.available, false);
   assert.doesNotMatch(listed.diagnostic, /TOP_SECRET/);
@@ -306,6 +306,43 @@ test('missing remote evidence remains unknown rather than implying permission to
   const result = await a2a.reconcile('unrecoverable', 'owner');
   assert.equal(result.outcome, 'unknown');
   assert.equal(result.safeToResubmit, false);
+});
+
+test('Relay receipt 404 with a known context stays unknown without probing ListTasks', async () => {
+  const calls = [];
+  const a2a = new A2AOrchestrator({ ...config, storePath: join(directory, 'missing-relay-receipt.json'),
+    connectorState: join(directory, 'absent.json'),
+    agents: [{ id: 'coder', card: 'https://relay.example/agents/coder/.well-known/agent-card.json' }] }, {
+    fetchImpl: async (url, init) => {
+      calls.push({ url: String(url), method: init?.method });
+      return new Response(JSON.stringify({ error: 'request_not_found' }), { status: 404 });
+    },
+  });
+  await a2a.store.put({ id: 'lost-receipt', agentId: 'coder', parentId: 'owner', contextId: 'known-context',
+    relayRequestId: 'a'.repeat(32), dispatchState: 'unknown', messageId: 'lost', state: 0,
+    updatedAt: new Date().toISOString() });
+  const result = await a2a.reconcile('lost-receipt', 'owner');
+  assert.equal(result.outcome, 'unknown');
+  assert.equal(result.safeToResubmit, false);
+  assert.match(result.diagnostic, /ListTasks is unsupported/);
+  assert.deepEqual(calls, [{ url: 'https://relay.example/relay/requests/' + 'a'.repeat(32), method: undefined }]);
+});
+
+test('Relay GetTask denial diagnoses ownership without declaring invoke permission missing', async () => {
+  const a2a = new A2AOrchestrator({ ...config, connectorState: join(directory, 'absent.json'),
+    agents: [{ id: 'coder', card: 'https://relay.example/agents/coder/.well-known/agent-card.json' }] }, {
+    fetchImpl: async (_url, init) => init?.method === 'POST'
+      ? new Response(JSON.stringify({ error: 'access_denied', agentId: 'local-dsh', token: 'TOP_SECRET' }), { status: 403 })
+      : new Response(JSON.stringify({ name: 'Coder', supportedInterfaces: [{ url: 'https://relay.example/agents/coder/rpc',
+        protocolBinding: 'JSONRPC', protocolVersion: '1.0' }] }), { headers: { 'content-type': 'application/json' } }),
+  });
+  await a2a.store.put({ id: 'foreign-task', agentId: 'coder', parentId: 'owner', taskId: 'old-identity-task',
+    updatedAt: new Date().toISOString() });
+  await assert.rejects(() => a2a.getTask('foreign-task', 'owner'), error => {
+    assert.match(error.message, /task_read.*归属当前调用方/);
+    assert.doesNotMatch(error.message, /TOP_SECRET|没有调用该目标/);
+    return true;
+  });
 });
 
 test('total wait timeout cancels a task and settles the provider result', async () => {

@@ -10,6 +10,8 @@
 
 ## 安装与启动
 
+企业模式使用[控制台签发的身份绑定票据](shared.md#企业模式票据接入)完成 Connector 接入，不走下文旧版申请/管理员确认码审批；已经有匹配凭据时直接复用。Relay 原生托管 WorkBuddy 使用控制台的接入邀请及账号授权，无需在用户电脑额外安装 Connector。下面 setup/auth connect 的自动配对流程适用于旧部署，返回 organization_ticket_required 时应使用企业入口，而不是再次等待审批。
+
 首次接入时，CLI 会显示配对、账号授权和执行模式对应的设置顺序。GUI 的 `auth connect` 在配对完成后提供接入引导页；`platform login` 也进入同一引导页。页面先跳转 WorkBuddy 官方账号授权，回调成功后继续显示桌面远程连接设置和检查步骤。云端模式不要求桌面远程连接开关。
 
 连接器 GUI 使用 `connection status` 同时检查配对、实时隧道、WorkBuddy 账号授权和当前模式的平台可用状态，未完成账号授权时不会匹配「Logged in」。`auth status` 仍只用于配对诊断。配对审批完成后若连接器还提示未连接，再点一次连接即可进入账号授权。`doctor` 的 `nextActions` 给出缺失步骤；桌面开关只能人工确认，不把在线状态当成远程控制已启用。
@@ -25,7 +27,7 @@ rtk proxy workbuddy-a2a auth status
 
 `setup` 使用系统分配的 loopback 端口启动真实的 PC adapter。Card/RPC 均要求独立 Bearer token；token 每次启动随机生成，只在进程间传递，不写入 settings、安装包或日志。Connector 向 Relay 发布 Card 时重写接口地址。
 
-`auth status` 显示待审批 Agent ID、六位确认码和审批地址。管理员在 `/pair` 核对后批准。`Logged in` 要求隧道健康，而非仅有凭据文件；这仍不代表 WorkBuddy Open API 已授权。
+旧版配对时，`auth status` 显示待审批 Agent ID、六位确认码和审批地址，管理员在 `/pair` 核对后批准；企业票据已预先绑定并批准身份。`Logged in` 要求隧道健康，而非仅有凭据文件；这仍不代表 WorkBuddy Open API 已授权。
 
 ```bash
 rtk proxy workbuddy-a2a stop
@@ -117,7 +119,7 @@ rtk proxy workbuddy-a2a doctor
 
 ## WorkBuddy 作为主控
 
-管理员在 `/pair/list` 为当前 WorkBuddy Agent 授予指定目标的调用权限。`targets` 只显示已获授权的目标：
+企业管理员在 `/console` 的**目标 Agent**「谁能访问」中选择当前 WorkBuddy Agent 为机器调用方，授予查看/调用/读取任务等所需动作，方向为「当前调用方 → 目标」。个人身份还需绑定成员的有效成员/用户组权限交集；旧版 Redis-only Relay 才使用 `/pair/list`。核对 `targets` 的 callerAgentId 和准确目标 ID，不把同名 MCP Controller 当作同一身份：
 
 ```bash
 rtk proxy workbuddy-a2a targets

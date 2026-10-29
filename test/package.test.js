@@ -22,6 +22,14 @@ test('DSH plugin package name matches Cordis patch documentation', async () => {
   assert.match(dshInstall, /name:\s*dsh-a2a-connector/);
 });
 
+test('Hermes, OpenClaw and DSH ship the same maintained Relay HTTP protocol', async () => {
+  const guide = await readFile('docs/relay-http.md');
+  for (const [host, skill] of [['hermes', 'relay-calling'], ['openclaw', 'a2a-relay-calling'], ['dsh', 'a2a-relay-calling']]) {
+    assert.deepEqual(await readFile(join('plugins', host, 'skills', skill, 'references', 'relay-http.md')), guide,
+      `${host} has a stale Relay guide; run node scripts/sync-plugins.mjs`);
+  }
+});
+
 
 test('DSH SDKs remain host-provided peer dependencies', async () => {
   const pkg = JSON.parse(await readFile('plugins/dsh/package.json', 'utf8'));

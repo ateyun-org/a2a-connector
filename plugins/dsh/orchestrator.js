@@ -193,14 +193,23 @@ export class A2AOrchestrator {
           if (body?.error === 'access_denied') {
             const id = typeof body.agentId === 'string' && /^[a-zA-Z0-9_-]{1,64}$/.test(body.agentId)
               ? ` (${body.agentId})` : '';
-            throw new RelayAuthError(`Relay access_denied${id}: 当前主控没有调用该目标的权限；请管理员在 ${base.origin}/pair/list 授权目标 Agent。`);
+            let method;
+            try { method = JSON.parse(init.body).method; } catch { /* non-JSON or discovery request */ }
+            const permission = target.pathname.endsWith('/.well-known/agent-card.json')
+              ? '卡片读取需要 discover'
+              : ['GetTask', 'tasks/get'].includes(method) ? '任务查询需要 task_read，且任务必须归属当前调用方'
+                : ['SendMessage', 'message/send'].includes(method) ? '发送需要 invoke；已有上下文还需归属当前调用方'
+                  : '检查当前操作的动作权限及任务/上下文归属';
+            throw new RelayAuthError(`Relay access_denied${id}: ${permission}。企业管理员在 ${base.origin}/console 的目标 Agent「谁能访问」中选择本机为机器调用方（调用方 → 目标），并核对个人成员权限交集、凭据 scope 和 Agent 状态；旧版 Relay 才使用 /pair/list。`);
           }
           if (body?.error === 'not_controller') {
             const id = typeof body.agentId === 'string' && /^[a-zA-Z0-9_-]{1,64}$/.test(body.agentId)
               ? ` (${body.agentId})` : '';
             throw new RelayAuthError(`Relay not_controller${id}: 已配对但未设为主控；请管理员在 ${base.origin}/pair/list 将本机 DSH Agent 设为主控。`);
           }
-          throw new RelayAuthError('Relay unauthorized (401): 检查本机 Connector 配对状态、凭据是否已轮换及 connectorState 路径；旧版 Relay 还需检查 /pair/list 主控设置。');
+          throw new RelayAuthError(response.status === 401
+            ? 'Relay unauthorized (401): 检查本机 Connector 配对状态、凭据是否已轮换及 connectorState 路径；旧版 Relay 还需检查 /pair/list 主控设置。'
+            : 'Relay access_denied (403): 检查当前操作的权限、scope 和任务归属；企业目标授权位于 /console，不凭一次拒绝推断缺少 invoke。');
         }
         return response;
       };
@@ -386,6 +395,10 @@ export class A2AOrchestrator {
           diagnostic: 'Relay journal found; remote result is pending, unknown, or an error. Do not resend.' };
       }
       if (result.status !== 404) throw new Error(`Relay reconciliation status ${result.status}`);
+    }
+    if (agent.isRelay) {
+      return { conversation: record, historical, outcome: 'unknown', safeToResubmit: false,
+        diagnostic: 'Relay receipt is missing or inaccessible; enterprise ListTasks is unsupported. Preserve the original IDs and inspect the original task/session; do not infer non-execution or resend.' };
     }
     if (record.contextId) {
       let pageToken = '';

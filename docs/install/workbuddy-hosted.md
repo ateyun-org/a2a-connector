@@ -1,6 +1,6 @@
 # WorkBuddy 服务端托管接入
 
-> 新版 Relay 已内置原生 Go 接收端。现有服务器只需更新 Relay 程序，沿用原配置、Redis、OAuth 和 ACL；无需执行下文 Node/Docker 安装。管理页 `/pair/list` 提供账号授权和旧 `.tasks.json` 迁入入口。完整说明见 [Relay 原生 Go 接入](../../../a2a-relay/README.md#native-go-workbuddy-receiver)。下文保留为旧版独立 Node 托管方案，不应与原生接收端同时启动同一身份。
+> 新版 Relay 已内置原生 Go 接收端。企业版在 `/console` 的 Agent 管理中接入 WorkBuddy、生成账号授权邀请并配置调用方权限，接收身份来自企业数据库；无需在用户电脑执行下文 Node/Docker 安装。旧版 `/pair/list` 的账号授权和 `.tasks.json` 迁入流程仅用于相应旧实例，不能代替企业身份和授权。完整说明见 [Relay 原生 Go 接入](../../../a2a-relay/README.md#native-go-workbuddy-receiver)。下文保留为旧版独立 Node 托管方案，不应与原生接收端同时启动同一身份。
 
 
 架构为 主控 → Relay → 服务端 WorkBuddy 适配器 → 官方云端 API / 官方电脑端 API。用户电脑不运行本项目的 A2A 服务或 Connector；电脑端执行仍要求官方 WorkBuddy 已登录、在线并允许远程连接。云端执行不依赖用户电脑。托管服务应放在持续运行的服务器，不能依赖会休眠的 WorkBuddy 任务沙箱。

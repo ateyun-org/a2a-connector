@@ -2,6 +2,18 @@
 
 开始前阅读[通用准备、配对与验证](shared.md)。Connector 默认优先使用 OpenClaw 的官方 A2A；宿主缺少 A2A 时，安装并启动本项目的兼容服务。只运行一个 Connector 连接同一个 Agent。
 
+企业 Relay 使用[企业票据接入](shared.md#企业模式票据接入)，旧版配对工具不能代替企业票据。独立安装器只连接已有 origin，不安装本页的宿主插件或 skill；需要宿主工具和调用说明时，应安装/升级本插件，并复用已配置的身份和状态路径，避免再启动同身份的第二个 Connector。
+
+## 远程调用 skill
+
+插件携带 `skills/a2a-relay-calling/`，通过 `openclaw.plugin.json` 的 `skills` 声明交给宿主发现；原生、已有及兼容 A2A 安装方式都会保留该目录。先从实际宿主的 skill 列表加载 `a2a-relay-calling` 的 SKILL.md 再派单；显式引用时使用列表提供的命令名。`a2a_connector_status` 的工具说明也会提醒加载。此机制见 [OpenClaw 官方插件 skill 说明](https://docs.openclaw.ai/tools/skills#plugins-and-skills)。
+
+Skill 覆盖企业 caller → target 授权、个人成员权限交集、完整 ROLE_USER/params.message 请求、owned GetTask、企业 ListTasks 限制及幂等收据恢复。入站隧道、宿主本地 A2A 工具和 Relay 远程调用权限分别验证。已有可用 MCP 工具时按真实工具 schema 调用；否则按随包 HTTP 说明访问，不假定安装 Connector 就注册了出站工具。
+
+更新源码不等于已安装副本和当前会话已更新。升级插件后，在实际 Gateway/profile 检查插件已启用、Agent 的 skill 列表或显式引用能找到此 skill，必要时按宿主支持的刷新/会话加载流程重新加载。若同名 workspace/managed skill 覆盖了插件副本，核对实际读取的路径；不要通过改全局 allowlist 或反复配对解决 skill 不可见。
+
+HTTP 协议的维护源为仓库 `docs/relay-http.md`；运行 `rtk proxy node scripts/sync-plugins.mjs` 会同步到 Hermes 和 OpenClaw 的随包 references。打包检查会核对两份内容一致。
+
 ## 自动选择并安装
 
 在 OpenClaw Gateway 所在主机、`a2a-connector` 仓库目录执行：

@@ -10,6 +10,19 @@ Choose a host from the [installation index](../AGENT_INSTALL.md). Shared pairing
 | `workbuddy` | CLI + Skill with Node 22; starts an authenticated desktop or cloud ACP adapter and Connector together, with durable incoming/outgoing tracking. |
 | `workbuddy-mcp` | Remote OAuth MCP + Skill for Buddy application binding; calls authorized Relay targets without a local CLI installation. |
 
+## Relay instruction coverage
+
+| Distribution | Model-facing instructions | Distribution/loading |
+| --- | --- | --- |
+| Hermes | `skills/relay-calling/SKILL.md` plus HTTP reference | Copied by install/upgrade; registered as `a2a-connector:relay-calling`; explicit skill load |
+| OpenClaw | `skills/a2a-relay-calling/SKILL.md` plus HTTP reference | Declared by plugin manifest; retained in native/compat installations; subject to actual host eligibility |
+| DSH | Native tool descriptions plus `skills/a2a-relay-calling/SKILL.md` and HTTP reference | Tools register when agents are configured; packaged skill is read through host context/file tools, with no invented auto-loader |
+| WorkBuddy CLI | `skills/a2a-connector/SKILL.md` | Included by CLI submission packager |
+| WorkBuddy MCP | `skills/a2a-coordination/SKILL.md` | Included by MCP submission packager |
+| Standalone Connector | Common install guide and `docs/relay-http.md` | Does not install a host plugin or load model skills |
+
+All instruction sets distinguish enterprise caller → target grants, operation-specific permissions, owned-task reads, unsupported enterprise ListTasks, valid messages and durable receipt recovery. `docs/relay-http.md` is the canonical HTTP guide; the sync script copies it into Hermes/OpenClaw/DSH. These are source/package checks: actual remote installation, current-session loading and real-account execution are separate verification steps.
+
 After changing the canonical Connector `src/`, run `node scripts/sync-plugins.mjs` from the repository root. All four packages carry generated Connector sources in `vendor/connector/`. Do not edit those copies directly. The native DSH adapter is package-specific and is not copied to other hosts. To bump versions across the root package and all host plugins, run `./bump-version.sh <version|patch|minor|major>`.
 
 Run `npm ci` and `npm test` for SDK-independent Connector/package tests (including Hermes installation checks). For DSH native driver validation, also run `npm ci --prefix plugins/dsh` and `npm run test:dsh`, or use `npm run test:all` for both suites. CI first runs the default suite without DSH dependencies, then installs DSH development dependencies and runs the native suite. It also checks source-copy parity and the DSH peer dependency contract.

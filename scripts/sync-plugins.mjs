@@ -14,4 +14,9 @@ for (const plugin of ['openclaw', 'hermes', 'dsh', 'workbuddy']) {
     cpSync(join(root, 'node_modules', 'ws'), join(modules, 'ws'), { recursive: true, force: true });
   }
 }
-console.log('Synced JavaScript Connector into four host plugins');
+for (const [plugin, skill] of [['hermes', 'relay-calling'], ['openclaw', 'a2a-relay-calling'], ['dsh', 'a2a-relay-calling']]) {
+  const references = join(root, 'plugins', plugin, 'skills', skill, 'references');
+  mkdirSync(references, { recursive: true });
+  copyFileSync(join(root, 'docs', 'relay-http.md'), join(references, 'relay-http.md'));
+}
+console.log('Synced JavaScript Connector into four host plugins and shared Relay HTTP guides');

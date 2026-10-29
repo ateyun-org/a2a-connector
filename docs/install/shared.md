@@ -104,7 +104,7 @@ DSH、OpenClaw 的受管理 Connector 与 Hermes runner 内的 CLI 在异常退�
 
 本 Connector 接收 Relay 转发到本机 A2A origin 的入站流量。企业 Relay 按已知 A2A 操作检查动作权限及任务/上下文归属，不能将一次 Agent 授权理解为任意 HTTP 路由访问权限。旧版 Relay 的通用代理范围更宽；Connector 本身不代替本机路由权限检查。把 origin 限定在 `127.0.0.1`，并由本机 A2A 服务执行身份、方法和路径检查。若本机接口启用 Bearer 认证，使用足够长的随机 token 并通过进程环境传给 Connector。Connector 默认请求/响应正文上限为 16 MiB；`-max-request-body <bytes>` 可缩小入站请求限额。DSH 内置 adapter 与其隧道默认统一为 1 MiB（`maxRequestBodyBytes`），当前缓冲整个正文，不支持 SSE 流式传输；普通断线会自动重连。若主机设置了 HTTP 代理，仍需从 Connector 所在进程环境实测本机 `127.0.0.1` origin 可达；当前 Connector 没有显式的代理或 `NO_PROXY` 配置逻辑。
 
-远程调用及收据恢复见 [Relay HTTP 协议](../../plugins/hermes/skills/relay-calling/references/relay-http.md)。必须保留稳定 messageId、实际 caller/target ID、Relay 收据 ID 及返回的任务 ID。企业模式支持收据；单次 404、GetTask 403 或 ListTasks 不支持不能推出「没有调用权限」或「任务没有执行」。只读检查不自动发送测试任务。
+远程调用及收据恢复见 [Relay HTTP 协议](../relay-http.md)。必须保留稳定 messageId、实际 caller/target ID、Relay 收据 ID 及返回的任务 ID。企业模式支持收据；单次 404、GetTask 403 或 ListTasks 不支持不能推出「没有调用权限」或「任务没有执行」。只读检查不自动发送测试任务。
 
 ## 完成检查
 

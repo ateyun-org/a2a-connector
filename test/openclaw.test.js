@@ -95,6 +95,12 @@ test('installer includes compatibility code only when the host lacks A2A, before
         if (native) await assert.rejects(access(join(staged, 'adapter-server.js')), { code: 'ENOENT' });
         else { await access(join(staged, 'adapter-server.js')); await access(join(staged, 'agent-driver.js')); }
         await access(join(staged, 'vendor/connector/cli.js'));
+        const manifest = JSON.parse(await readFile(join(staged, 'openclaw.plugin.json'), 'utf8'));
+        assert.ok(manifest.skills?.length, 'OpenClaw must discover the skill from the plugin manifest');
+        const skillRoot = join(staged, manifest.skills[0], 'a2a-relay-calling');
+        await access(join(skillRoot, 'SKILL.md'));
+        assert.equal(await readFile(join(skillRoot, 'references/relay-http.md'), 'utf8'),
+          await readFile('docs/relay-http.md', 'utf8'));
       } else {
         assert.deepEqual(args, ['plugins', 'install', staged]); installs++;
       }

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Prepare, pair, and run one local A2A Connector. No administrator approval is performed here.
+# Enroll and run one local A2A Connector using its console-issued Agent ticket.
 set -eu
 umask 077
 
@@ -13,8 +13,6 @@ LOCAL=
 STATE=
 EXPECT_NAME=
 PORT_START=9900
-REQUEST_ONLY=0
-ENTERPRISE=0
 EXPECT_AGENT_ID=
 # Only the redemption process should inherit the one-time ticket.
 SETUP_TICKET=${A2A_PAIR_CODE:-}
@@ -24,7 +22,7 @@ ALLOW_INSECURE=0
 
 usage() {
   cat <<'EOF'
-Usage: sh scripts/install-connector.sh install --host HOST --relay WSS_URL --local HTTP_ORIGIN [--instance NAME] [--expect-name CARD_NAME] [--state FILE] [--enterprise --expect-agent-id AGENT_ID] [--request-only]
+Usage: sh scripts/install-connector.sh install --host HOST --relay WSS_URL --local HTTP_ORIGIN [--instance NAME] [--expect-name CARD_NAME] [--state FILE] --expect-agent-id AGENT_ID
        sh scripts/install-connector.sh status  --host HOST [--instance NAME] [--state FILE]
        sh scripts/install-connector.sh stop    --host HOST [--instance NAME] [--state FILE]
        sh scripts/install-connector.sh repair  --host HOST --relay WSS_URL --local HTTP_ORIGIN [--instance NAME] [--expect-name CARD_NAME] [--state FILE]
@@ -35,13 +33,12 @@ Connector state; their host plugin or A2A adapter setup is separate.
 
 Export A2A_LOCAL_TOKEN before install/repair when the local origin requires it.
 The script never persists or prints that token. Approval remains with the Relay
-administrator. status shows local progress; verify online state in the Relay UI.
-Enterprise Relay: use --enterprise --expect-agent-id with the Agent ID from the
+administrator through the organization console. status shows local progress; verify online state in the Relay UI.
+Use --expect-agent-id with the Agent ID from the
 organization console. For first enrollment, supply its ticket privately through
 A2A_PAIR_CODE. The ticket is redeemed once, saved privately, then removed from the
 child environment before starting the tunnel. Existing matching credentials are
-reused without redemption. No legacy pairing request or approval polling is made.
-A2A_PAIR_CODE also selects enterprise mode; --request-only is for legacy pairing.
+reused without redemption.
 Use --instance for separate state/PID/log/process names. --local auto scans loopback
 ports from --port-start (default 9900) for an already-running Agent Card whose
 name exactly matches --expect-name. It does not change the Agent server's port.
@@ -76,16 +73,12 @@ while [ "$#" -gt 0 ]; do
         --port-start) PORT_START=$2 ;;
       esac
       shift 2 ;;
-    --request-only) REQUEST_ONLY=1; shift ;;
-    --enterprise) ENTERPRISE=1; shift ;;
     --allow-insecure) ALLOW_INSECURE=1; shift ;;
     *) fail "未知参数：$1" ;;
   esac
 done
 
-[ -z "$SETUP_TICKET" ] || ENTERPRISE=1
-if [ "$ENTERPRISE" -eq 1 ] && { [ "$ACTION" = install ] || [ "$ACTION" = repair ]; }; then
-  [ "$REQUEST_ONLY" -eq 0 ] || fail '企业票据接入不使用 --request-only；使用 status 检查已有凭据'
+if [ "$ACTION" = install ] || [ "$ACTION" = repair ]; then
   [ -n "$EXPECT_AGENT_ID" ] || fail '企业票据接入需要 --expect-agent-id，值为控制台显示的 Agent ID'
   node - "$EXPECT_AGENT_ID" <<'NODE' || fail '--expect-agent-id 格式无效'
 if (!/^[A-Za-z0-9_-]{1,64}$/.test(process.argv[2])) process.exit(1);
@@ -104,7 +97,6 @@ if [ "$ACTION" = install ] || [ "$ACTION" = repair ]; then
   [ "$INSTANCE" = default ] || [ -n "$EXPECT_NAME" ] || fail '多实例模式需要 --expect-name，防止连到其他 Agent 的端口'
   [ "$LOCAL" != auto ] || [ -n "$EXPECT_NAME" ] || fail '--local auto 需要 --expect-name'
 fi
-[ "$REQUEST_ONLY" -eq 0 ] || [ "$ACTION" = install ] || fail '--request-only 仅用于 install'
 [ "$ALLOW_INSECURE" -eq 0 ] || [ "$ACTION" = install ] || [ "$ACTION" = repair ] || fail '--allow-insecure 仅用于 install/repair'
 need node
 NODE_MAJOR=$(node -p 'Number(process.versions.node.split(".")[0])')
@@ -171,21 +163,19 @@ read_state() {
   node - "$STATE" <<'NODE'
 const fs = require('node:fs');
 const state = process.argv[2];
-for (const [path, label] of [[state, 'paired'], [state + '.pending', 'pending']]) {
-  if (!fs.existsSync(path)) continue;
-  const stat = fs.statSync(path);
+if (fs.existsSync(state)) {
+  const stat = fs.statSync(state);
   if (process.platform !== 'win32' && (stat.mode & 0o077)) {
-    console.error(`状态文件权限不是 0600：${path}`);
+    console.error(`状态文件权限不是 0600：${state}`);
     process.exit(1);
   }
   let data;
-  try { data = JSON.parse(fs.readFileSync(path, 'utf8')); }
-  catch { console.error(`状态文件不是有效 JSON：${path}`); process.exit(1); }
-  if (!data.agentId || (label === 'paired' ? !data.token : !data.requestId || !data.confirmationCode)) {
-    console.error(`状态文件缺少必要字段：${path}`);
-    process.exit(1);
+  try { data = JSON.parse(fs.readFileSync(state, 'utf8')); }
+  catch { console.error(`状态文件不是有效 JSON：${state}`); process.exit(1); }
+  if (!data.agentId || !data.token) {
+    console.error(`状态文件缺少必要字段：${state}`); process.exit(1);
   }
-  console.log(label + '|' + data.agentId + '|' + (label === 'pending' ? data.confirmationCode : ''));
+  console.log('paired|' + data.agentId + '|');
   process.exit(0);
 }
 console.log('none||');
@@ -236,21 +226,19 @@ show_status() {
   AGENT_ID=${REST%%|*}
   case "$KIND" in
     paired) note "本机凭据：已保存；Agent ID：$AGENT_ID" ;;
-    pending) note "审批状态：待处理；Agent ID：${AGENT_ID}；六位确认码：${REST#*|}" ;;
-    none) note '本机状态：未配对' ;;
+    none) note '本机状态：未接入' ;;
   esac
   if live_pid; then
     note "Connector 进程：运行中（${PROCESS_NAME}，PID ${PID}）"
     if command -v lsof >/dev/null 2>&1 && lsof -nP -a -p "$PID" -iTCP -sTCP:ESTABLISHED >/dev/null 2>&1; then
       note '网络检查：进程有已建立 TCP 连接；仍需核对 Relay 页面与实际 A2A 请求。'
     else
-      note '网络检查：未观测到已建立 TCP 连接；等待审批或检查 Relay 连通性。'
+      note '网络检查：未观测到已建立 TCP 连接；检查 Relay 连通性。'
     fi
   else
     note 'Connector 进程：未运行。'
     if [ -f "$LOG_FILE" ]; then
       if grep -qE 'status 401|rejected \(401\)' "$LOG_FILE"; then note '上次日志含 401；先检查凭据和 .state-*，再运行 repair。'; fi
-      if grep -qE 'status 409|already uses this Agent ID' "$LOG_FILE"; then note '上次日志含 409；Relay 可能已有同 ID 的待审批请求。'; fi
     fi
   fi
 }
@@ -290,7 +278,7 @@ if [ "$ACTION" = status ]; then show_status; exit 0; fi
 if [ "$ACTION" = stop ]; then stop_runner; exit 0; fi
 
 [ -n "$RELAY" ] && [ -n "$LOCAL" ] || fail 'install/repair 需要 --relay 和 --local'
-if [ "$ENTERPRISE" -eq 1 ]; then
+if [ "$ACTION" = install ] || [ "$ACTION" = repair ]; then
   INFO=$(read_state) || fail '状态文件无效，未执行企业接入'
   case "$INFO" in
     paired\|*)
@@ -353,23 +341,19 @@ const card = await cardAt(local, 10000, headers);
 if (expected && card.name !== expected) throw new Error(`端口已响应另一个 Agent：${card.name}；预期 ${expected}`);
 console.log(local.origin);
 NODE
-) || fail '预检失败；尚未申请配对或修改凭据'
+) || fail '预检失败；尚未兑换票据或修改凭据'
 note "已确认本机 A2A origin：$LOCAL"
 
 if [ "$ACTION" = repair ]; then
   INFO=$(read_state) || fail '状态文件无效，未执行恢复'
-  case "$INFO" in paired\|*) fail '已有本机凭据；请先检查连接，不要重新配对' ;; esac
+  case "$INFO" in paired\|*) fail '已有本机凭据；请先检查连接，不要重复兑换票据' ;; esac
   if live_pid; then stop_runner; fi
   assert_no_other_process
   for orphan in "$STATE_DIR"/.state-*; do
     [ -e "$orphan" ] || continue
     fail "发现可能含有效凭据的临时文件：$orphan；未覆盖或删除它"
   done
-  if [ -f "$STATE.pending" ]; then
-    BACKUP="$STATE.pending.backup-$(date +%Y%m%d-%H%M%S)"
-    mv "$STATE.pending" "$BACKUP"
-    note "已归档失效的待审批文件：$BACKUP"
-  fi
+
 fi
 
 if live_pid; then
@@ -412,39 +396,23 @@ fi
 
 set -- "$CLI" -relay "$RELAY" -local "$LOCAL" -state "$STATE"
 if [ "$ALLOW_INSECURE" -eq 1 ]; then set -- "$@" -allow-insecure; fi
-if [ "$ENTERPRISE" -eq 1 ]; then
-  if [ -n "${SETUP_TICKET:-}" ]; then
-    note '兑换企业接入票据并保存机器凭据…'
-    if ! A2A_PAIR_CODE="$SETUP_TICKET" node "$@" -enroll-only; then
-      unset SETUP_TICKET
-      fail '企业票据兑换未完成或结果不明；未启动 Connector。先检查本机凭据及私有 .state-*，不要自动重试兑换或生成新票据'
-    fi
+if [ -n "${SETUP_TICKET:-}" ]; then
+  note '兑换接入票据并保存机器凭据…'
+  if ! A2A_PAIR_CODE="$SETUP_TICKET" node "$@" -enroll-only -agent-id "$EXPECT_AGENT_ID"; then
     unset SETUP_TICKET
+    fail '票据兑换未完成或结果不明；未启动 Connector。先检查本机凭据及私有 .state-*，不要自动重试兑换或生成新票据'
   fi
-  INFO=$(read_state) || fail '无法确认已保存的企业机器凭据；未启动 Connector'
-  [ "$INFO" = "paired|$EXPECT_AGENT_ID|" ] || fail '返回的机器身份与 --expect-agent-id 不符；已保存的状态保留供核对，未启动或重新兑换'
-  note "企业接入身份已确认：${EXPECT_AGENT_ID}；无需旧版配对审批。"
-else
-note '检查或复用配对请求…'
-PAIRING=$(node "$@" -request-only) || fail '配对申请失败；检查 Relay 与现有 pending，未启动新进程'
-node - "$PAIRING" <<'NODE'
-const value = JSON.parse(process.argv[2]);
-if (value.status === 'paired') console.log(`已有凭据：${value.agentId}`);
-else if (value.status === 'pending') console.log(`等待管理员批准：${value.approvalURL} | Agent ID：${value.agentId} | 六位确认码：${value.confirmationCode}`);
-else throw new Error('未知配对状态');
-NODE
-if [ "$REQUEST_ONLY" -eq 1 ]; then
-  note '仅申请/检查模式：未启动 Connector。'
-  exit 0
+  unset SETUP_TICKET
 fi
-fi
+INFO=$(read_state) || fail '无法确认已保存的机器凭据；未启动 Connector'
+[ "$INFO" = "paired|$EXPECT_AGENT_ID|" ] || fail '返回的机器身份与 --expect-agent-id 不符；已保存的状态保留供核对，未启动或重新兑换'
+note "接入身份已确认：${EXPECT_AGENT_ID}。"
 
 if [ "$HOST" = workbuddy ]; then
   node "$WB_CLI" start
 else
   : > "$LOG_FILE"
   chmod 600 "$LOG_FILE"
-  if [ "$ENTERPRISE" -eq 0 ]; then set -- "$@" -auto-pair; fi
   nohup node "$@" >> "$LOG_FILE" 2>&1 </dev/null &
   PID=$!
   printf '%s\n' "$PID" > "$PID_FILE"
@@ -452,8 +420,4 @@ else
 fi
 sleep 1
 live_pid || fail "Connector 启动后退出；检查私有日志 ${LOG_FILE}，不要直接贴出凭据"
-if [ "$ENTERPRISE" -eq 1 ]; then
-  note "Connector 已启动（PID ${PID}）。已使用企业机器凭据；检查 status、Relay 连接状态，再在企业控制台分配成员、用户组和必要的机器调用权限。"
-else
-  note "Connector 已启动（PID ${PID}）。审批后检查 status、Relay 在线状态，并以授权调用者测试目标 Agent 的真实任务。"
-fi
+note "Connector 已启动（PID ${PID}）。检查 status、Relay 连接状态，再在企业控制台分配成员、用户组和必要的机器调用权限。"

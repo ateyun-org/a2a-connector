@@ -23,7 +23,7 @@ test('canonical paths share an atomic lock, duplicate CLI fails before networkin
   t.after(() => lock.release());
   await assert.rejects(acquireStateLock(state), /state_locked/);
   await assert.rejects(run(process.execPath, ['src/cli.js', '-state', join(alias, 'state.json'),
-    '-pair-code', 'pair_' + 'a'.repeat(48), '-relay', 'ws://127.0.0.1:1/connect', '-allow-insecure']), /state_locked/);
+    '-enroll-only', '-relay', 'ws://127.0.0.1:1/connect', '-allow-insecure']), /state_locked/);
   await lock.release();
   const restarted = await acquireStateLock(state); await restarted.release();
 });

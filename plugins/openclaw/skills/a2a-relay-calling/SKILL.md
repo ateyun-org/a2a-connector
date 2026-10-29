@@ -3,6 +3,9 @@ name: a2a-relay-calling
 description: Discover authorized remote Agents, delegate A2A tasks through Relay, and recover owned tasks and durable receipts using the current OpenClaw Connector identity or available Relay MCP tools.
 ---
 
+Relay uses organization authorization as its only runtime. Manage identities and grants in `/console`; there is no global pairing approval or shared administrator/client token authentication.
+
+
 Use this skill for remote Relay task coordination and related permission/recovery diagnosis. Installing the Connector provides an inbound tunnel and its management tools; pairing does not register remote dispatch tools or grant access to another Agent.
 
 ## Select the actual client and identity
@@ -17,7 +20,7 @@ Use the current Gateway profile's a2a-connector plugin configuration for the Rel
 
 Read GET /pairing/targets and retain callerAgentId. Choose an exact authorized target ID and inspect its Agent Card. Check exact IDs instead of names, and distinguish discovery, invocation and task access.
 
-The enterprise administrator grants access in /console → Agent 管理 → the **target's** 谁能访问 (older UI: 授权) → 机器调用方 → this caller. The direction is **caller → target**. Choosing the target on the caller's row grants the reverse direction. Enterprise enrollment uses the identity-bound one-time ticket from 接入 Agent → Connector; the confirmation-code /pair/list workflow applies only to legacy Redis-only deployments. User groups govern use permissions, not the enrollment approver.
+The enterprise administrator grants access in /console → Agent 管理 → the **target's** 谁能访问 (older UI: 授权) → 机器调用方 → this caller. The direction is **caller → target**. Choosing the target on the caller's row grants the reverse direction. Enrollment uses the identity-bound one-time ticket from 接入 Agent → Connector. User groups govern use permissions, not the enrollment approver.
 
 discover reads a card; invoke sends; task_read reads an owned task. Cancellation, permission decisions and tracking release require their respective actions. Personal callers additionally need the bound member's effective direct/group permissions intersected with machine grants; service callers use explicit machine grants. The credential needs call scope, the caller must be active/canCall and the target active/canReceive. Administrator status does not bypass task permissions.
 
@@ -27,11 +30,11 @@ Perform the user's requested delegation without duplicate permission questions. 
 
 For HTTP SendMessage, use the guide's complete JSON-RPC envelope: params.message.role is exactly ROLE_USER, params.message.messageId is nonempty and unique, and params.message.parts contains text objects. Bare text, role: user, and JSON-RPC id alone are insufficient. Use JSON encoding instead of shell interpolation, and do not enable automatic POST retries. WorkBuddy execution mode belongs in message.metadata.workbuddyMode as cloud or desktop, only as supported by the target.
 
-Save the returned A2A task ID and context ID. Read GetTask with params.id using the same target and caller credential. Enterprise mode requires task_read and ownership by that exact identity; a random UUID or a task from an older identity is not a permission test. ListTasks/tasks/list is unsupported through enterprise Relay (501 rpc_method_not_supported; older versions returned 403), even when the local receiver implements it. Do not ask for another invoke grant because listing failed.
+Save the returned A2A task ID and context ID. Read GetTask with params.id using the same target and caller credential. Relay requires task_read and ownership by that exact identity; a random UUID or a task from an older identity is not a permission test. ListTasks/tasks/list is unsupported through Relay (501 rpc_method_not_supported; older versions returned 403), even when the local receiver implements it. Do not ask for another invoke grant because listing failed.
 
-After timeout or disconnect, query GET /relay/requests/<original-relay-request-id> with the same identity before considering any resend. Enterprise Relay supports this durable journal. A receipt 404 may mean no reservation, expiry, wrong caller or revoked access; it does not prove non-execution. X-Relay-Request-Id alone does not create a reservation without a recognized messageId or Idempotency-Key. JSON-RPC id, messageId, Relay request ID and task ID are distinct handles.
+After timeout or disconnect, query GET /relay/requests/<original-relay-request-id> with the same identity before considering any resend. Relay supports this durable journal. A receipt 404 may mean no reservation, expiry, wrong caller or revoked access; it does not prove non-execution. X-Relay-Request-Id alone does not create a reservation without a recognized messageId or Idempotency-Key. JSON-RPC id, messageId, Relay request ID and task ID are distinct handles.
 
-Keep original IDs and content during uncertain outcomes; do not create a new instruction merely to retry. For a new follow-up after completion, use a new messageId and the returned contextId only if that target supports it. Hosted WorkBuddy rejects overlapping unresolved work and supplied taskId continuation. Do not assume every native receiver extension is exposed by enterprise Relay; use the guide's allowlist and recovery rules.
+Keep original IDs and content during uncertain outcomes; do not create a new instruction merely to retry. For a new follow-up after completion, use a new messageId and the returned contextId only if that target supports it. Hosted WorkBuddy rejects overlapping unresolved work and supplied taskId continuation. Do not assume every native receiver extension is exposed by Relay; use the guide's allowlist and recovery rules.
 
 ## Interpret and report evidence
 

@@ -64,21 +64,11 @@ test('one DSH plugin entry starts the bundled service after an occupied port', a
   t.after(() => new Promise(resolve => occupied.close(resolve)));
   const startPort = occupied.address().port;
   const state = join(await mkdtemp(join(tmpdir(), 'dsh-merged-a2a-')), 'state.json');
-  let requested;
-  const pairing = new Promise(resolve => { requested = resolve; });
-  const relay = createHTTPServer(async (req, res) => {
-    res.setHeader('content-type', 'application/json');
-    if (req.url === '/pairing/requests') {
-      let raw = '';
-      for await (const chunk of req) raw += chunk;
-      requested(JSON.parse(raw));
-      res.writeHead(201);
-      res.end(JSON.stringify({ requestId: 'a'.repeat(64), agentId: 'integrated-dsh-agent',
-        confirmationCode: 'ABC123', expiresAt: Math.floor(Date.now() / 1000) + 600 }));
-    } else if (req.url === '/pairing/status') {
-      res.end(JSON.stringify({ status: 'pending' }));
-    } else { res.writeHead(404); res.end('{}'); }
-  });
+  await writeFile(state, JSON.stringify({ agentId: 'integrated-dsh-agent', token: 'agt_integrated-dsh-agent.private' }), { mode: 0o600 });
+  const relay = createHTTPServer((_req, res) => { res.writeHead(404); res.end('{}'); });
+  const wss = new WebSocketServer({ server: relay });
+  const connected = new Promise(resolve => wss.once('connection', resolve));
+  t.after(() => { for (const client of wss.clients) client.terminate(); wss.close(); });
   await new Promise(resolve => relay.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise(resolve => relay.close(resolve)));
   const relayURL = `ws://127.0.0.1:${relay.address().port}/connect`;
@@ -107,10 +97,10 @@ test('one DSH plugin entry starts the bundled service after an occupied port', a
   const cleanup = effect();
   t.after(cleanup);
   let timer;
-  const request = await Promise.race([pairing, new Promise((_resolve, reject) => {
-    timer = setTimeout(() => reject(new Error('Connector could not discover its bundled A2A service')), 5000);
+  await Promise.race([connected, new Promise((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error('Connector could not connect using its saved identity')), 5000);
   })]).finally(() => clearTimeout(timer));
-  assert.equal(request.name, 'Integrated DSH Agent');
+  assert.equal(JSON.parse(await readFile(state, 'utf8')).agentId, 'integrated-dsh-agent');
 });
 
 test('an explicitly configured DSH A2A origin skips the bundled service', async () => {

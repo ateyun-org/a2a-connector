@@ -79,16 +79,16 @@ class HermesTests(unittest.TestCase):
             start.assert_not_called()
             ctx.hook()
         start.assert_called_once()
-        self.assertIn("not yet paired", " ".join(logs.output))
-        self.assertIn("does not block startup", " ".join(logs.output))
+        self.assertIn("enrollment required", " ".join(logs.output))
+        self.assertIn("Relay console", " ".join(logs.output))
 
-    def test_pending_and_existing_state_are_distinguished_without_reading_tokens(self):
+    def test_retired_pending_state_is_ignored_without_reading_tokens(self):
         self.state.parent.mkdir()
         pending = Path(str(self.state) + ".pending")
         pending.write_text('SECRET_PENDING_TOKEN')
         with self.assertLogs(plugin.__name__, level="WARNING") as logs:
             plugin._self_check_once()
-        self.assertIn("request pending", " ".join(logs.output))
+        self.assertIn("enrollment required", " ".join(logs.output))
         self.assertNotIn("SECRET", " ".join(logs.output))
         self.state.write_text('SECRET_CREDENTIAL')
         with self.assertLogs(plugin.__name__, level="INFO") as logs:
@@ -173,10 +173,12 @@ class HermesTests(unittest.TestCase):
             self.assertIn("already running", plugin._start())
             spawn.assert_not_called()
 
-    def test_pairing_never_requests_approval_before_background_start_succeeds(self):
-        with patch.object(plugin, "_start", side_effect=OSError("invalid Node path")), patch.object(plugin, "_status") as status:
-            self.assertIn("invalid Node path", plugin._tool({}))
-            status.assert_not_called()
+    def test_pair_without_credentials_returns_enrollment_instructions_without_starting(self):
+        with patch.object(plugin, "_start") as start, patch.object(plugin, "_status", return_value={"paired": False}):
+            result = json.loads(plugin._tool({}))
+            self.assertEqual(result["status"], "enrollment_required")
+            self.assertIn("Relay console", result["diagnostic"])
+            start.assert_not_called()
 
     def test_pairing_does_not_claim_connected_from_a_saved_credential(self):
         with patch.object(plugin, "_start"), patch.object(plugin, "_status", return_value={"paired": True, "agentId": "test", "tunnelOnline": False}):

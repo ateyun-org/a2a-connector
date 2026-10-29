@@ -109,14 +109,10 @@ def _self_check_once():
         return
     state = _settings()[-1]
     if state.is_file():
-        logger.info("A2A Connector self-check: configuration present; pairing state exists (not validated). "
+        logger.info("A2A Connector self-check: configuration present; Agent credential exists (not validated). "
                     "Connectivity is not yet verified. stderr: %s", _log_path(state))
-    elif Path(str(state) + ".pending").is_file():
-        logger.warning("A2A Connector self-check: configuration present; request pending. "
-                       "Use a2a_connector_pair for approval details. stderr: %s", _log_path(state))
     else:
-        logger.warning("A2A Connector self-check: configuration present; not yet paired. "
-                       "Missing pairing state does not block startup. stderr: %s", _log_path(state))
+        logger.warning("A2A Connector enrollment required. Obtain an Agent ticket in the Relay console. stderr: %s", _log_path(state))
 
 
 def _start():
@@ -131,7 +127,7 @@ def _start():
     options = ({"creationflags": subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP}
                if os.name == "nt" else {"start_new_session": True})
     with os.fdopen(fd, "ab") as log:
-        process = subprocess.Popen(args + ["-auto-pair"], stdin=subprocess.DEVNULL,
+        process = subprocess.Popen(args, stdin=subprocess.DEVNULL,
                                    stdout=log, stderr=log, env=_runtime_env(), **options)
     try:
         try:
@@ -165,7 +161,7 @@ def _start():
             except (OSError, ValueError, subprocess.SubprocessError):
                 logging.getLogger(__name__).error("Failed startup cleanup; inspect private log: %s", _log_path(state))
         raise
-    return f"A2A Connector process started; pairing/connectivity not yet verified. stderr: {_log_path(state)}"
+    return f"A2A Connector process started; enrollment/connectivity not yet verified. stderr: {_log_path(state)}"
 
 
 def _stop():
@@ -186,27 +182,11 @@ def _pair(code=""):
                            stderr=subprocess.PIPE, timeout=30, env=env)
         except subprocess.CalledProcessError as error:
             raise subprocess.SubprocessError("Pairing redemption failed; inspect the Relay approval before retrying") from error
+    status = _status()
+    if not status.get("paired"):
+        return json.dumps({"status": "enrollment_required", "diagnostic": "Obtain a one-time Agent ticket from the Relay console and redeem it privately; no global pairing approval is available"})
     _start()
-    # Only the managed long-running CLI creates/renews requests and redeems approvals.
-    deadline = time.monotonic() + 25
-    while True:
-        status = _status()
-        if status.get("paired"):
-            return json.dumps({"status": "paired", "agentId": status.get("agentId"),
-                               "connected": status.get("tunnelOnline", False)})
-        pairing = status.get("pairing")
-        if pairing and status.get("running") and status.get("phase") == "running":
-            url = _environment().get("A2A_RELAY_URL", "")
-            from urllib.parse import urlsplit, urlunsplit
-            origin = urlsplit(url)
-            pairing["approvalURL"] = urlunsplit(("https" if origin.scheme == "wss" else "http", origin.netloc, "/pair", "", ""))
-            if pairing.get("expiresAt", 0) > time.time():
-                return json.dumps(pairing)
-        if not status.get("running"):
-            raise subprocess.SubprocessError(f"Connector stopped before pairing was ready; inspect private log: {_log_path(_settings()[-1])}")
-        if time.monotonic() >= deadline:
-            return json.dumps({"status": "starting", "running": True, "diagnostic": "Check a2a_connector_status and the private log; no approval is ready yet"})
-        time.sleep(0.2)
+    return json.dumps({"status": "paired", "agentId": status.get("agentId"), "connected": _status().get("tunnelOnline", False)})
 
 
 def _doctor():
@@ -256,7 +236,7 @@ def register(ctx):
     else:
         logging.getLogger(__name__).warning("Hermes does not expose register_skill; read the Relay calling guide at %s before remote delegation", skill)
     _self_check_once()
-    schema = {"name": "a2a_connector_pair", "description": "Start the managed Connector and show its active pairing approval; no Gateway restart. Optionally redeem a manual pair_ code.",
+    schema = {"name": "a2a_connector_pair", "description": "Redeem a console-issued one-time Agent enrollment ticket, or inspect existing enrollment; no global approval polling. Never request administrator credentials.",
               "parameters": {"type": "object", "properties": {"code": {"type": "string"}}}}
     ctx.register_tool(name="a2a_connector_pair", toolset="a2a_connector", schema=schema, handler=_tool)
     ctx.register_tool(name="a2a_connector_status", toolset="a2a_connector",

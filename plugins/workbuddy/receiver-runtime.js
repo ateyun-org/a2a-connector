@@ -55,7 +55,7 @@ export async function startReceiver(c, state, { apiFactory } = {}) {
     const cli = join(dirname(fileURLToPath(import.meta.url)), 'vendor', 'connector', 'cli.js');
     supervisor = createProcessSupervisor({ launch: () => {
       const child = spawn(process.env.A2A_NODE_BINARY || process.execPath,
-        [cli, '-relay', c.relay, '-local', local, '-state', state, '-auto-pair',
+        [cli, '-relay', c.relay, '-local', local, '-state', state,
           ...(c.agentId ? ['-agent-id', c.agentId] : []), ...(c.allowInsecure ? ['-allow-insecure'] : [])],
         { stdio: ['ignore', 'pipe', 'pipe', 'ipc'], env: { ...process.env, A2A_LOCAL_TOKEN: localToken } });
       child.stdout.on('data', chunk => process.stdout.write(chunk));

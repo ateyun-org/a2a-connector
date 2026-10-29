@@ -18,26 +18,18 @@ npm run test:all
 
 `test:dsh` runs only the native DSH suite and fails if its SDK dependencies are missing; tests are never silently skipped.
 
-## Pair and run
+## Enroll and run
 
-### Enterprise Relay
-
-An organization owner/admin first creates or selects an Agent in the Relay console and issues a ticket. Supply the ticket privately as `A2A_PAIR_CODE`, then run the installer with `--enterprise --expect-agent-id` using that Agent's public ID:
+An organization owner/admin first creates or selects an Agent in the Relay console and issues a ticket. Supply the ticket privately as `A2A_PAIR_CODE`, then run the installer with `--expect-agent-id` using that Agent's public ID:
 
 ```bash
 rtk proxy sh scripts/install-connector.sh install --host openclaw \
-  --enterprise --expect-agent-id AGENT_ID_FROM_CONSOLE \
+  --expect-agent-id AGENT_ID_FROM_CONSOLE \
   --relay wss://YOUR_RELAY/connect --local http://127.0.0.1:9900 \
   --expect-name 'ACTUAL_AGENT_CARD_NAME'
 ```
 
-The script supports `workbuddy`, `openclaw`, `hermes` and `dsh` after the local A2A service is running. It redeems the ticket once at `/register`, saves private credentials, removes the ticket from the tunnel process environment, and starts the connection. Matching saved credentials are reused; another Agent's state is preserved and rejected. No legacy pairing request or approval polling is used. Use the existing `--instance`/`--state` for restarts, and clear `A2A_PAIR_CODE` in the calling environment after installation. See [enterprise installation and recovery](docs/install/shared.md#企业模式票据接入).
-
-### Legacy pairing
-
-The following approval flow applies to Redis-only Relay deployments. An enterprise Relay rejects it with `organization_ticket_required`; use the enterprise ticket entry above.
-
-If a local A2A origin is already running, `sh scripts/install-connector.sh install --host workbuddy --relay wss://dsh-relay.chuanbota.com/connect --local http://127.0.0.1:9900` automates preflight, local CLI dependency setup, pairing request reuse, and process launch. Use `status`, `stop`, or `repair` with the same `--host`; see [the WorkBuddy guide](docs/install/workbuddy.md#自动安装与诊断). For multiple agents, use a distinct `--instance` and `--expect-name`; `--local auto --port-start 9900` scans already running Agent Cards and selects the exact name. The Connector does not change an external agent's listening port. The bundled DSH adapter can increment a busy port and pass the actual port to the DSH Connector. For OpenClaw, Hermes, and DSH, the script can run an isolated standalone Connector after the host's A2A origin is configured; it does not install those host plugins or adapters.
+The script supports `workbuddy`, `openclaw`, `hermes` and `dsh` after the local A2A service is running. It redeems the ticket once at `/register`, saves private credentials, removes the ticket from the tunnel process environment, and starts the connection. Matching saved credentials are reused; another Agent's state is preserved and rejected. No legacy pairing request or approval polling is used. Use the existing `--instance`/`--state` for restarts, and clear `A2A_PAIR_CODE` in the calling environment after installation. See [installation and recovery](docs/install/shared.md#票据接入).
 
 OpenClaw hosts can run `node scripts/install-openclaw.mjs`: it detects the host's A2A capabilities and installs only the Connector when native A2A exists, or includes the compatibility service when absent. The plugin defaults to `local: "auto"` and rechecks capabilities at startup. Disabled/broken native A2A requires repair rather than installing a second service. See [OpenClaw installation](docs/install/openclaw.md) for native peer authentication and older CLI requirements.
 
@@ -49,15 +41,17 @@ OpenClaw ships [a2a-relay-calling](plugins/openclaw/skills/a2a-relay-calling/SKI
 
 DSH's native outbound tool descriptions and [packaged calling skill](plugins/dsh/skills/a2a-relay-calling/SKILL.md) cover the same enterprise rules; its HTTP reference also comes from the shared source. See [the complete distribution/loading inventory](plugins/README.md#relay-instruction-coverage) for all five host/client packages and the standalone CLI.
 
-DSH hosts can use one `dsh-a2a-connector` entry, which starts its bundled native A2A service and Relay Connector together and registers outbound A2A delegation when `agents` are configured; see [DSH installation and service setup](docs/install/dsh.md). WorkBuddy's `workbuddy-a2a setup --relay <url>` starts its built-in PC adapter and Connector together; add `--mode cloud` for cloud Open API + ACP execution; see [WorkBuddy setup and OAuth](docs/install/workbuddy.md). For an independently managed A2A origin, start the standalone Connector with automatic pairing:
+DSH hosts can use one `dsh-a2a-connector` entry, which starts its bundled native A2A service and Relay Connector together and registers outbound A2A delegation when `agents` are configured; see [DSH installation and service setup](docs/install/dsh.md). After `auth enroll`, WorkBuddy's `workbuddy-a2a setup --relay <url>` starts its built-in PC adapter and Connector together; add `--mode cloud` for cloud Open API + ACP execution; see [WorkBuddy setup and OAuth](docs/install/workbuddy.md). For an independently managed A2A origin, first obtain an Agent ticket in `/console` and provide it privately through `A2A_PAIR_CODE`:
 
 ```bash
-node src/cli.js -auto-pair \
-  -relay wss://dsh-relay.chuanbota.com/connect \
-  -local http://127.0.0.1:9900
+rtk proxy node src/cli.js -enroll-only -agent-id AGENT_ID_FROM_CONSOLE \
+  -relay wss://YOUR_RELAY/connect -state /private/path/agent.json
+# Clear A2A_PAIR_CODE in the calling environment after enrollment.
+rtk proxy node src/cli.js -relay wss://YOUR_RELAY/connect \
+  -local http://127.0.0.1:9900 -state /private/path/agent.json
 ```
 
-The CLI shows the approval page, Agent ID, and six-character confirmation code. An administrator checks **both** at `https://dsh-relay.chuanbota.com/pair` and approves the request. Approval creates a Relay record, which can remain offline while the Connector fetches a separate `pair_` code from `/pairing/status`, redeems it **once** at `/register`, saves the Agent credential, and opens the WSS tunnel. A pending request survives Connector restarts until its ten-minute expiry. Run only **one** Connector process for a given state path during pairing; the CLI rejects a second live owner with `state_locked` before networking. Startup automatically recovers locks belonging to verified dead local processes, using process birth identity to detect reused PIDs. Foreign, malformed or unverifiable locks still require inspection; credentials are preserved.
+The Relay requires MySQL organization authorization. Shared tokens, global pairing approvals and Redis-only identities are removed. A Connector starts only with an existing per-Agent credential; a missing credential fails before networking. Startup never creates an approval request or redeems a ticket implicitly. Host pair tools redeem an explicitly supplied console ticket, or report enrollment_required. Use the same state across restarts.
 
 CLI options (also supported by the copies in `plugins/*/vendor/connector/cli.js`):
 
@@ -65,21 +59,16 @@ CLI options (also supported by the copies in `plugins/*/vendor/connector/cli.js`
 | --- | --- |
 | `-relay <wss://host/connect>` | Relay WSS URL; required for network operations. |
 | `-local <http://127.0.0.1:port>` | Local A2A origin, without an endpoint path; required for discovery and forwarding. |
-| `-auto-pair` | Reuse/create a pending request, wait for approval, redeem, save, then connect. |
-| `-request-only` | Reuse/create a pending request, print public approval data as JSON, and exit without connecting. |
-| `-enroll-only` | With `-pair-code` or `A2A_PAIR_CODE`, redeem exactly once, save the credential, and exit without connecting. |
-| `-pair-code <pair_...>` | Single-use machine redemption code; avoid command history and prefer `A2A_PAIR_CODE` in a private process environment. This is **not** the six-character confirmation code. |
+| `-enroll-only` | With private `A2A_PAIR_CODE`, redeem exactly once, save the credential, and exit without connecting. |
 | `-status` | Read process/tunnel health for `-state` as JSON, without exposing credentials or requiring network arguments. |
 | `-max-request-body <bytes>` | Limit incoming request buffering to 1–16777216 bytes; default 16 MiB. DSH's bundled adapter uses 1 MiB. |
-| `-state <private-file>` | Enrollment path; pending request uses the same path plus `.pending`. |
-| `-agent-id <id>` | Optional fixed public ID for a new pairing; re-pairing an existing ID rotates its credential. |
+| `-state <private-file>` | Private credential path. |
+| `-agent-id <id>` | Expected public Agent ID from the console; reject a mismatched saved/redemption identity. |
 | `-local-token <secret>` | Bearer token for the local origin; prefer `A2A_LOCAL_TOKEN` in the process environment. |
 | `-token <secret>` | Existing Relay Connector credential; prefer the private state file or `A2A_CONNECTOR_TOKEN`. |
 | `-allow-insecure` | Permit `ws://` **to the Relay** for local tests; local `http://` origins do not require it. |
 
-For the manual flow, run `-request-only` first, wait for administrator approval, then have **one** process perform redemption. The automatic `-auto-pair` path handles that redemption without revealing the machine code. See [pairing recovery](docs/install/shared.md#兑换失败重复申请与安全恢复) before retrying a `401` or `409`.
-
-The credential and pending request ID are stored in private `0600` files under the OS user config directory; use `-state` to choose another path. The default path matches the earlier Go CLI. Set `A2A_LOCAL_TOKEN` if the local Agent requires a Bearer token. The canonical state path owns an atomic `<state>.lock` directory. Its `owner.json` identifies the process without credentials; normal shutdown releases the lock, while crash leftovers fail closed. The private `<state>.status.json` holds a token-free health snapshot, refreshed every 15 seconds. `-status` combines snapshot freshness, instance identity and process liveness; DSH/OpenClaw expose it as `a2a_connector_status` with a bounded recent log buffer. Agent Card availability is outbound HTTPS reachability and does not establish inbound WSS health. The Connector pings every 25 seconds and reconnects with exponential backoff. Bodies are capped at 16 MiB and buffered; SSE streaming is not yet implemented.
+The credentials are stored in private `0600` files under the OS user config directory; use `-state` to choose another path. Set `A2A_LOCAL_TOKEN` if the local Agent requires a Bearer token. The canonical state path owns an atomic `<state>.lock` directory. Its `owner.json` identifies the process without credentials; normal shutdown releases the lock, while crash leftovers fail closed. The private `<state>.status.json` holds a token-free health snapshot, refreshed every 15 seconds. `-status` combines snapshot freshness, instance identity and process liveness; DSH/OpenClaw expose it as `a2a_connector_status` with a bounded recent log buffer. Agent Card availability is outbound HTTPS reachability and does not establish inbound WSS health. The Connector pings every 25 seconds and reconnects with exponential backoff. Bodies are capped at 16 MiB and buffered; SSE streaming is not yet implemented.
 
 ## Host plugins
 

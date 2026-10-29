@@ -31,7 +31,7 @@ test('server setup creates private credentials once, detects missing configurati
   const checked = await run('python3', [script, 'check', '--env', path]);
   assert.equal(JSON.parse(checked.stdout).ready, true);
   assert.doesNotMatch(checked.stdout + result.stdout, /private-provider-secret/);
-  for (const field of ['RELAY_ADMINTOKEN', 'WORKBUDDY_TOKEN_KEY']) {
+  for (const field of ['RELAY_AGENT_TICKET_KEY', 'WORKBUDDY_TOKEN_KEY']) {
     const secret = new RegExp(`${field}=([^\n]+)`).exec(initial)[1];
     assert.ok(!checked.stdout.includes(secret) && !result.stdout.includes(secret));
   }

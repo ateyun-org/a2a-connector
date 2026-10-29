@@ -10,8 +10,8 @@
 - ListTasks 空结果不能证明“未执行”：分页、history 缺失、任务过期和远端不支持都会让证据缺失。新工具对此保持 unknown，不允许自动新发。
 - 每次生成新 messageId 表示新派发。幂等只能复用同一派发的稳定键，不按正文合并不同任务。同键不同内容需要冲突错误。
 - `/agents` 不向 Connector 暴露管理员库存是合理边界。新增的是“当前身份可调用的目标”，不是开放所有 Agent。
-- R5 已有 `invalid_pairing_code`、`pairing_already_pending` 等稳定码；过期/已消费兑换码共用一类错误，不为细分原因增加兑换重试。
-- R6 的机器可读管理接口已经存在，见 `/admin/pairing/agents` 和 `/admin/pairing/requests`。独立只读权限作用域尚未实现。
+- R5 已有 `invalid_pairing_code` 等稳定码；过期/已消费兑换码共用一类错误，不为细分原因增加兑换重试。
+- R6 的管理功能统一由 `/console` 及其组织授权接口提供；全局共享令牌和配对管理接口已移除。
 - 文档原 `pgrep -af 'vendor/connector/cli.js'` 确实不适合已改名的进程。应以规范状态路径锁中的 PID、健康文件和锚定进程名共同核对。新的正则使用扩展语法 `{8}`，不是原文示例里的 `\{8\}`。
 
 ## 逐项处理

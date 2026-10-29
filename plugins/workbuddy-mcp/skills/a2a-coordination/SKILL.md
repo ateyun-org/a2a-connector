@@ -3,11 +3,14 @@ name: a2a-coordination
 description: Use Chuanbota's OAuth-protected MCP tools to delegate authorized A2A tasks, track durable requests and retrieve results.
 ---
 
+Relay uses organization authorization as its only runtime. Manage identities and grants in `/console`; there is no global pairing approval or shared administrator/client token authentication.
+
+
 The connector supplies actual remote MCP tools. Buddy application modes and capsules are task presets; they do not establish connections or grant access.
 
 ## Connection
 
-Use WorkBuddy's connector connection flow. OAuth discovers the Relay's metadata, registers a public client and uses PKCE. In enterprise mode the user logs into Relay, selects an enterprise they belong to, and confirms consent; Relay creates/reuses the personal MCP Controller for that member. This Controller can differ from an existing Connector identity with the same display name. Inspect exact IDs before diagnosing grants. Only a legacy Redis-only deployment uses the pairing confirmation code and `/pair/list` workflow.
+Use WorkBuddy's connector connection flow. OAuth discovers the Relay's metadata, registers a public client and uses PKCE. the user logs into Relay, selects an enterprise they belong to, and confirms consent; Relay creates/reuses the personal MCP Controller for that member. This Controller can differ from an existing Connector identity with the same display name. Inspect exact IDs before diagnosing grants.
 
 Enterprise grants are configured at `/console` → Agent 管理 → the **target's** 谁能访问 (older UI: 授权) → 机器调用方 → this exact MCP Controller. The direction is caller → target. `discover` reads the card, `invoke` sends, `task_read` reads owned tasks; cancel/permission/release have separate actions. A personal MCP Controller needs explicit machine grants intersected with its bound member's effective direct/group grants. Service Controllers use machine grants. Administrator status does not bypass task permissions. Do not automatically approve pairing, grant targets, select wildcard access or handle administrator credentials with model tools. No administrator tool is exposed.
 
@@ -28,9 +31,9 @@ The connector uses its own OAuth tokens. They are distinct from the Buddy applic
 
 Persist/report the returned relayRequestId, task ID and context ID. A Relay timeout or pending/unknown receipt does not prove non-execution. Query `a2a_request` before any retry; missing/expired journal evidence also does not permit resending under a new messageId. The Relay deduplicates the original stable messageId within its retention window. Do not claim a task is safe to repeat merely because a connection failed.
 
-Enterprise Relay supports durable receipts. A receipt 404 can mean wrong caller, expired/no reservation or revoked target access; never conclude that enterprise journaling is disabled. JSON-RPC id is response correlation, messageId is instruction identity, relayRequestId identifies the receipt, and taskId identifies the target task; keep them separate. Receipt completion does not establish task completion.
+Relay supports durable receipts. A receipt 404 can mean wrong caller, expired/no reservation or revoked target access; never conclude that enterprise journaling is disabled. JSON-RPC id is response correlation, messageId is instruction identity, relayRequestId identifies the receipt, and taskId identifies the target task; keep them separate. Receipt completion does not establish task completion.
 
-`ListTasks` / `tasks/list` is unsupported through enterprise Relay (HTTP 501 rpc_method_not_supported; older releases returned 403). Do not infer missing invoke permission or ask for another grant from that failure. GetTask 403 can mean missing task_read or wrong ownership. JSON-RPC -32602 means invalid request parameters, not an ACL failure; only an explicit rejection before task creation establishes that the malformed request created no task. Tool registration and a readable card also do not prove all task operations are allowed.
+`ListTasks` / `tasks/list` is unsupported through Relay (HTTP 501 rpc_method_not_supported; older releases returned 403). Do not infer missing invoke permission or ask for another grant from that failure. GetTask 403 can mean missing task_read or wrong ownership. JSON-RPC -32602 means invalid request parameters, not an ACL failure; only an explicit rejection before task creation establishes that the malformed request created no task. Tool registration and a readable card also do not prove all task operations are allowed.
 
 Respect task states: submitted/working continue tracking; input-required needs user input or inspection; completed requires the target's actual completion signal; failed/rejected/canceled are not success. Return verified output and available artifact locations. `agent:///` locations belong to the cloud sandbox and are not automatically public download URLs.
 

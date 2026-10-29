@@ -1,8 +1,8 @@
 # DSH 安装 A2A Connector
 
-开始前阅读[通用准备、配对与验证](shared.md)，确认目标 DSH profile 名称，然后按以下步骤安装。不要默认安装到其他 profile。
+开始前阅读[通用准备、接入与验证](shared.md)，确认目标 DSH profile 名称，然后按以下步骤安装。不要默认安装到其他 profile。
 
-企业模式先通过[身份绑定票据](shared.md#企业模式票据接入)完成接入，并让宿主插件复用同一个 state；不要用旧配对工具继续等待审批，也不要并发启动同身份的第二个 Connector。
+先通过[身份绑定票据](shared.md#票据接入)完成接入，并让宿主插件复用同一个 state；不要用旧配对工具继续等待审批，也不要并发启动同身份的第二个 Connector。
 
 ## 调用说明与 skill
 
@@ -14,7 +14,7 @@ DSH 的模型侧入口是实际注册的原生工具：`a2a_agents`、`a2a_send`
 
 若 DSH 已有可访问的 A2A origin（例如 adapter 已配置），且不需要宿主内的配对工具，可改用[独立 Connector 安装脚本](../../scripts/install-connector.sh)：从仓库根目录执行 `sh scripts/install-connector.sh install --host dsh --instance reviewer --expect-name 'DSH Code Reviewer' --relay wss://dsh-relay.chuanbota.com/connect --local auto --port-start 9900`。脚本会在已启动的本机服务中按 Agent Card `name` 找到实际端口；此路径不会配置 DSH adapter 或下方插件，不要同时运行两种路径连接同一个 Agent。
 
-1. 在目标 DSH Agent 主机安装 `plugins/dsh`。这个包只需注册**一个** `dsh-a2a-connector` 条目：未配置已有本机 A2A origin 时，插件自动启动内置服务，再启动 Relay Connector；配置 `agents` 后，同一条目还会注册向外调用 Agent 的工具和 Subagent Provider。Relay 主控认证使用 Connector 身份，企业管理员在 `/console` 的目标 Agent「谁能访问」中授予「DSH 调用方 → 目标」权限；只有旧版 Redis-only Relay 使用 `/pair/list`。
+1. 在目标 DSH Agent 主机安装 `plugins/dsh`。这个包只需注册**一个** `dsh-a2a-connector` 条目：未配置已有本机 A2A origin 时，插件自动启动内置服务，再启动 Relay Connector；配置 `agents` 后，同一条目还会注册向外调用 Agent 的工具和 Subagent Provider。Relay 主控认证使用 Connector 身份，企业管理员在 `/console` 的目标 Agent「谁能访问」中授予「DSH 调用方 → 目标」权限。
 2. 用 DSH CLI 将本地插件目录作为目标 profile 的依赖安装：
 
    ```bash
@@ -74,7 +74,7 @@ Subagent 总等待默认 `taskTimeoutMs: 1800000`，从派发时开始计时；�
 `a2a_send` 在 HTTP 派发前保存 `conversationId`、稳定 `messageId` 和 `relayRequestId`。内联完成的 Task 直接返回去重后的正文；工具保留数字 `state`，并增加 `stateName`。若返回 `dispatchState: unknown`（如 504/断网），按以下步骤处理：
 
 1. 从返回值取得 `conversationId`；调用中止未展示返回值时，用 `a2a_conversations` 找到待派发/未知记录。
-2. 调用 `a2a_reconcile({conversation_id: "..."})`。它是客户端恢复工具，查询 Relay 收据或原任务，不是企业模式未开放的远端 ReconcileCloudTask。新版 Relay 可返回迟到的 Task 或 Message 正文；收据 404 仍保持 unknown，不自动回退到企业模式不支持的 ListTasks，更不能据此重发。只有直接访问非 Relay A2A 服务时，才可能按已知 contextId 和远端 history 中的 messageId 匹配任务。
+2. 调用 `a2a_reconcile({conversation_id: "..."})`。它是客户端恢复工具，查询 Relay 收据或原任务，不是Relay未开放的远端 ReconcileCloudTask。新版 Relay 可返回迟到的 Task 或 Message 正文；收据 404 仍保持 unknown，不自动回退到Relay不支持的 ListTasks，更不能据此重发。只有直接访问非 Relay A2A 服务时，才可能按已知 contextId 和远端 history 中的 messageId 匹配任务。
 3. 换 DSH session 后，显式调用 `a2a_conversations({include_previous_sessions: true})` 和 `a2a_reconcile({conversation_id: "...", include_previous_sessions: true})` 进行只读查询。历史查询不转移所有权；续聊/取消仍需要原 session。这个 store 是同一本机 profile 的共享查询边界，多用户应使用不同 storePath/凭据。
 4. `outcome: unknown`、空列表、404、过期索引都**不能证明未执行**，不自动重发。`safeToResubmit` 保持 false；应继续对账或核对远端执行记录。需要显式幂等键时，`a2a_send` 可带 `message_id`，同键只能用于同一派发和同一内容；本地已知键只对账，新版 Relay 也会去重。新生成的 messageId 是新派发，不按正文自动合并。
 
@@ -96,4 +96,4 @@ Subagent 总等待默认 `taskTimeoutMs: 1800000`，从派发时开始计时；�
 
 如果 DSH plugin reconcile 报目录不存在，检查目标 profile `package.json` 的 `file:` 依赖是否指向已移动或删除的目录。恢复原目录，或执行 `dsh plugin --profile <profile> remove dsh-a2a-connector`，再用本机真实绝对路径 add；保留其他依赖和 Cordis patch。CLI 自身的 reconcile 提示/恢复行为属于 DeepSeek 上游，本仓库只提供排错说明，不把该环境问题当作 Connector 缺陷。
 
-完成安装后，按[通用配对与验证](shared.md#配对与授权边界)检查审批、凭据和连线。
+完成安装后，按[通用接入与验证](shared.md#票据接入)检查票据接入、凭据和连线。

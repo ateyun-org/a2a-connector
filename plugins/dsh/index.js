@@ -65,7 +65,7 @@ export async function apply(ctx, config) {
   else if (config.localTokenEnv) env.A2A_LOCAL_TOKEN = process.env[config.localTokenEnv] || '';
   let outbound;
   const supervisor = createProcessSupervisor({
-    launch: () => spawn(binary, [...args, '-auto-pair'], { stdio: ['ignore', 'pipe', 'pipe', 'ipc'], env }),
+    launch: () => spawn(binary, [...args], { stdio: ['ignore', 'pipe', 'pipe', 'ipc'], env }),
   });
   const { start, stop, remember } = supervisor;
   try {
@@ -85,7 +85,7 @@ export async function apply(ctx, config) {
     }));
     ctx.tools.register(defineTool({
       name: 'a2a_connector_pair',
-      description: 'Show this Agent’s pending pairing request and approval code. Optional code supports manual pairing.',
+      description: 'Redeem a console-issued one-time Agent enrollment ticket, or inspect existing enrollment. No global pairing or approval polling is supported.',
       parameters: { code: { type: 'string' } },
       output: { schema: { type: 'object', additionalProperties: false, properties: { text: { type: 'string', required: true } } },
         render: (_args, result) => [{ type: 'text', text: result.text }] },
@@ -97,11 +97,11 @@ export async function apply(ctx, config) {
           await start();
           return { text: 'A2A Connector paired and started.' };
         }
-        const { stdout } = await run(binary, [...args, '-request-only'], { timeout: 20000, env });
-        await start();
+        const { stdout } = await run(binary, [...args, '-status'], { timeout: 20000, env });
         const status = JSON.parse(stdout);
-        return { text: status.status === 'paired' ? `Already paired: ${status.agentId}`
-          : `Approve ${status.agentId} at ${status.approvalURL}. Confirmation code: ${status.confirmationCode}` };
+        if (status.paired) await start();
+        return { text: status.paired ? `Already paired: ${status.agentId}`
+          : 'Enrollment required: obtain a one-time Agent ticket from the Relay console. This tool never creates an approval request.' };
       },
     }));
     ctx.effect(() => {

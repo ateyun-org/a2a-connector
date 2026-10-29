@@ -20,7 +20,7 @@ flowchart LR
 
 新版 Relay 命令行服务默认启用 MCP。继续使用服务器已经加载的 `manifest/config/config.json`，不需要额外配置 `RELAY_MCP_ENABLED=true`，也不需要更换已有管理员凭据。只有明确设置 `relay.mcpEnabled=false` 或 `RELAY_MCP_ENABLED=false` 才关闭；已有非空环境变量仍优先。
 
-程序现在读取现有 `workbuddy.clientId` 和 `workbuddy.clientSecret`。未配置的接收端 ID 默认 `chuanbota-workbuddy-cloud`，授权范围默认 PC 与云端的四个完整权限；均与本项目目前的应用配置一致。仍只允许这个准确的受控身份获取上游令牌，不会自动授权全部 Agent。
+程序读取 `workbuddy.clientId` 和 `workbuddy.clientSecret`，接收身份统一从 MySQL 企业数据库加载，在控制台创建/选择并发送账号邀请。授权范围默认 PC 与云端的四个完整权限。发布需提供稳定的私有 `RELAY_AGENT_TICKET_KEY`（32随机字节的Base64），共享管理员令牌不再用于认证或派生密钥。
 
 令牌加密密钥优先沿用 `workbuddy.tokenKey` 或 `WORKBUDDY_TOKEN_KEY`。未提供时，程序从应用 Secret 派生用途隔离、重启稳定的32字节密钥，无需额外挂载密钥文件。使用派生密钥时，应用 Secret 轮换后需要重新完成上游授权。已经使用显式密钥的部署必须保留原密钥。
 
@@ -65,7 +65,7 @@ rtk proxy python3 scripts/check-workbuddy-deployment.py --base https://dsh-relay
 
 新版默认配置中，无令牌 `/mcp` 应返回401及发现 challenge。若新 health 已显示 MCP 开启而公网 `/mcp` 仍404，应定位外层转发或不同 upstream；只有旧接口响应时，需要核对实际运行的程序版本。这类网络问题无法由客户端凭空确定服务器文件路径。
 
-接收端继续使用现有 CLI 的 desktop/cloud 模式、配对、`platform login` 和 `doctor`。接收端 ID 须与 Relay 默认的 `chuanbota-workbuddy-cloud` 或显式配置相同。真实账号授权和管理员目标 ACL 仍是必要步骤，程序不会代替用户批准。
+优先在企业控制台接入 WorkBuddy 原生接收端并生成邀请，无需在用户电脑安装 Connector。独立 CLI 接收端先使用身份绑定票据接入，再执行 desktop/cloud setup、platform login 和 doctor；ID 由控制台确定。账号授权与目标机器调用动作授权分别配置。
 
 ## 主控 OAuth 与权限
 
@@ -76,9 +76,9 @@ MCP 地址：`https://dsh-relay.chuanbota.com/mcp`。
 用户在 WorkBuddy 点击连接后：
 
 1. MCP 客户端发现服务并注册，打开 Relay 授权页。
-2. 企业模式要求用户登录 Relay、选择其所属企业并确认 OAuth，Relay 创建或复用该成员的个人 MCP Controller。它和已有 Connector 的身份可能不同，授权时核对准确 Agent ID。旧版 Redis-only Relay 才会展示 `wbmcp-...` 身份和确认码，经过 `/pair` 核对批准后在 `/pair/list` 分配目标。
+2. Relay 要求用户登录 Relay、选择其所属企业并确认 OAuth，Relay 创建或复用该成员的个人 MCP Controller。它和已有 Connector 的身份可能不同，授权时核对准确 Agent ID。
 3. 企业管理员在 `/console` 的**目标 Agent** 行点击「谁能访问」，选择这个 MCP Controller 为机器调用方并授予所需动作；个人 Controller 的机器授权还需与绑定成员的有效成员/用户组权限取交集。这个主控身份不需要运行入站隧道，显示按需连接不代表主控不可用；目标接收端的连接状态另行检查。
-4. 用户在原授权页确认，客户端得到 MCP OAuth token。可以认证但没有可发现目标时 `a2a_targets` 为空；能够读取卡片也不表示拥有所有任务动作。`a2a_send` 需要调用权限，`a2a_task` 需要读取权限及本身份的任务归属。企业模式不开放 ListTasks，但支持 `a2a_request` 收据恢复。工具中不提供管理员操作，也不自动增加权限。
+4. 用户在原授权页确认，客户端得到 MCP OAuth token。可以认证但没有可发现目标时 `a2a_targets` 为空；能够读取卡片也不表示拥有所有任务动作。`a2a_send` 需要调用权限，`a2a_task` 需要读取权限及本身份的任务归属。Relay不开放 ListTasks，但支持 `a2a_request` 收据恢复。工具中不提供管理员操作，也不自动增加权限。
 
 支持 WorkBuddy 私有协议回调 `workbuddy://workbuddy/mcp/connector:chuanbota-a2a/oauth/callback`、平台分配的 `oc_...` 连接器 ID 回调和精确注册的 HTTP loopback 回调。回调必须先精确注册，不能在授权时更换。拒绝 plain PKCE、重定向不匹配和其他资源的 token。允许反向代理将 Host 改为内部上游地址，不要求新增代理配置。默认允许同源请求与无 Origin 的原生客户端；浏览器客户端来源须在 `mcpAllowedOrigins` 中明确配置，重复 Origin 也拒绝。所有请求仍需有效的 MCP 令牌和目标权限；Host 与转发请求头不参与 OAuth 地址或令牌受众生成。
 

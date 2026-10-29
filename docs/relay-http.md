@@ -48,13 +48,13 @@ Use the same target and caller identity. Replace the task ID with the actual ret
 
 Send to the same `/agents/<targetAgentId>/rpc` with Bearer authentication and JSON content type. `GetTask` requires `task_read` and a stable ownership record for this caller. A grant does not transfer tasks created by another identity. Do not try random task IDs or old-identity tasks to infer invoke permission.
 
-Enterprise Relay rejects `ListTasks` / `tasks/list` with HTTP 501 `rpc_method_not_supported`; older deployments returned 403. The receiver's local listing capability does not change this. Use your saved task IDs, not unfiltered enumeration. Do not request extra invoke grants merely because listing fails.
+Relay rejects `ListTasks` / `tasks/list` with HTTP 501 `rpc_method_not_supported`; older deployments returned 403. The receiver's local listing capability does not change this. Use your saved task IDs, not unfiltered enumeration. Do not request extra invoke grants merely because listing fails.
 
-Other receiver extensions are not automatically exposed by Relay. The current enterprise allowlist includes SendMessage, GetTask, CancelTask, RespondPermission and ReleaseCloudTask (and supported protocol aliases); it does not include ResumeCloudTask or ReconcileCloudTask. Do not try to unlock those extensions with additional grants. For hosted WorkBuddy recovery, keep reading the original GetTask; the receiver schedules eligible read-only recovery internally. Local/legacy CLI capabilities can differ.
+Other receiver extensions are not automatically exposed by Relay. The current Relay allowlist includes SendMessage, GetTask, CancelTask, RespondPermission and ReleaseCloudTask (and supported protocol aliases); it does not include ResumeCloudTask or ReconcileCloudTask. Do not try to unlock those extensions with additional grants. For hosted WorkBuddy recovery, keep reading the original GetTask; the receiver schedules eligible read-only recovery internally. Local receiver capabilities can differ.
 
 ## Durable receipts and uncertain sends
 
-Read `GET /relay/requests/<relayRequestId>` with the **same caller credentials**. This endpoint works in enterprise mode. It reports the original request state and, when completed, its `responseBody`; parse that body to get the task/error. Receipt completion is HTTP response completion, not necessarily task completion.
+Read `GET /relay/requests/<relayRequestId>` with the **same caller credentials**. This endpoint works through Relay. It reports the original request state and, when completed, its `responseBody`; parse that body to get the task/error. Receipt completion is HTTP response completion, not necessarily task completion.
 
 | Identifier | Meaning |
 | --- | --- |
@@ -64,7 +64,7 @@ Read `GET /relay/requests/<relayRequestId>` with the **same caller credentials**
 | `X-Request-Id` | HTTP diagnostic correlation; it is not always a durable receipt |
 | Task `id` / `contextId` | Remote task/conversation handles returned by the target |
 
-Relay reserves dispatches using `Idempotency-Key` or a recognized SendMessage `messageId`. `X-Relay-Request-Id` alone does not create a journal. A malformed send lacking both keys can reach parameter validation without creating a receipt. Completed duplicates return the original receipt ID; persist that value. Altered payload under the same key returns `409 idempotency_conflict`. A 404 receipt may also mean wrong identity, expiry, revoked permission, or no reservation; never infer that the task did not execute, or that enterprise mode has no journal.
+Relay reserves dispatches using `Idempotency-Key` or a recognized SendMessage `messageId`. `X-Relay-Request-Id` alone does not create a journal. A malformed send lacking both keys can reach parameter validation without creating a receipt. Completed duplicates return the original receipt ID; persist that value. Altered payload under the same key returns `409 idempotency_conflict`. A 404 receipt may also mean wrong identity, expiry, revoked permission, or no reservation; never infer that the task did not execute, or that Relay has no journal.
 
 On timeout, disconnect, `unknown`, or ownership persistence failure, inspect the original receipt/task without another send. Keep the original IDs even after a cloud execution/result timeout; that timeout does not authorize creating a replacement task. If recovery evidence is unavailable, report the outcome as unknown and inspect the original receiving session. Do not fabricate task IDs or automatically release unresolved tracking to make a new task fit.
 

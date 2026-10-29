@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import test from 'node:test';
 import { WebSocketServer } from 'ws';
-import { loadEnrollment, saveEnrollment, requestPairing, pairingStatus } from '../src/connector.js';
+import { loadEnrollment, saveEnrollment } from '../src/connector.js';
 
 const run = promisify(execFile);
 const ticket = 'pair_' + 'a'.repeat(48);
@@ -50,7 +50,7 @@ async function fixture(t, { host = 'openclaw', status = 201, returnedID = identi
   const state = join(directory, host === 'workbuddy' ? 'workbuddy.json' : 'state.json');
   const stateArgs = host === 'workbuddy' ? [] : ['--state', state];
   const baseArgs = ['scripts/install-connector.sh'];
-  const args = ['install', '--host', host, '--enterprise', '--expect-agent-id', identity.agentId,
+  const args = ['install', '--host', host, '--expect-agent-id', identity.agentId,
     '--relay', `ws://${new URL(relayURL).host}/connect`, '--local', localURL,
     '--allow-insecure', ...stateArgs];
   const cleanEnv = { ...process.env, A2A_CONNECTOR_CONFIG_DIR: directory };
@@ -71,13 +71,11 @@ async function fixture(t, { host = 'openclaw', status = 201, returnedID = identi
 for (const host of ['openclaw', 'hermes', 'dsh', 'workbuddy']) {
   test(`enterprise installer redeems once and reuses credentials across ${host} restarts`, async t => {
     const f = await fixture(t, { host });
-    await saveEnrollment(f.state + '.pending', { agentId: 'legacy-pending-agent', requestId: 'c'.repeat(64), confirmationCode: 'ABC123' });
     const installed = await f.command(f.args, f.withTicket);
-    assert.match(installed.stdout, /企业接入身份已确认/, installed.stderr);
+    assert.match(installed.stdout, /接入身份已确认/, installed.stderr);
     assert(!installed.stdout.includes(ticket) && !installed.stderr.includes(ticket));
     assert(!installed.stdout.includes(identity.token) && !installed.stderr.includes(identity.token));
     assert.deepEqual(await loadEnrollment(f.state), identity);
-    await assert.rejects(readFile(f.state + '.pending'), { code: 'ENOENT' });
     assert.equal((await stat(f.state)).mode & 0o777, 0o600);
     assert.deepEqual(f.requests, ['/register'], 'enterprise installation used legacy pairing or redeemed twice');
     assert.deepEqual(f.auth, [`Bearer ${identity.token}`], 'tunnel did not use the saved credential');
@@ -101,7 +99,7 @@ test('enterprise installation fails before networking when a ticket or expected 
   await assert.rejects(f.command(f.args), /私有环境变量 A2A_PAIR_CODE/);
   const noIdentity = f.args.filter((value, index, values) => value !== '--expect-agent-id' && values[index - 1] !== '--expect-agent-id');
   await assert.rejects(f.command(noIdentity, f.withTicket), /需要 --expect-agent-id/);
-  await assert.rejects(f.command([...f.args, '--request-only'], f.withTicket), /不使用 --request-only/);
+  await assert.rejects(f.command([...f.args, '--request-only'], f.withTicket), /未知参数/);
   assert.deepEqual(f.requests, []);
   assert.deepEqual(f.auth, []);
 });
@@ -132,14 +130,18 @@ for (const lostResponse of [false, true]) {
 
 test('enterprise installation saves but does not connect a mismatched redemption identity', async t => {
   const f = await fixture(t, { returnedID: 'unexpected-agent' });
-  await assert.rejects(f.command(f.args, f.withTicket), /返回的机器身份.*不符/);
+  await assert.rejects(f.command(f.args, f.withTicket), /enrolled identity does not match/);
   assert.equal((await loadEnrollment(f.state)).agentId, 'unexpected-agent');
   assert.deepEqual(f.requests, ['/register']);
   assert.deepEqual(f.auth, []);
 });
 
-test('legacy requests to an enterprise Relay explain the ticket requirement', async t => {
+test('retired automatic pairing options fail before making requests', async t => {
   const f = await fixture(t);
-  await assert.rejects(requestPairing({ relay: f.relay, agentId: 'legacy-agent', name: 'Legacy', allowInsecure: true }), /organization_ticket_required.*console-issued ticket/);
-  await assert.rejects(pairingStatus({ relay: f.relay, requestId: 'b'.repeat(64), allowInsecure: true }), /organization_ticket_required.*instead of polling/);
+  for (const flag of ['-auto-pair', '-request-only', '-pair-code']) {
+    await assert.rejects(run(process.execPath, ['src/cli.js', '-relay', f.relay, '-state', f.state, flag], { env: f.withTicket }), /unknown option/);
+  }
+  await assert.rejects(run(process.execPath, ['src/cli.js', '-relay', f.relay, '-state', f.state], { env: f.cleanEnv }), /enrollment_required/);
+  assert.deepEqual(f.requests, []);
+  assert.deepEqual(f.auth, []);
 });

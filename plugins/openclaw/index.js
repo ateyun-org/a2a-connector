@@ -19,7 +19,7 @@ export default {
     const state = config.state || join(homedir(), '.config', 'a2a-connector', 'openclaw.json');
     let adapter, args, env, preparing, stopping = false;
     const supervisor = createProcessSupervisor({
-      launch: () => spawn(binary, [...args, '-auto-pair'], { stdio: ['ignore', 'pipe', 'pipe', 'ipc'], env }),
+      launch: () => spawn(binary, [...args], { stdio: ['ignore', 'pipe', 'pipe', 'ipc'], env }),
       onError: error => api.logger?.error?.(`A2A Connector failed: ${error.message}`),
     });
     const prepare = () => preparing ??= (async () => {
@@ -79,7 +79,7 @@ export default {
     });
     api.registerTool({
       name: 'a2a_connector_pair',
-      description: 'Show this Agent’s pending pairing request and approval code. An optional one-time pair_ code supports manual pairing.',
+      description: 'Redeem a console-issued one-time Agent enrollment ticket, or inspect existing enrollment. No global pairing or approval polling is supported.',
       parameters: { type: 'object', properties: { code: { type: 'string', description: 'Optional one-time pair_ code' } }, additionalProperties: false },
       async execute(_id, params) {
         await prepare();
@@ -90,12 +90,12 @@ export default {
           await start();
           return { content: [{ type: 'text', text: 'A2A Connector paired and started.' }] };
         }
-        const { stdout } = await run(binary, [...args, '-request-only'], { timeout: 20000, env });
-        await start();
+        const { stdout } = await run(binary, [...args, '-status'], { timeout: 20000, env });
         const status = JSON.parse(stdout);
-        return { content: [{ type: 'text', text: status.status === 'paired'
+        if (status.paired) await start();
+        return { content: [{ type: 'text', text: status.paired
           ? `Already paired: ${status.agentId}`
-          : `Approve ${status.agentId} at ${status.approvalURL}. Confirmation code: ${status.confirmationCode}` }] };
+          : 'Enrollment required: obtain a one-time Agent ticket from the Relay console. This tool never creates an approval request.' }] };
       },
     });
   },

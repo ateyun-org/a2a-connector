@@ -116,7 +116,7 @@ test('legacy Hermes runner forwards real Relay frames to isolated quiet CLI sess
   await new Promise(resolve => relay.listen(0, '127.0.0.1', resolve));
   t.after(async () => { for (const client of ws.clients) client.terminate(); await new Promise(resolve => ws.close(resolve)); await new Promise(resolve => relay.close(resolve)); });
   const connected = new Promise(resolve => ws.once('connection', resolve));
-  const wrapperArgs = [resolve('plugins/hermes/runner.js'), '-auto-pair', '-state', state,
+  const wrapperArgs = [resolve('plugins/hermes/runner.js'), '-state', state,
     '-relay', `ws://127.0.0.1:${relay.address().port}/connect`, '-local', 'auto', '-allow-insecure'];
   const wrapperEnv = { ...process.env, HERMES_HOME: home, PYTHONPATH: host, A2A_HERMES_PYTHON: python, A2A_HERMES_BINARY: '',
     A2A_LOCAL_URL: 'auto', A2A_LOCAL_TOKEN: '', A2A_BEARER_TOKEN: '', A2A_PEER_TOKENS: '', HERMES_BUNDLED_PLUGINS: '' };
@@ -212,7 +212,7 @@ test('managed stop aborts a blocked startup probe and releases the wrapper witho
   const local = createServer(() => reached()); // Keep the source capability probe waiting.
   await new Promise(resolve => local.listen(0, '127.0.0.1', resolve));
   const env = { ...process.env, A2A_HERMES_PYTHON: python };
-  const args = [resolve('plugins/hermes/runner.js'), '-state', state, '-auto-pair',
+  const args = [resolve('plugins/hermes/runner.js'), '-state', state,
     '-local', `http://127.0.0.1:${local.address().port}`, '-relay', 'wss://relay.example/connect'];
   const child = spawn(process.execPath, args, { env, stdio: ['ignore', 'ignore', 'pipe'] });
   let logs = '';
@@ -236,7 +236,7 @@ test('managed stop aborts a blocked startup probe and releases the wrapper witho
   }
 });
 
-test('Python plugin pairs, checks and stops a managed or manually started runner without Gateway restart', { timeout: 30000 }, async t => {
+test('Python plugin enrolls, checks and stops a managed or manually started runner without Gateway restart', { timeout: 30000 }, async t => {
   const dir = await mkdtemp(join(tmpdir(), 'hermes-lifecycle-'));
   const host = join(dir, 'host with spaces'), home = join(dir, 'profile');
   await mkdir(join(host, 'hermes_cli'), { recursive: true });
@@ -245,9 +245,6 @@ test('Python plugin pairs, checks and stops a managed or manually started runner
   await writeFile(join(host, 'run_agent.py'), '# Legacy Hermes\n');
   const state = join(dir, 'private folder/hermes.json');
   await mkdir(join(dir, 'private folder'));
-  // An expired request must be renewed by the one managed worker, before showing approval.
-  await writeFile(state + '.pending', JSON.stringify({ requestId: 'e'.repeat(64), agentId: 'managed-hermes',
-    confirmationCode: 'ABCDEF', expiresAt: 1 }), { mode: 0o600 });
   // Both locks and runtime/PID metadata can survive shutdown. A reused PID must
   // not make Python regard this previous runner as live or terminate this test.
   const abandoned = { pid: process.pid, hostname: hostname(), instanceId: 'previous-run', processIdentity: 'previous-boot' };
@@ -257,19 +254,14 @@ test('Python plugin pairs, checks and stops a managed or manually started runner
   }
   await writeFile(state + '.a2a-runtime.json', JSON.stringify({ pid: process.pid, instanceId: 'previous-run', phase: 'running' }), { mode: 0o600 });
   await writeFile(state.replace(/\.json$/, '.pid'), String(process.pid));
-  let approved = false, requests = 0, registrations = 0;
-  const requestId = 'a'.repeat(64), code = 'pair_' + 'b'.repeat(48);
+  let requests = 0, registrations = 0;
+  const code = 'pair_' + 'b'.repeat(48);
   const relay = createServer(async (req, res) => {
     let raw = ''; for await (const chunk of req) raw += chunk;
     const body = raw ? JSON.parse(raw) : {};
     res.setHeader('content-type', 'application/json');
-    if (req.url === '/pairing/requests') {
-      requests++; assert.equal(body.agentId, 'managed-hermes'); res.writeHead(201);
-      res.end(JSON.stringify({ requestId, agentId: body.agentId, confirmationCode: '123ABC', expiresAt: Math.floor(Date.now() / 1000) + 600 }));
-    } else if (req.url === '/pairing/status') {
-      if (body.requestId !== requestId) { res.writeHead(404); res.end('{}'); }
-      else res.end(JSON.stringify(approved ? { status: 'approved', code } : { status: 'pending' }));
-    } else if (req.url === '/register') {
+    requests++;
+    if (req.url === '/register') {
       registrations++; assert.equal(body.code, code); res.writeHead(201);
       res.end(JSON.stringify({ agentId: 'managed-hermes', token }));
     } else { res.writeHead(404); res.end('{}'); }
@@ -288,17 +280,12 @@ test('Python plugin pairs, checks and stops a managed or manually started runner
     await new Promise(resolve => relay.close(resolve));
     await rm(dir, { recursive: true, force: true });
   });
-  const pairing = JSON.parse(await command('pair'));
-  assert.equal(pairing.confirmationCode, '123ABC');
-  assert.equal(pairing.status, 'pending');
-  assert.equal(requests, 1);
-  const pendingHealth = JSON.parse(await command('status'));
-  assert.equal(pendingHealth.running, true);
-  assert.equal(pendingHealth.tunnelOnline, false);
-  assert.match(await command('start'), /already running/);
-  assert.equal(JSON.parse(await command('status')).pid, pendingHealth.pid);
+  const missing = JSON.parse(await command('pair'));
+  assert.equal(missing.status, 'enrollment_required');
+  assert.equal(requests, 0);
   const connected = new Promise(resolve => ws.once('connection', resolve));
-  approved = true;
+  const enrolled = await execute(python, [plugin, 'pair', code], { env, timeout: 28000 });
+  assert.equal(JSON.parse(enrolled.stdout).agentId, 'managed-hermes');
   await connected;
   const health = JSON.parse(await command('status'));
   assert.equal(health.paired, true); assert.equal(health.tunnelOnline, true);
@@ -311,7 +298,7 @@ test('Python plugin pairs, checks and stops a managed or manually started runner
   assert.equal(JSON.parse(await command('status')).running, false);
   assert.equal(JSON.parse(await readFile(state, 'utf8')).token, token);
   // A manual runner has no Python PID file. Status/start/stop still find its canonical owner.
-  const manual = spawn(process.execPath, [resolve('plugins/hermes/runner.js'), '-auto-pair', '-state', state,
+  const manual = spawn(process.execPath, [resolve('plugins/hermes/runner.js'), '-state', state,
     '-relay', env.A2A_RELAY_URL, '-local', 'auto', '-allow-insecure'], {
     env: { ...env, A2A_HERMES_PYTHON: python }, stdio: ['ignore', 'ignore', 'pipe'],
   });

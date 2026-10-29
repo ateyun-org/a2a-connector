@@ -56,6 +56,34 @@ async function existingPid() {
     return null;
   }
 }
+async function requireEnrollment(c) {
+  let enrollment;
+  try { enrollment = await loadEnrollment(state); }
+  catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+    throw new Error('enrollment_required: obtain a console-issued Agent ticket and run auth enroll --relay <wss-url> --agent-id <Agent-ID> with private A2A_PAIR_CODE before starting');
+  }
+  if (c.agentId && enrollment.agentId !== c.agentId) throw new Error('Saved credential belongs to another Agent; inspect the instance before starting');
+  return enrollment;
+}
+async function enroll(argv) {
+  const values = {};
+  for (let i = 0; i < argv.length; i++) {
+    if (['--relay', '--agent-id'].includes(argv[i])) values[argv[i].slice(2)] = argv[++i];
+    else if (argv[i] === '--allow-insecure') values.allowInsecure = true;
+    else throw new Error(`Unknown enrollment option: ${argv[i]}`);
+  }
+  if (!values.relay || !/^[A-Za-z0-9_-]{1,64}$/.test(values['agent-id'] || '')) throw new Error('auth enroll requires --relay and --agent-id from the console');
+  try {
+    const saved = await loadEnrollment(state);
+    if (saved.agentId !== values['agent-id']) throw new Error('Saved credential belongs to another Agent; no ticket was redeemed');
+    console.log(`Agent already enrolled: ${saved.agentId}`);
+    return;
+  } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  const { stdout: result } = await run(binary, [script, '-relay', values.relay, '-state', state,
+    '-agent-id', values['agent-id'], '-enroll-only', ...(values.allowInsecure ? ['-allow-insecure'] : [])], { timeout: 20000, env: process.env });
+  console.log(result.trim());
+}
 async function start() {
   await mkdir(dir, { recursive: true, mode: 0o700 });
   const lock = await acquireStateLock(startLock.slice(0, -5));
@@ -63,11 +91,12 @@ async function start() {
     const prior = await existingPid();
     if (prior) throw new Error(`Connector already running (PID ${prior}); stop it before starting another`);
     const c = await config();
+    await requireEnrollment(c);
     const log = await open(logFile, 'a', 0o600);
     let child;
     try {
       const builtin = ["desktop", "cloud"].includes(c.adapter);
-      child = spawn(binary, builtin ? [runner, settings, state] : [...args(c), '-auto-pair'], { detached: true,
+      child = spawn(binary, builtin ? [runner, settings, state] : [...args(c)], { detached: true,
         stdio: builtin ? ['ignore', log.fd, log.fd, 'ipc'] : ['ignore', log.fd, log.fd], env: process.env });
       await new Promise((resolve, reject) => {
         const timer = setTimeout(() => reject(new Error('WorkBuddy runner startup timed out; inspect private diagnostics')), 7000);
@@ -121,6 +150,7 @@ async function runForeground() {
   try {
     if (await existingPid()) throw new Error('Connector already running; stop it before starting the service');
     const c = await config();
+    await requireEnrollment(c);
     if (!['desktop', 'cloud'].includes(c.adapter)) throw new Error('Foreground run requires a built-in desktop or cloud adapter');
     child = spawn(binary, [runner, settings, state], { stdio: ['ignore', 'inherit', 'inherit', 'ipc'], env: process.env });
     exited = new Promise(resolve => {
@@ -161,14 +191,7 @@ async function status() {
     const health = await connectorStatus(state);
     if (!health.tunnelOnline) throw new Error('Connector tunnel is offline');
     console.log(`Logged in: ${enrollment.agentId}`);
-  } catch {
-    try {
-      const pending = JSON.parse(await readFile(state + '.pending', 'utf8'));
-      const c = await config();
-      const url = new URL(c.relay); url.protocol = url.protocol === 'wss:' ? 'https:' : 'http:'; url.pathname = '/pair';
-      console.log(`Awaiting approval: ${url} | Agent: ${pending.agentId} | Confirmation: ${pending.confirmationCode}`);
-    } catch { console.log('Not logged in'); process.exitCode = 1; }
-  }
+  } catch (error) { console.log(error.message); process.exitCode = 1; }
 }
 async function login() {
   const input = createInterface({ input: stdin, output: stdout });
@@ -179,19 +202,10 @@ async function login() {
   } finally { input.close(); }
   const c = local.trim() ? { relay, local, allowInsecure: false } : { relay, adapter: 'desktop', name: 'WorkBuddy Desktop', allowInsecure: false };
   await mkdir(dir, { recursive: true, mode: 0o700 });
-  if (c.adapter === 'desktop') {
-    await saveSettings(c);
-    if (!(await existingPid())) await start();
-    console.log('Connector started with the WorkBuddy desktop adapter. Run auth status to view pairing approval, then platform login.');
-    return;
-  }
   await saveSettings(c);
-  const { stdout: result } = await run(binary, [...args(c), '-request-only'], { timeout: 20000, env: process.env });
-  await stop();
-  await start();
-  const pairing = JSON.parse(result);
-  console.log(pairing.status === 'paired' ? `Already paired: ${pairing.agentId}`
-    : `Open ${pairing.approvalURL} and ask the administrator to confirm ${pairing.confirmationCode}. Connection starts automatically after approval.`);
+  await requireEnrollment(c);
+  if (!(await existingPid())) await start();
+  console.log('Connector started. Run auth status to verify the tunnel, then platform login.');
 }
 
 async function saveSettings(c) {
@@ -215,9 +229,8 @@ async function connect() {
     await saveSettings({ adapter: 'desktop', name: 'WorkBuddy Desktop', allowInsecure: false, relay: process.env.A2A_RELAY_URL });
     c = await config();
   }
+  const enrollment = await requireEnrollment(c);
   if (!(await existingPid())) await start();
-  let enrollment;
-  try { enrollment = await loadEnrollment(state); } catch { /* Pairing may still be pending. */ }
   if (enrollment && ['desktop', 'cloud'].includes(c.adapter)) {
     const linked = await platformRequest({ relay: c.relay, allowInsecure: c.allowInsecure, enrollment, endpoint: 'status' });
     if (!linked.linked) await platformLogin();
@@ -227,16 +240,11 @@ async function connect() {
     }
     return;
   }
-  const url = new URL(c.relay);
-  url.protocol = url.protocol === 'wss:' ? 'https:' : 'http:';
-  url.pathname = '/pair';
-  console.log(`Approve this WorkBuddy Agent at ${url.toString()} then use auth status to compare its confirmation code.`);
-  console.log('配对审批完成后，请返回连接器再次点击连接，完成 WorkBuddy 账号授权。');
-  showSetupHints(c);
+  throw new Error('enrollment_required: open the Relay console and obtain an identity-bound Agent ticket; global pairing approvals are not supported');
 }
 
 function showSetupHints(c) {
-  console.log('接入步骤：Relay 身份配对 → WorkBuddy 账号授权 → 连接检查 → 小任务验证。');
+  console.log('接入步骤：控制台票据接入 → WorkBuddy 账号授权 → 连接检查 → 小任务验证。');
   if (c.adapter === 'desktop') console.log(desktopControlInstructions);
   else if (c.adapter === 'cloud') console.log('当前为云端执行模式，无需开启电脑端的远程连接开关。');
 }
@@ -261,7 +269,7 @@ async function setup(argv) {
   if (c.agentId && !/^[A-Za-z0-9_-]{1,64}$/.test(c.agentId)) throw new Error('Invalid Agent ID');
   await saveSettings(c);
   if (!(await existingPid())) await start();
-  console.log(`WorkBuddy ${c.adapter} adapter started. Run auth status for pairing approval, then platform login for WorkBuddy authorization.`);
+  console.log(`WorkBuddy ${c.adapter} adapter started. Run auth status to verify enrollment, then platform login for WorkBuddy authorization.`);
   showSetupHints(c);
 }
 
@@ -469,12 +477,13 @@ try {
   else if (command === 'connection status') await connectionStatus();
   else if (command === 'targets') console.log(JSON.stringify(await listTargets(await platformOptions())));
   else if (argv.length === 3 && argv[0] === 'adapter' && argv[1] === 'task') await localTask(argv[2]);
+  else if (argv[0] === 'auth' && argv[1] === 'enroll') await enroll(argv.slice(2));
   else if (command === 'auth login') await login();
   else if (command === 'auth connect') await connect();
   else if (command === 'auth status') await status();
   else if (command === 'auth logout') {
     await stop();
-    await Promise.all([state, state + '.pending', settings].map(file => unlink(file).catch(error => { if (error.code !== 'ENOENT') throw error; })));
+    await Promise.all([state, settings].map(file => unlink(file).catch(error => { if (error.code !== 'ENOENT') throw error; })));
     console.log('Logged out');
   } else if (command === 'start') { await start(); console.log('Connector started'); }
   else if (command === 'stop') { await stop(); console.log('Connector stopped'); }
@@ -510,5 +519,5 @@ try {
   else if (command === 'platform login') await platformLogin();
   else if (command === 'platform status') await platformStatus();
   else if (command === 'platform logout') await platformLogout();
-  else throw new Error('Usage: workbuddy-a2a setup --relay <wss-url> [--mode desktop|cloud] [--task-id <cloud-session-id>] [--cwd /workspace] [--name <name>], doctor, connection status, targets, auth connect|login|status|logout, platform login|status|logout, start|stop|run, call <target-agent-id> [--message-id <id>] [--context-id <id>] [--mode cloud|desktop] (stdin), outbound <request-id>, task <target-agent-id> <task-id>, adapter task <task-id>, cloud tasks, cloud task <cloud-session-id>, cancel <target-agent-id> <task-id>, release <target-agent-id> <task-id> [recovered-cloud-task-id], resume <target-agent-id> <task-id>, reconcile <target-agent-id> <task-id>, permission <target-agent-id> <task-id> <request-id-as-json> <option-id>');
+  else throw new Error('Usage: workbuddy-a2a setup --relay <wss-url> [--mode desktop|cloud] [--task-id <cloud-session-id>] [--cwd /workspace] [--name <name>], doctor, connection status, targets, auth enroll --relay <wss-url> --agent-id <Agent-ID> (private A2A_PAIR_CODE), auth connect|login|status|logout, platform login|status|logout, start|stop|run, call <target-agent-id> [--message-id <id>] [--context-id <id>] [--mode cloud|desktop] (stdin), outbound <request-id>, task <target-agent-id> <task-id>, adapter task <task-id>, cloud tasks, cloud task <cloud-session-id>, cancel <target-agent-id> <task-id>, release <target-agent-id> <task-id> [recovered-cloud-task-id], resume <target-agent-id> <task-id>, reconcile <target-agent-id> <task-id>, permission <target-agent-id> <task-id> <request-id-as-json> <option-id>');
 } catch (error) { console.error(error.message); process.exitCode = 1; }

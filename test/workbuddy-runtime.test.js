@@ -6,6 +6,7 @@ import { promisify } from 'node:util';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { WebSocketServer } from 'ws';
 import { saveEnrollment } from '../src/connector.js';
 
 const run = promisify(execFile);
@@ -18,25 +19,23 @@ async function waitRead(path) {
   throw new Error('Timed out waiting for state file');
 }
 
-for (const mode of ['desktop', 'cloud']) test(`${mode} setup pairs without an external origin; GUI auth is noninteractive and stop releases locks`, async t => {
+for (const mode of ['desktop', 'cloud']) test(`${mode} setup uses an enrolled identity without an external origin; GUI auth is noninteractive and stop releases locks`, async t => {
   const directory = await mkdtemp(join(tmpdir(), 'workbuddy-runtime-'));
   const env = { ...process.env, A2A_CONNECTOR_CONFIG_DIR: directory };
   let requests = 0;
   const relay = createServer(async (req, res) => {
     res.setHeader('content-type', 'application/json');
-    if (req.url === '/pairing/requests') {
-      requests++;
-      let raw = '';
-      for await (const chunk of req) raw += chunk;
-      assert.equal(JSON.parse(raw).name, 'WorkBuddy Test');
-      res.writeHead(201);
-      res.end(JSON.stringify({ requestId: '1'.repeat(64), agentId: 'workbuddy-test', confirmationCode: '123ABC' }));
-    } else if (req.url === '/pairing/status') res.end(JSON.stringify({ status: 'pending' }));
+    requests++;
+    if (req.url === '/oauth/workbuddy/status') res.end(JSON.stringify({ linked: true }));
     else { res.writeHead(404); res.end('{}'); }
   });
+  const wss = new WebSocketServer({ server: relay });
+  await saveEnrollment(join(directory, 'workbuddy.json'), { agentId: 'workbuddy-test', token: 'agt_workbuddy-test.private' });
   await new Promise(resolve => relay.listen(0, '127.0.0.1', resolve));
   t.after(async () => {
     await run(process.execPath, [cli, 'stop'], { env, timeout: 10000 }).catch(() => {});
+    for (const client of wss.clients) client.terminate();
+    wss.close();
     await new Promise(resolve => relay.close(resolve));
     await rm(directory, { recursive: true, force: true });
   });
@@ -47,15 +46,15 @@ for (const mode of ['desktop', 'cloud']) test(`${mode} setup pairs without an ex
   const savedSettings = JSON.parse(await readFile(join(directory, 'workbuddy-settings.json'), 'utf8'));
   assert.equal(savedSettings.adapter, mode);
   if (mode === 'cloud') assert.equal(savedSettings.cloudTaskId, 'existing');
-  const pending = JSON.parse(await waitRead(join(directory, 'workbuddy.json.pending')));
-  assert.equal(pending.confirmationCode, '123ABC');
+  await waitRead(join(directory, 'workbuddy.json.status.json'));
+  await assert.rejects(readFile(join(directory, 'workbuddy.json.pending')), { code: 'ENOENT' });
   const firstPid = await readFile(join(directory, 'workbuddy.pid'), 'utf8');
   const auth = await run(process.execPath, [cli, 'auth', 'connect'], { env, timeout: 10000 });
-  assert.match(auth.stdout, /http:\/\/127\.0\.0\.1:\d+\/pair/);
+  assert.match(auth.stdout, /账号已授权/);
   assert.equal(await readFile(join(directory, 'workbuddy.pid'), 'utf8'), firstPid);
   assert.equal(requests, 1);
   const status = await run(process.execPath, [cli, 'auth', 'status'], { env });
-  assert.match(status.stdout, /Awaiting approval/);
+  assert.match(status.stdout, /Logged in: workbuddy-test/);
   await assert.rejects(run(process.execPath, [cli, 'start'], { env }), /already running/);
   await run(process.execPath, [cli, 'stop'], { env, timeout: 10000 });
   await assert.rejects(readFile(join(directory, 'workbuddy.pid')), { code: 'ENOENT' });
@@ -67,11 +66,11 @@ for (const mode of ['desktop', 'cloud']) test(`${mode} setup pairs without an ex
   await waitRead(join(directory, 'workbuddy.pid'));
   await assert.rejects(run(process.execPath, [cli, 'start'], { env }), /already running/);
   const foregroundStatus = await run(process.execPath, [cli, 'auth', 'status'], { env });
-  assert.match(foregroundStatus.stdout, /Awaiting approval/);
+  assert.match(foregroundStatus.stdout, /Logged in: workbuddy-test/);
   foreground.kill('SIGTERM');
   assert.equal((await foregroundExit).code, 0, foregroundDiagnostics);
   await assert.rejects(readFile(join(directory, 'workbuddy.pid')), { code: 'ENOENT' });
-  assert.equal(requests, 1, 'foreground restart must reuse the original pending pairing request');
+  assert.equal(requests, 1, 'foreground restart must not enroll or call retired pairing endpoints');
 });
 
 function inputRun(args, text, env) {

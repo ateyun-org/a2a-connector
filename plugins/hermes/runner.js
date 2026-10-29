@@ -5,7 +5,7 @@ import { delimiter, dirname, extname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { setTimeout as delay } from 'node:timers/promises';
-import { loadEnrollment, loadPendingPairing, saveEnrollment } from './vendor/connector/connector.js';
+import { loadEnrollment, saveEnrollment } from './vendor/connector/connector.js';
 import { acquireStateLock, canonicalState, connectorStatus, lockOwner, ownerAlive } from './vendor/connector/state-lock.js';
 
 const root = dirname(fileURLToPath(import.meta.url));
@@ -53,26 +53,17 @@ async function activeRuntime(state) {
 async function status(state) {
   const runtime = await activeRuntime(state);
   const health = await connectorStatus(state);
-  let enrollment, pending;
+  let enrollment;
   try {
     enrollment = await loadEnrollment(state);
     if (typeof enrollment.agentId !== 'string' || typeof enrollment.token !== 'string') throw new Error('Invalid Connector credential identity');
   }
   catch (error) { if (error.code !== 'ENOENT') throw error; }
-  if (!enrollment) {
-    try {
-      pending = await loadPendingPairing(state + '.pending');
-      if (!Number.isFinite(pending.expiresAt)) throw new Error('Invalid pending approval expiration');
-    }
-    catch (error) { if (error.code !== 'ENOENT') throw error; }
-  }
   return { running: Boolean(runtime), pid: runtime?.pid, mode: runtime?.mode, local: runtime?.local,
     controllable: Boolean(runtime?.instanceId), phase: runtime?.phase || 'stopped',
-    paired: Boolean(enrollment?.agentId && enrollment?.token), agentId: enrollment?.agentId || pending?.agentId,
+    paired: Boolean(enrollment?.agentId && enrollment?.token), agentId: enrollment?.agentId,
     tunnelOnline: Boolean(runtime && health.tunnelOnline), lastConnectedAt: health.lastConnectedAt,
-    lastError: health.lastError, diagnostic: health.diagnostic,
-    ...(pending ? { pairing: { status: 'pending', agentId: pending.agentId,
-      confirmationCode: pending.confirmationCode, expiresAt: pending.expiresAt } } : {}) };
+    lastError: health.lastError, diagnostic: health.diagnostic };
 }
 
 async function stopRuntime(state) {
@@ -162,7 +153,7 @@ export async function runHermesConnector(args, { env = process.env } = {}) {
   args = [...args]; args[index + 1] = state;
   if (args.includes('-status')) { console.log(JSON.stringify(await status(state))); return 0; }
   if (args.includes('-stop')) { console.log(JSON.stringify(await stopRuntime(state))); return 0; }
-  const short = args.includes('-request-only') || args.includes('-enroll-only') || args.includes('-status');
+  const short = args.includes('-enroll-only') || args.includes('-status');
   let prepared, child, timer, lock, watcher, runtime;
   const startup = new AbortController();
   let stopped = false;

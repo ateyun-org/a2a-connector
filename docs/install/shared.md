@@ -1,111 +1,60 @@
-# A2A Connector 通用准备、配对与验证
+# A2A Connector 通用准备、接入与验证
 
-适用于 [OpenClaw](openclaw.md)、[Hermes](hermes.md)、[DSH](dsh.md) 和 [WorkBuddy](workbuddy.md)。先完成本页的检查，再执行对应宿主的安装步骤。
-
-## 需要确认的参数
-
-开始前从现有配置或用户处确认：
-
-- **Relay URL**：从企业控制台的接入说明取得，例如 `wss://dsh-relay.chuanbota.com/connect`。旧模式的配对审批页是 `/pair`，不适用于企业票据接入。
-- **本机 A2A origin**：Agent Card 和 A2A HTTP 服务所在的 origin，例如 `http://127.0.0.1:9900`。不要附加路径、查询参数或尾部端点路径。
-- **宿主类型**：OpenClaw、Hermes、DSH 或 WorkBuddy。先用已安装的宿主，不要同时安装多个插件。
-- **本机认证**：若本机 Agent Card/A2A 接口要求 Bearer token，确认 token 已存在于宿主进程环境的哪个变量中；不要把 token 写入命令历史、配置明文或对话。
-- **Agent ID**：企业模式使用控制台显示的 Agent ID，通过安装器 `--expect-agent-id` 核对，不能自行生成。旧模式通常留空，由 Connector 根据 Agent Card 名称生成；仅在部署系统预先引用固定 ID 或迁移身份时配置。重新兑换票据或配对已有身份会轮换凭据，单纯重启应复用状态文件。
-
-不要猜 Relay 地址或本机端口。缺少必需参数时，只向用户询问缺少的值，先不要申请配对。
+适用于 [OpenClaw](openclaw.md)、[Hermes](hermes.md)、[DSH](dsh.md) 和 [WorkBuddy](workbuddy.md)。Relay 仅使用 MySQL 组织授权；所有身份和权限在 `/console` 管理。
 
 ## 安装前检查
 
-1. 确认目标 Agent 已启动，并从 Connector 所在机器访问本机 origin 下的 `/.well-known/agent-card.json`。HTTP 状态应为 200，响应 JSON 应包含非空 `name`。`name` 用于显示；企业模式的 ID 以控制台为准，同机多实例应使用可区分的名称。origin 还须提供 `POST /rpc` A2A v1.0 JSON-RPC 2.0 接口，至少支持文本 `SendMessage` 和 `GetTask`。取消、列举等扩展按接收端实际能力判断；企业 Relay 不开放 `ListTasks`，不能用它验证派单权限。若两个 Agent 自带的 A2A 服务都试图监听 9900，必须先在服务的启动配置中为它们指定不同端口或启用该服务自身的动态绑定；Connector 只连接现有端口，不负责启动或改变该服务。
-2. 确认本机 Agent Card 中的 A2A 接口地址确实可由 Connector 进程访问。若 Agent 还没有本机 A2A HTTP endpoint，先按宿主文档配置 adapter；完成后重新检查，再配对。
-3. 确认 Relay URL 使用 `wss://` 且路径为 `/connect`。`allowInsecure` / `-allow-insecure` 只允许到 Relay 使用 `ws://`，不会改变本机 origin 的 HTTP 配置；生产环境不要启用。
-4. 优先复用已安装的 Connector 和现有配对身份。不要为了重试而重复配对；批准已有 Agent ID 会轮换该 Agent 的凭据。
-5. 只安装与当前宿主对应的插件目录。`vendor/connector` 是随插件分发的 Connector 客户端副本，不要删掉或只拷贝入口文件。各宿主的依赖安装方法见对应文档。
-6. 确认实际运行 Connector 的 Node.js 为 22 或更新版本，包括后台服务的进程环境。
+1. 从控制台取得实际 Relay WSS URL、Agent ID 和身份绑定的一次性票据。不要自行生成 Agent ID，不要索取共享管理员 token。
+2. 本机 A2A origin 必须可用，`/.well-known/agent-card.json` 返回非空 name，并提供支持文本 SendMessage/GetTask 的 A2A 接口。OpenClaw/Hermes 安装器先检测宿主原生 A2A，仅在缺少能力时安装兼容接收服务；DSH 有内置 adapter。WorkBuddy 内置 adapter 先兑换票据、再 setup。Relay 原生 WorkBuddy 接收端请直接使用[控制台托管接入](workbuddy-hosted.md)。
+3. 使用 Node.js 22+。Relay 使用 `wss://.../connect`；`--allow-insecure` 仅用于本地测试。origin 不带 endpoint 路径或查询参数。若需要本机 Bearer token，通过私有环境 `A2A_LOCAL_TOKEN` 提供。
+4. 复用现有凭据和状态路径。每个 Agent、实例只有一个 Connector；重启不重新兑换。不要把凭据或票据写入命令历史、日志、聊天、共享配置或 Git。
 
-## 企业模式票据接入
+## 票据接入
 
-1. 企业所有者或管理员在企业控制台「Agent 管理 → 接入 Agent → Connector」创建或选择身份，生成一次性票据。票据已绑定企业和 Agent，签发就是预先批准接入；用户组负责后续使用权限，不决定接入审批人。
-2. 在目标机器确认本地 A2A 服务及 Agent Card，并通过私有进程环境提供 `A2A_PAIR_CODE`。不要把真实票据放进命令参数、历史、日志、共享配置或 Git。
-3. 使用下方安装入口。将占位符替换为控制台给出的 ID、实际 Relay 地址及本地 Agent Card 信息；`HOST` 为 `workbuddy`、`openclaw`、`hermes` 或 `dsh`：
+企业所有者或管理员在「Agent 管理 → 接入 Agent → Connector」创建或选择身份并签发票据。签发即批准该身份接入，票据绑定企业和 Agent；用户组管理后续使用权限，不选择审批人。
+
+通过私有进程环境提供 `A2A_PAIR_CODE`，将下列占位符替换为控制台信息：
 
 ```bash
 rtk proxy sh scripts/install-connector.sh install --host HOST \
-  --enterprise --expect-agent-id AGENT_ID_FROM_CONSOLE \
+  --expect-agent-id AGENT_ID_FROM_CONSOLE \
   --relay wss://YOUR_RELAY/connect --local http://127.0.0.1:9900 \
   --expect-name 'ACTUAL_AGENT_CARD_NAME'
 ```
 
-安装器通过 `/register` 兑换一次，私密保存凭据后启动隧道，不调用 `/pairing/requests` 或 `/pairing/status`，后台进程不会继承一次性票据。已有匹配身份时直接复用，即使再次传入票据也不重复兑换；已有其他 Agent 的凭据则停止，保持文件不变。服务运行时再次安装不会启动第二个进程。传入 `A2A_PAIR_CODE` 也会选中企业模式，但仍需提供 `--expect-agent-id`；企业模式不使用 `--request-only`。
+HOST 为 workbuddy、openclaw、hermes 或 dsh。安装器验证本机 Card，通过 `/register` 兑换一次、私密保存凭据并启动隧道。匹配的已有凭据直接复用；其他身份的状态拒绝覆盖。后台进程不会继承票据；完成后清除调用环境中的 `A2A_PAIR_CODE`。
 
-同机多实例使用各自的 `--instance` 和 `--expect-name`。OpenClaw/Hermes/DSH 可用 `--state` 指定独立凭据文件，脚本启动的是独立 Connector，不会替你安装宿主插件或 adapter，也不要与宿主已有 Connector 共用同一身份并发运行。WorkBuddy 使用包装 CLI 的固定实例路径；`A2A_CONNECTOR_CONFIG_DIR` 可指定私有状态目录，并由安装器及包装 CLI 一致使用。
+同机多实例使用各自的 `--instance` 与 `--expect-name`。OpenClaw/Hermes/DSH 可用 `--state` 指定独立状态；安装器启动独立 Connector，不安装宿主插件或 adapter，不应与宿主受管理的 Connector 并发共用身份。WorkBuddy 使用其固定实例状态目录，`A2A_CONNECTOR_CONFIG_DIR` 可选择私有目录。
 
-4. 完成后清除调用环境的 `A2A_PAIR_CODE`。使用同样的 `--host`、`--instance`/`--state` 执行 `status` 或 `stop`；再次 `install --enterprise --expect-agent-id ...` 可在不带票据时复用已保存凭据启动。进程运行不等于已连接，仍需核对隧道和实际授权请求。
-5. 返回企业控制台验证连接。在**目标 Agent** 的「谁能访问」（旧版按钮为「授权」）中选择实际调用方，分别授予查看、调用、读取任务等需要的动作。方向为「调用方 → 目标」，不能在调用方行里选目标来代替；个人调用方还需要绑定成员的有效成员/用户组权限。入站连接、上游账号授权和出站调用权限分别验证。
+用相同 host/instance/state 执行 `status` 或 `stop`。再次 install 可不带票据复用凭据。`--local auto --port-start 9900` 按 exact Card name 扫描现有服务；不会改变外部服务端口，也不会把本机 token 发往未经确认的端口。
 
-票据错误、超时或响应丢失时安装器会停止，不自动兑换第二次。先检查本机凭据和可能的私有 `.state-*`，不要直接生成新票据或重复安装。若返回身份与预期不符，已保存的状态保留供核对，隧道不会启动。新票据兑换会轮换凭据并断开旧连接。
+独立 CLI 首次接入：
 
-独立 CLI 仍可通过 `A2A_PAIR_CODE` 与 `-enroll-only` 完成兑换；成功后清除票据环境变量，再使用同一状态文件连接。旧版安装器或宿主配对工具返回 `410 organization_ticket_required` 时应更新并使用企业入口，不要继续等待 `/pair` 审批。
+```bash
+rtk proxy node src/cli.js -relay wss://YOUR_RELAY/connect \
+  -agent-id AGENT_ID_FROM_CONSOLE -state /private/path/agent.json -enroll-only
+```
 
-## 旧模式配对与授权边界
+成功后清除票据环境变量，使用相同 state、relay 和实际 local origin 启动。`-auto-pair`、`-request-only`、`-pair-code` 已移除；启动缺少凭据直接报告 enrollment_required，没有全局配对申请和审批轮询。
 
-以下申请和审批流程仅适用于 Redis-only 的旧 Relay。
+## 凭据与恢复
 
-配对分为五步；审批页出现 Agent **离线记录**，并不意味着本机已收到凭据或隧道已连接。
+凭据文件0600、目录0700。原子 `<state>.lock` 保存无密钥的进程身份；确认已退出的本机旧锁自动回收，跨主机/损坏/无法确认所有者的锁拒绝自动删除。进程出生标识识别 PID 复用。状态工具无需打印凭据。
 
-| 阶段 | 可核对的现象 | 下一步 |
-| --- | --- | --- |
-| 申请 | `POST /pairing/requests` 返回 requestId、Agent ID、六位确认码；本机写 `.pending` | 管理员核对并批准 |
-| 批准 | Relay 建立/更新 Agent 记录，页面可能显示离线 | Connector 通过 `POST /pairing/status` 获取兑换码 |
-| 兑换 | Connector 以 `pair_` 码请求 `POST /register`，成功返回 Agent 专属 token | 将凭据写入私有状态文件 |
-| 落盘 | 凭据状态文件存在，权限 `0600`；`.pending` 清理 | 建立 WSS 隧道 |
-| 在线 | Relay 显示 Agent 在线，并有到 Relay 的连接 | 再测试实际 A2A 请求 |
+兑换401、超时或响应丢失会停止，不能自动重复兑换或新建身份。先停下使用同一状态的进程，检查是否已有有效凭据/隧道和私有 `.state-*`。临时文件可能含完整凭据，不删除、贴出或覆盖现有文件。仅在确认身份匹配、目标状态不存在、没有并发写入后由管理员恢复。确认没有可用凭据后才在控制台签发新票据；兑换新票据会轮换旧凭据并断开旧隧道。
 
-| 代码 | 用途 | 谁应接触 |
-| --- | --- | --- |
-| 六位 `confirmationCode`，如 `0E1C5C` | 审批页与本机显示的信息核对；不是凭据 | 用户和 Relay 管理员 |
-| `pair_` + 48 位十六进制码 | 从 `/pairing/status` 的 approved 响应取得，供 Connector **一次性**兑换 token | 仅 Connector；不要发到聊天或交给管理员 |
-
-Connector 首次启动后会显示审批 URL、Agent ID 和六位确认码。把这三项交给用户/Relay 管理员；管理员应以 **Agent ID + 确认码** 为准，不能只看显示名（同名 Agent 可有多个）。**不要索取 Relay 管理员 token，也不要代替管理员批准。**等待审批的请求保存十分钟；批准后兑换码同样有独立的十分钟有效期。普通自动流程会轮询、兑换、写入凭据并连接，用户无需手动取得 `pair_` 码。
-
-**同一状态文件只允许一个 Connector 进程轮询和兑换。**CLI 会将状态路径解析为规范绝对路径，再原子创建 `<state>.lock` 目录；第二个运行者会在网络操作前以 `state_locked` 退出。锁内 `owner.json` 保存 PID、主机名、进程出生标识、启动时间和实例 ID，不含凭据。正常退出自动释放；启动时会自动回收已确认进程退出的本机旧锁。新版锁还通过进程出生标识识别 PID 复用；跨主机、损坏、无所有者或无法确认身份的锁仍拒绝自动回收。恢复通过独占的回收锁和原子隔离避免并发启动误删新实例的锁，配对凭据保留。`-request-only` 可只读查看已有凭据/申请；创建新申请或兑换仍需持锁。旧版 CLI 没有此保护，升级时先停止旧进程。凭据文件属于敏感数据，不能打印、复制到不安全位置或提交。正常等待和断线重连时保留状态文件；只有确认进入下述故障恢复分支、且已停止所有使用该状态文件的进程后，才归档失效 `.pending`。
-
-DSH、OpenClaw 的受管理 Connector 与 Hermes runner 内的 CLI 在异常退出后按 1、2、4 秒逐步退避重启，最长间隔 30 秒；主动停止会取消重启。配对结果不确定、配对冲突或配置错误以退出码 78 停止自动重启，防止重复兑换一次性配对码；锁竞争使用退出码 75。DSH、OpenClaw 状态工具的 `recentLogs` 是诊断历史，`logsAreHistorical` 会明确标记，`logRun` 给出运行 ID、PID、起止时间及最后日志时间，每次启动会清空上一轮日志；`restartScheduled` 表示正在等待重启。当前本机入站状态以 `running`、`tunnelOnline` 为准，远端状态另查 `a2a_agents`。
-
-### 兑换失败、重复申请与安全恢复
-
-| 现象 | 含义与处理 |
-| --- | --- |
-| `401` / `invalid_pairing_code` | 兑换码无效、已过期或已被另一个进程消耗；Relay 不区分这些原因。先检查是否已有成功的凭据/隧道，勿直接再兑换同一码。当前自动 CLI 会停止并保留 `.pending`，供安全恢复。 |
-| `state_locked` | 同一规范状态路径已有运行/兑换者，或锁的所有权无法安全确认。已确认失效的本机锁会在启动时自动恢复；其余情况检查 `<state>.lock/owner.json` 和实际进程，确认停止后才移除遗留锁；不要重配对。 |
-| `409` / `pairing_already_pending` | Relay 已有同 Agent ID 的待审批请求；当前自动 CLI 会停止并提示检查现有请求与进程，不会无限重试。 |
-| 审批页有离线记录 | 批准只创建/更新记录；还要完成兑换、落盘和连接。按下文检查本机凭据是否存在、是否有连接。 |
-
-恢复顺序：
-
-1. 停止使用**同一状态路径**的全部 Connector 进程；先执行 `node src/cli.js -state /absolute/path/to/state.json -status`（插件包可使用 `vendor/connector/cli.js`），核对状态锁中的 PID；再用 `pgrep -fl '^a2a-[0-9a-f]{8}-'` 核对当前 CLI。旧版未改名进程还应按完整 argv 检查。只结束已核实路径和命令行的进程。不要在旧进程仍可能写文件时移动状态。
-2. 先看状态文件**是否存在及权限**，不要输出正文。若凭据文件已存在，优先用原有身份启动单个 Connector 并验证连接，不要重新配对。若兑换返回成功后落盘被中断，状态目录可能留下 `.state-*` 临时文件；它可能包含完整 token。不要删除或贴出内容。只有在确认它包含完整 `agentId` 与 `token`、其身份匹配本次配对、目标凭据文件不存在且没有并发进程时，才在私有目录内以 `0600` 权限将它转正为目标凭据文件；否则保留供授权管理员排查。
-3. 若确认没有可用凭据，且 `.pending` 指向已消耗/失效的请求，**先将它移到同一私有目录的备份名**（保留权限），再启动**一个** Connector 申请新请求。无固定 `-agent-id` 时会生成新 ID；若必须沿用旧 ID，先确认 Relay 没有该 ID 的活跃待审批请求，且重新批准会轮换旧凭据。当前自动 CLI 在进程内可能持续复用旧 ID；停止并重新启动后再核对实际显示的 Agent ID/确认码。不要再次批准旧请求。
-4. 管理员只批准新的 **Agent ID + 六位确认码** 组合。确认新连接在线后，按管理员流程清理遗留的离线记录；不要将页面上同名记录当成同一身份。
-
-不要将 `.state-*` 直接覆盖已有凭据；文件名不能证明其内容属于哪次申请。原生 CLI 的 `-pair-code` 或环境变量 `A2A_PAIR_CODE` 配合 `-enroll-only` 可在已有 `pair_` 码、**确认没有另一个兑换者**时执行一次确定性兑换；成功后再单独启动隧道。它不会等待审批或自动重试，六位确认码不能用于此参数。兑换码同样是敏感的一次性凭据，避免把它写进命令历史。各宿主的状态路径与操作命令见对应文档。
+受管理进程退避重连，配置/凭据/兑换结果不明以78退出并停止自动重试；锁竞争用75。recentLogs 是历史诊断，当前入站健康以 running/tunnelOnline 为准。不要删除凭据来修复连接问题。
 
 ## 按顺序验证与排错
 
-按依赖顺序检查，前一项未通过时先修复再继续：
+1. 检查实际 Node 路径及22+版本、宿主插件加载、本机 Card/RPC 和本机认证。
+2. 核对已保存 Agent ID 与控制台完全一致；相同名称不能证明相同身份。
+3. 用 `a2a_connector_status` 或 `node src/cli.js -state /private/path/agent.json -status` 检查 running、paired、tunnelOnline 和最近错误；凭据存在不代表隧道在线。控制台刷新连接快照。WorkBuddy 托管接收端就绪不代表电脑在线。
+4. 在**目标 Agent** 的「谁能访问」中选实际调用方并授予需要的动作，方向为调用方 → 目标。个人调用方还需绑定成员的有效成员/用户组权限交集；凭据 call scope、Agent 启用/canCall/canReceive 也须满足。
+5. 只有用户授权真实派单时才发任务。只读检查不自动创建测试任务。报告实际 caller/target ID、操作和结果，不凭卡片200推断所有调用权限。
 
-1. **运行时**：确认 Connector 实际使用的 Node.js 为 22+，包括服务管理器的进程环境。
-2. **本机 Agent**：从 Connector 主机请求 `<local origin>/.well-known/agent-card.json`，确认返回 200 且 JSON 有非空 `name`；再核对本机认证变量可由该进程读取。
-3. **宿主加载**：确认所选宿主插件已启用，且其配对工具或 CLI 命令可调用；具体命令见对应宿主文档。
-4. **配对申请**：取得当前请求的 URL、Agent ID、六位确认码；过期后检查或创建新请求，不要在正常等待时删除状态文件。
-5. **批准与连线**：管理员核对 Agent ID 和确认码并批准后，核对本机已保存凭据。`status: paired` 或 `Logged in` 不能单独证明 Relay 连接仍活跃。先用 `a2a_connector_status`（DSH/OpenClaw）或 `node src/cli.js -state /absolute/path/to/state.json -status` 查看 `running`、`tunnelOnline`、最近连接时间与错误，再用 `pgrep -fl '^a2a-[0-9a-f]{8}-'` 查看当前 CLI；进程名为 `a2a-<sha256(规范状态路径)[0:8]>-<文件名标签>`，改名后不能靠匹配 `cli.js` 找到它。锁中的 PID 和路径比进程名更准确；`ps -p <PID> -o pid=,args=` 在某些沙箱对活进程可能返回空，不要单凭它判断。用 `lsof -nP -a -p <PID> -iTCP -sTCP:ESTABLISHED` 确认该进程有到**预期 Relay 地址**的连接，在审批页确认对应 Agent 在线，最后发一个授权的实际 A2A 请求验证转发。连接问题先检查 WSS 地址、本机 origin、认证变量和 Node 路径；不要直接重配对。
+## 通道与任务边界
 
-## 通道边界
+Relay 只转发已知 A2A 操作并检查动作、任务和上下文归属。ListTasks 返回501，不是缺少 invoke 的证据；GetTask 需要 task_read 和当前调用方创建的 taskId。详细格式和收据恢复见[Relay HTTP 协议](../relay-http.md)。保留稳定 messageId、调用方/目标 ID、Relay request ID、taskId/contextId；超时不重新派发，先读原收据或任务，404也不证明未执行。
 
-本 Connector 接收 Relay 转发到本机 A2A origin 的入站流量。企业 Relay 按已知 A2A 操作检查动作权限及任务/上下文归属，不能将一次 Agent 授权理解为任意 HTTP 路由访问权限。旧版 Relay 的通用代理范围更宽；Connector 本身不代替本机路由权限检查。把 origin 限定在 `127.0.0.1`，并由本机 A2A 服务执行身份、方法和路径检查。若本机接口启用 Bearer 认证，使用足够长的随机 token 并通过进程环境传给 Connector。Connector 默认请求/响应正文上限为 16 MiB；`-max-request-body <bytes>` 可缩小入站请求限额。DSH 内置 adapter 与其隧道默认统一为 1 MiB（`maxRequestBodyBytes`），当前缓冲整个正文，不支持 SSE 流式传输；普通断线会自动重连。若主机设置了 HTTP 代理，仍需从 Connector 所在进程环境实测本机 `127.0.0.1` origin 可达；当前 Connector 没有显式的代理或 `NO_PROXY` 配置逻辑。
-
-远程调用及收据恢复见 [Relay HTTP 协议](../relay-http.md)。必须保留稳定 messageId、实际 caller/target ID、Relay 收据 ID 及返回的任务 ID。企业模式支持收据；单次 404、GetTask 403 或 ListTasks 不支持不能推出「没有调用权限」或「任务没有执行」。只读检查不自动发送测试任务。
-
-## 完成检查
-
-按上述 1 到 5 的顺序完成检查。向用户报告当前状态是“等待管理员批准”还是“已配对并运行”，不要展示任何 token。
+将本机 origin 绑定 loopback 并保护 Card/RPC。Connector 默认正文上限16MiB；DSH内置 adapter/隧道统一1MiB。当前缓冲整个正文，不支持SSE转发。普通断线重连复用凭据，不重复接入。

@@ -1,8 +1,8 @@
 # OpenClaw 安装 A2A Connector
 
-开始前阅读[通用准备、配对与验证](shared.md)。Connector 默认优先使用 OpenClaw 的官方 A2A；宿主缺少 A2A 时，安装并启动本项目的兼容服务。只运行一个 Connector 连接同一个 Agent。
+开始前阅读[通用准备、接入与验证](shared.md)。Connector 默认优先使用 OpenClaw 的官方 A2A；宿主缺少 A2A 时，安装并启动本项目的兼容服务。只运行一个 Connector 连接同一个 Agent。
 
-企业 Relay 使用[企业票据接入](shared.md#企业模式票据接入)，旧版配对工具不能代替企业票据。独立安装器只连接已有 origin，不安装本页的宿主插件或 skill；需要宿主工具和调用说明时，应安装/升级本插件，并复用已配置的身份和状态路径，避免再启动同身份的第二个 Connector。
+企业 Relay 使用[企业票据接入](shared.md#票据接入)，旧版配对工具不能代替企业票据。独立安装器只连接已有 origin，不安装本页的宿主插件或 skill；需要宿主工具和调用说明时，应安装/升级本插件，并复用已配置的身份和状态路径，避免再启动同身份的第二个 Connector。
 
 ## 远程调用 skill
 
@@ -111,7 +111,7 @@ openclaw plugins enable a2a-connector
 openclaw plugins inspect a2a-connector --runtime --json
 ```
 
-进入目标 Agent 实际调用 `a2a_connector_pair`。安装/启用后的生效方式取决于宿主版本；新版支持插件热加载，旧版可能需要重启 Gateway。`inspect --runtime` 在 CLI 进程内载入插件，不单独证明运行中的 Gateway 已加载。检查 Gateway 日志中的 `A2A Connector: native/existing/compat A2A at ...`，再按[通用配对与验证](shared.md#配对与授权边界)核对审批、凭据和真实任务。
+进入目标 Agent 实际调用 `a2a_connector_pair`。安装/启用后的生效方式取决于宿主版本；新版支持插件热加载，旧版可能需要重启 Gateway。`inspect --runtime` 在 CLI 进程内载入插件，不单独证明运行中的 Gateway 已加载。检查 Gateway 日志中的 `A2A Connector: native/existing/compat A2A at ...`，再按[通用接入与验证](shared.md#票据接入)完成控制台票据接入并核对凭据、隧道和真实任务。
 
 兼容实现提供 A2A 1.0 JSON-RPC `SendMessage`、`GetTask`、Agent Card、文本结果 artifact 和 `contextId` 多轮会话。默认异步返回任务；客户端可轮询，或设置 `configuration.blocking: true` 等待结果。每个 context 对应独立 OpenClaw session，同 context 的并发请求被拒绝；带同 context/messageId 的重试复用原任务。任务/会话记录保存在内存，闲置一小时清理，重启后失效。CLI 默认任务超时十分钟，可用 `taskTimeoutMs` 调整。
 

@@ -197,7 +197,6 @@ test('deduplicates response parts when status message and artifacts contain iden
 
 test('Relay authentication diagnostics survive discovery without leaking response bodies', async () => {
   for (const [body, expected] of [
-    [{ error: 'not_controller', agentId: 'local-dsh', token: 'TOP_SECRET' }, /not_controller.*local-dsh.*pair\/list/],
     [{ error: 'unauthorized', message: 'TOP_SECRET' }, /unauthorized.*401/],
     ['TOP_SECRET', /unauthorized.*401/],
   ]) {
@@ -222,12 +221,12 @@ test('Relay target grant denial identifies the paired controller without leaking
   assert.doesNotMatch(listed.diagnostic, /TOP_SECRET/);
 });
 
-test('Relay not_controller stays readable when a controller is revoked during task polling', async () => {
+test('Relay unauthorized stays readable when a controller is revoked during task polling', async () => {
   let revoked = false;
   const a2a = new A2AOrchestrator({ ...config, connectorState: join(directory, 'absent.json'),
     agents: [{ id: 'coder', card: 'https://relay.example/agents/coder/.well-known/agent-card.json' }] }, {
     fetchImpl: async () => revoked
-      ? new Response(JSON.stringify({ error: 'not_controller', agentId: 'local-dsh' }), { status: 401 })
+      ? new Response(JSON.stringify({ error: 'unauthorized', agentId: 'local-dsh' }), { status: 401 })
       : new Response(JSON.stringify({ name: 'Coder', supportedInterfaces: [{ url: 'https://relay.example/agents/coder/rpc',
         protocolBinding: 'JSONRPC', protocolVersion: '1.0' }] }), { headers: { 'content-type': 'application/json' } }),
   });
@@ -237,7 +236,7 @@ test('Relay not_controller stays readable when a controller is revoked during ta
   revoked = true;
   const outcome = await a2a.waitForResult(conversation, { status: { state: 'TASK_STATE_WORKING' } });
   assert.equal(outcome.stopReason, 'error');
-  assert.match(outcome.diagnostic, /not_controller.*pair\/list/);
+  assert.match(outcome.diagnostic, /unauthorized.*401/);
 });
 
 test('a2a_send returns inline completed output once without duplicate artifact text', async () => {

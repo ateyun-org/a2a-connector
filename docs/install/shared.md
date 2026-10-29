@@ -6,11 +6,11 @@
 
 开始前从现有配置或用户处确认：
 
-- **Relay URL**：`wss://dsh-relay.chuanbota.com/connect`。配对审批页是 `https://dsh-relay.chuanbota.com/pair`。
+- **Relay URL**：从企业控制台的接入说明取得，例如 `wss://dsh-relay.chuanbota.com/connect`。旧模式的配对审批页是 `/pair`，不适用于企业票据接入。
 - **本机 A2A origin**：Agent Card 和 A2A HTTP 服务所在的 origin，例如 `http://127.0.0.1:9900`。不要附加路径、查询参数或尾部端点路径。
 - **宿主类型**：OpenClaw、Hermes、DSH 或 WorkBuddy。先用已安装的宿主，不要同时安装多个插件。
 - **本机认证**：若本机 Agent Card/A2A 接口要求 Bearer token，确认 token 已存在于宿主进程环境的哪个变量中；不要把 token 写入命令历史、配置明文或对话。
-- **Agent ID**：通常留空。Connector 首次配对时会根据 Agent Card 名称生成 ID，并保存在状态文件里；单纯重启不需要固定 ID。仅在部署系统要预先引用固定 ID 或迁移身份时配置，具体入口见所选宿主文档。复用已有 ID 重新配对会轮换它的凭据。
+- **Agent ID**：企业模式使用控制台显示的 Agent ID，通过安装器 `--expect-agent-id` 核对，不能自行生成。旧模式通常留空，由 Connector 根据 Agent Card 名称生成；仅在部署系统预先引用固定 ID 或迁移身份时配置。重新兑换票据或配对已有身份会轮换凭据，单纯重启应复用状态文件。
 
 不要猜 Relay 地址或本机端口。缺少必需参数时，只向用户询问缺少的值，先不要申请配对。
 
@@ -23,7 +23,33 @@
 5. 只安装与当前宿主对应的插件目录。`vendor/connector` 是随插件分发的 Connector 客户端副本，不要删掉或只拷贝入口文件。各宿主的依赖安装方法见对应文档。
 6. 确认实际运行 Connector 的 Node.js 为 22 或更新版本，包括后台服务的进程环境。
 
-## 配对与授权边界
+## 企业模式票据接入
+
+1. 企业所有者或管理员在企业控制台「Agent 管理 → 接入 Agent → Connector」创建或选择身份，生成一次性票据。票据已绑定企业和 Agent，签发就是预先批准接入；用户组负责后续使用权限，不决定接入审批人。
+2. 在目标机器确认本地 A2A 服务及 Agent Card，并通过私有进程环境提供 `A2A_PAIR_CODE`。不要把真实票据放进命令参数、历史、日志、共享配置或 Git。
+3. 使用下方安装入口。将占位符替换为控制台给出的 ID、实际 Relay 地址及本地 Agent Card 信息；`HOST` 为 `workbuddy`、`openclaw`、`hermes` 或 `dsh`：
+
+```bash
+rtk proxy sh scripts/install-connector.sh install --host HOST \
+  --enterprise --expect-agent-id AGENT_ID_FROM_CONSOLE \
+  --relay wss://YOUR_RELAY/connect --local http://127.0.0.1:9900 \
+  --expect-name 'ACTUAL_AGENT_CARD_NAME'
+```
+
+安装器通过 `/register` 兑换一次，私密保存凭据后启动隧道，不调用 `/pairing/requests` 或 `/pairing/status`，后台进程不会继承一次性票据。已有匹配身份时直接复用，即使再次传入票据也不重复兑换；已有其他 Agent 的凭据则停止，保持文件不变。服务运行时再次安装不会启动第二个进程。传入 `A2A_PAIR_CODE` 也会选中企业模式，但仍需提供 `--expect-agent-id`；企业模式不使用 `--request-only`。
+
+同机多实例使用各自的 `--instance` 和 `--expect-name`。OpenClaw/Hermes/DSH 可用 `--state` 指定独立凭据文件，脚本启动的是独立 Connector，不会替你安装宿主插件或 adapter，也不要与宿主已有 Connector 共用同一身份并发运行。WorkBuddy 使用包装 CLI 的固定实例路径；`A2A_CONNECTOR_CONFIG_DIR` 可指定私有状态目录，并由安装器及包装 CLI 一致使用。
+
+4. 完成后清除调用环境的 `A2A_PAIR_CODE`。使用同样的 `--host`、`--instance`/`--state` 执行 `status` 或 `stop`；再次 `install --enterprise --expect-agent-id ...` 可在不带票据时复用已保存凭据启动。进程运行不等于已连接，仍需核对隧道和实际授权请求。
+5. 返回企业控制台验证连接，并给目标分配成员、用户组及必要的机器调用权限。
+
+票据错误、超时或响应丢失时安装器会停止，不自动兑换第二次。先检查本机凭据和可能的私有 `.state-*`，不要直接生成新票据或重复安装。若返回身份与预期不符，已保存的状态保留供核对，隧道不会启动。新票据兑换会轮换凭据并断开旧连接。
+
+独立 CLI 仍可通过 `A2A_PAIR_CODE` 与 `-enroll-only` 完成兑换；成功后清除票据环境变量，再使用同一状态文件连接。旧版安装器或宿主配对工具返回 `410 organization_ticket_required` 时应更新并使用企业入口，不要继续等待 `/pair` 审批。
+
+## 旧模式配对与授权边界
+
+以下申请和审批流程仅适用于 Redis-only 的旧 Relay。
 
 配对分为五步；审批页出现 Agent **离线记录**，并不意味着本机已收到凭据或隧道已连接。
 

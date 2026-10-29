@@ -14,12 +14,17 @@ STATE=
 EXPECT_NAME=
 PORT_START=9900
 REQUEST_ONLY=0
+ENTERPRISE=0
+EXPECT_AGENT_ID=
+# Only the redemption process should inherit the one-time ticket.
+SETUP_TICKET=${A2A_PAIR_CODE:-}
+unset A2A_PAIR_CODE
 CUSTOM_STATE=0
 ALLOW_INSECURE=0
 
 usage() {
   cat <<'EOF'
-Usage: sh scripts/install-connector.sh install --host HOST --relay WSS_URL --local HTTP_ORIGIN [--instance NAME] [--expect-name CARD_NAME] [--state FILE] [--request-only]
+Usage: sh scripts/install-connector.sh install --host HOST --relay WSS_URL --local HTTP_ORIGIN [--instance NAME] [--expect-name CARD_NAME] [--state FILE] [--enterprise --expect-agent-id AGENT_ID] [--request-only]
        sh scripts/install-connector.sh status  --host HOST [--instance NAME] [--state FILE]
        sh scripts/install-connector.sh stop    --host HOST [--instance NAME] [--state FILE]
        sh scripts/install-connector.sh repair  --host HOST --relay WSS_URL --local HTTP_ORIGIN [--instance NAME] [--expect-name CARD_NAME] [--state FILE]
@@ -31,6 +36,12 @@ Connector state; their host plugin or A2A adapter setup is separate.
 Export A2A_LOCAL_TOKEN before install/repair when the local origin requires it.
 The script never persists or prints that token. Approval remains with the Relay
 administrator. status shows local progress; verify online state in the Relay UI.
+Enterprise Relay: use --enterprise --expect-agent-id with the Agent ID from the
+organization console. For first enrollment, supply its ticket privately through
+A2A_PAIR_CODE. The ticket is redeemed once, saved privately, then removed from the
+child environment before starting the tunnel. Existing matching credentials are
+reused without redemption. No legacy pairing request or approval polling is made.
+A2A_PAIR_CODE also selects enterprise mode; --request-only is for legacy pairing.
 Use --instance for separate state/PID/log/process names. --local auto scans loopback
 ports from --port-start (default 9900) for an already-running Agent Card whose
 name exactly matches --expect-name. It does not change the Agent server's port.
@@ -52,7 +63,7 @@ esac
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --host|--instance|--relay|--local|--state|--expect-name|--port-start)
+    --host|--instance|--relay|--local|--state|--expect-name|--port-start|--expect-agent-id)
       [ "$#" -ge 2 ] || fail "$1 缺少参数"
       case "$1" in
         --host) HOST=$2 ;;
@@ -61,14 +72,28 @@ while [ "$#" -gt 0 ]; do
         --local) LOCAL=$2 ;;
         --state) STATE=$2; CUSTOM_STATE=1 ;;
         --expect-name) EXPECT_NAME=$2 ;;
+        --expect-agent-id) EXPECT_AGENT_ID=$2 ;;
         --port-start) PORT_START=$2 ;;
       esac
       shift 2 ;;
     --request-only) REQUEST_ONLY=1; shift ;;
+    --enterprise) ENTERPRISE=1; shift ;;
     --allow-insecure) ALLOW_INSECURE=1; shift ;;
     *) fail "未知参数：$1" ;;
   esac
 done
+
+[ -z "$SETUP_TICKET" ] || ENTERPRISE=1
+if [ "$ENTERPRISE" -eq 1 ] && { [ "$ACTION" = install ] || [ "$ACTION" = repair ]; }; then
+  [ "$REQUEST_ONLY" -eq 0 ] || fail '企业票据接入不使用 --request-only；使用 status 检查已有凭据'
+  [ -n "$EXPECT_AGENT_ID" ] || fail '企业票据接入需要 --expect-agent-id，值为控制台显示的 Agent ID'
+  node - "$EXPECT_AGENT_ID" <<'NODE' || fail '--expect-agent-id 格式无效'
+if (!/^[A-Za-z0-9_-]{1,64}$/.test(process.argv[2])) process.exit(1);
+NODE
+  if [ -n "$SETUP_TICKET" ]; then
+    A2A_PAIR_CODE="$SETUP_TICKET" node -e 'if (!/^pair_[0-9a-f]{48}$/.test(process.env.A2A_PAIR_CODE)) process.exit(1)' || fail 'A2A_PAIR_CODE 必须是控制台签发的完整企业接入票据'
+  fi
+fi
 
 case "$HOST" in workbuddy|openclaw|hermes|dsh) ;; *) fail '使用 --host 指定 workbuddy、openclaw、hermes 或 dsh' ;; esac
 case "$INSTANCE" in
@@ -87,12 +112,13 @@ NODE_MAJOR=$(node -p 'Number(process.versions.node.split(".")[0])')
 [ -n "${HOME:-}" ] || fail 'HOME 未设置'
 
 if [ -z "$STATE" ]; then
+  STATE_ROOT=${A2A_CONNECTOR_CONFIG_DIR:-"$HOME/.config/a2a-connector"}
   if [ "$HOST" = workbuddy ]; then
-    if [ "$INSTANCE" = default ]; then STATE="$HOME/.config/a2a-connector/workbuddy.json"
-    else STATE="$HOME/.config/a2a-connector/workbuddy-$INSTANCE.json"; fi
+    if [ "$INSTANCE" = default ]; then STATE="$STATE_ROOT/workbuddy.json"
+    else STATE="$STATE_ROOT/workbuddy-$INSTANCE.json"; fi
   else
-    if [ "$INSTANCE" = default ]; then STATE="$HOME/.config/a2a-connector/standalone-$HOST.json"
-    else STATE="$HOME/.config/a2a-connector/standalone-$HOST-$INSTANCE.json"; fi
+    if [ "$INSTANCE" = default ]; then STATE="$STATE_ROOT/standalone-$HOST.json"
+    else STATE="$STATE_ROOT/standalone-$HOST-$INSTANCE.json"; fi
   fi
 fi
 case "$STATE" in /*) ;; *) fail '--state 必须是绝对路径' ;; esac
@@ -107,7 +133,10 @@ NODE
 if [ "$ACTION" = install ] || [ "$ACTION" = repair ]; then
   LOCK="$STATE.setup.lock"
   mkdir "$LOCK" 2>/dev/null || fail "已有安装/恢复操作在进行：$LOCK"
-  trap 'rmdir "$LOCK" 2>/dev/null || true' EXIT HUP INT TERM
+  trap 'SETUP_EXIT=$?; rmdir "$LOCK" 2>/dev/null || true; exit "$SETUP_EXIT"' EXIT
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
 fi
 if [ "$HOST" = workbuddy ]; then
   export A2A_CONNECTOR_INSTANCE="$INSTANCE"
@@ -261,6 +290,18 @@ if [ "$ACTION" = status ]; then show_status; exit 0; fi
 if [ "$ACTION" = stop ]; then stop_runner; exit 0; fi
 
 [ -n "$RELAY" ] && [ -n "$LOCAL" ] || fail 'install/repair 需要 --relay 和 --local'
+if [ "$ENTERPRISE" -eq 1 ]; then
+  INFO=$(read_state) || fail '状态文件无效，未执行企业接入'
+  case "$INFO" in
+    paired\|*)
+      SAVED_ID=${INFO#*|}; SAVED_ID=${SAVED_ID%%|*}
+      [ "$SAVED_ID" = "$EXPECT_AGENT_ID" ] || fail '已有凭据属于其他 Agent；请核对 --state/--instance 与控制台身份，未兑换票据或覆盖凭据'
+      if [ -n "$SETUP_TICKET" ]; then note '已有匹配的机器凭据；复用现有身份，未兑换传入票据。'; fi
+      unset SETUP_TICKET
+      ;;
+    *) [ -n "$SETUP_TICKET" ] || fail '企业接入尚无机器凭据；请在所选企业的控制台生成票据，通过私有环境变量 A2A_PAIR_CODE 提供' ;;
+  esac
+fi
 AUTO_LOCAL=0
 if [ "$LOCAL" = auto ]; then AUTO_LOCAL=1; fi
 LOCAL=$(node --input-type=module - "$RELAY" "$LOCAL" "$ALLOW_INSECURE" "$EXPECT_NAME" "$PORT_START" <<'NODE'
@@ -369,9 +410,22 @@ if (fs.existsSync(file)) {
 NODE
 fi
 
-note '检查或复用配对请求…'
 set -- "$CLI" -relay "$RELAY" -local "$LOCAL" -state "$STATE"
 if [ "$ALLOW_INSECURE" -eq 1 ]; then set -- "$@" -allow-insecure; fi
+if [ "$ENTERPRISE" -eq 1 ]; then
+  if [ -n "${SETUP_TICKET:-}" ]; then
+    note '兑换企业接入票据并保存机器凭据…'
+    if ! A2A_PAIR_CODE="$SETUP_TICKET" node "$@" -enroll-only; then
+      unset SETUP_TICKET
+      fail '企业票据兑换未完成或结果不明；未启动 Connector。先检查本机凭据及私有 .state-*，不要自动重试兑换或生成新票据'
+    fi
+    unset SETUP_TICKET
+  fi
+  INFO=$(read_state) || fail '无法确认已保存的企业机器凭据；未启动 Connector'
+  [ "$INFO" = "paired|$EXPECT_AGENT_ID|" ] || fail '返回的机器身份与 --expect-agent-id 不符；已保存的状态保留供核对，未启动或重新兑换'
+  note "企业接入身份已确认：${EXPECT_AGENT_ID}；无需旧版配对审批。"
+else
+note '检查或复用配对请求…'
 PAIRING=$(node "$@" -request-only) || fail '配对申请失败；检查 Relay 与现有 pending，未启动新进程'
 node - "$PAIRING" <<'NODE'
 const value = JSON.parse(process.argv[2]);
@@ -383,17 +437,23 @@ if [ "$REQUEST_ONLY" -eq 1 ]; then
   note '仅申请/检查模式：未启动 Connector。'
   exit 0
 fi
+fi
 
 if [ "$HOST" = workbuddy ]; then
   node "$WB_CLI" start
 else
   : > "$LOG_FILE"
   chmod 600 "$LOG_FILE"
-  nohup node "$@" -auto-pair >> "$LOG_FILE" 2>&1 </dev/null &
+  if [ "$ENTERPRISE" -eq 0 ]; then set -- "$@" -auto-pair; fi
+  nohup node "$@" >> "$LOG_FILE" 2>&1 </dev/null &
   PID=$!
   printf '%s\n' "$PID" > "$PID_FILE"
   chmod 600 "$PID_FILE"
 fi
 sleep 1
 live_pid || fail "Connector 启动后退出；检查私有日志 ${LOG_FILE}，不要直接贴出凭据"
-note "Connector 已启动（PID ${PID}）。审批后检查 status、Relay 在线状态，并以授权调用者测试目标 Agent 的真实任务。"
+if [ "$ENTERPRISE" -eq 1 ]; then
+  note "Connector 已启动（PID ${PID}）。已使用企业机器凭据；检查 status、Relay 连接状态，再在企业控制台分配成员、用户组和必要的机器调用权限。"
+else
+  note "Connector 已启动（PID ${PID}）。审批后检查 status、Relay 在线状态，并以授权调用者测试目标 Agent 的真实任务。"
+fi

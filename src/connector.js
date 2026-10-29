@@ -66,6 +66,7 @@ export async function requestPairing({ relay, agentId, name, allowInsecure = fal
   const url = relayHTTPURL(relay, '/pairing/requests', allowInsecure);
   const response = await fetch(url, { method: 'POST', redirect: 'manual', signal: boundedSignal(signal, 15000),
     headers: { 'content-type': 'application/json' }, body: JSON.stringify({ agentId, name }) });
+  if (response.status === 410) throw new Error('organization_ticket_required: enterprise Relay requires a console-issued ticket; install with --enterprise --expect-agent-id and private A2A_PAIR_CODE instead of legacy pairing');
   if (response.status !== 201) throw new Error(`pairing request status ${response.status}`);
   const request = await response.json();
   if (!/^[0-9a-f]{64}$/.test(request.requestId || '') || !/^[0-9A-F]{6}$/.test(request.confirmationCode || '')) {
@@ -80,6 +81,7 @@ export async function pairingStatus({ relay, requestId, allowInsecure = false, s
   const response = await fetch(url, { method: 'POST', redirect: 'manual', signal: boundedSignal(signal, 15000),
     headers: { 'content-type': 'application/json' }, body: JSON.stringify({ requestId }) });
   if (response.status === 404) return { status: 'expired' };
+  if (response.status === 410) throw new Error('organization_ticket_required: legacy pairing is unavailable on enterprise Relay; obtain a ticket from the organization console instead of polling approval');
   if (response.status !== 200) throw new Error(`pairing status ${response.status}`);
   const status = await response.json();
   if (status.status === 'approved' && /^pair_[0-9a-f]{48}$/.test(status.code || '')) return status;

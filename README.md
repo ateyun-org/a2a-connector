@@ -20,6 +20,23 @@ npm run test:all
 
 ## Pair and run
 
+### Enterprise Relay
+
+An organization owner/admin first creates or selects an Agent in the Relay console and issues a ticket. Supply the ticket privately as `A2A_PAIR_CODE`, then run the installer with `--enterprise --expect-agent-id` using that Agent's public ID:
+
+```bash
+rtk proxy sh scripts/install-connector.sh install --host openclaw \
+  --enterprise --expect-agent-id AGENT_ID_FROM_CONSOLE \
+  --relay wss://YOUR_RELAY/connect --local http://127.0.0.1:9900 \
+  --expect-name 'ACTUAL_AGENT_CARD_NAME'
+```
+
+The script supports `workbuddy`, `openclaw`, `hermes` and `dsh` after the local A2A service is running. It redeems the ticket once at `/register`, saves private credentials, removes the ticket from the tunnel process environment, and starts the connection. Matching saved credentials are reused; another Agent's state is preserved and rejected. No legacy pairing request or approval polling is used. Use the existing `--instance`/`--state` for restarts, and clear `A2A_PAIR_CODE` in the calling environment after installation. See [enterprise installation and recovery](docs/install/shared.md#企业模式票据接入).
+
+### Legacy pairing
+
+The following approval flow applies to Redis-only Relay deployments. An enterprise Relay rejects it with `organization_ticket_required`; use the enterprise ticket entry above.
+
 If a local A2A origin is already running, `sh scripts/install-connector.sh install --host workbuddy --relay wss://dsh-relay.chuanbota.com/connect --local http://127.0.0.1:9900` automates preflight, local CLI dependency setup, pairing request reuse, and process launch. Use `status`, `stop`, or `repair` with the same `--host`; see [the WorkBuddy guide](docs/install/workbuddy.md#自动安装与诊断). For multiple agents, use a distinct `--instance` and `--expect-name`; `--local auto --port-start 9900` scans already running Agent Cards and selects the exact name. The Connector does not change an external agent's listening port. The bundled DSH adapter can increment a busy port and pass the actual port to the DSH Connector. For OpenClaw, Hermes, and DSH, the script can run an isolated standalone Connector after the host's A2A origin is configured; it does not install those host plugins or adapters.
 
 OpenClaw hosts can run `node scripts/install-openclaw.mjs`: it detects the host's A2A capabilities and installs only the Connector when native A2A exists, or includes the compatibility service when absent. The plugin defaults to `local: "auto"` and rechecks capabilities at startup. Disabled/broken native A2A requires repair rather than installing a second service. See [OpenClaw installation](docs/install/openclaw.md) for native peer authentication and older CLI requirements.

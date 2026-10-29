@@ -20,7 +20,7 @@ flowchart LR
 
 新版 Relay 命令行服务默认启用 MCP。继续使用服务器已经加载的 `manifest/config/config.json`，不需要额外配置 `RELAY_MCP_ENABLED=true`，也不需要更换已有管理员凭据。只有明确设置 `relay.mcpEnabled=false` 或 `RELAY_MCP_ENABLED=false` 才关闭；已有非空环境变量仍优先。
 
-程序读取 `workbuddy.clientId` 和 `workbuddy.clientSecret`，接收身份统一从 MySQL 企业数据库加载，在控制台创建/选择并发送账号邀请。授权范围默认 PC 与云端的四个完整权限。发布需提供稳定的私有 `RELAY_AGENT_TICKET_KEY`（32随机字节的Base64），共享管理员令牌不再用于认证或派生密钥。
+程序读取 `workbuddy.clientId` 和 `workbuddy.clientSecret`，接收身份统一从 MySQL 企业数据库加载，在控制台创建/选择并发送账号邀请。授权范围默认 PC 与云端的四个完整权限。票据交付密钥默认由 Relay 自动生成并持久保存在现有 Redis，`RELAY_AGENT_TICKET_KEY` 仅为可选覆盖；共享管理员令牌不用于认证或派生密钥。
 
 令牌加密密钥优先沿用 `workbuddy.tokenKey` 或 `WORKBUDDY_TOKEN_KEY`。未提供时，程序从应用 Secret 派生用途隔离、重启稳定的32字节密钥，无需额外挂载密钥文件。使用派生密钥时，应用 Secret 轮换后需要重新完成上游授权。已经使用显式密钥的部署必须保留原密钥。
 

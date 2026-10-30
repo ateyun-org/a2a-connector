@@ -323,7 +323,7 @@ test('Relay receipt 404 with a known context stays unknown without probing ListT
   const result = await a2a.reconcile('lost-receipt', 'owner');
   assert.equal(result.outcome, 'unknown');
   assert.equal(result.safeToResubmit, false);
-  assert.match(result.diagnostic, /ListTasks is unsupported/);
+  assert.match(result.diagnostic, /task listing cannot prove/);
   assert.deepEqual(calls, [{ url: 'https://relay.example/relay/requests/' + 'a'.repeat(32), method: undefined }]);
 });
 

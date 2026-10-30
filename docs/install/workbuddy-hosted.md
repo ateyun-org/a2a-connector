@@ -10,6 +10,6 @@ Relay 已内置 Go 接收端，身份、账号和授权统一来自 MySQL。用�
 
 原生运行时每五秒从 MySQL 读取接收身份，不使用配置中的全局 Agent ID 清单或 Redis 身份。停用身份、成员或组织会停止对应接收端；数据源失联时拒绝接收。Redis 仅保存运行租约及加密任务/请求日志等状态。
 
-SendMessage 的 `params.message.metadata.workbuddyMode` 可选择 cloud 或 desktop，省略使用接收端默认值。同 messageId 重试和同 context 后续轮次保持原位置；已有未决任务时不能另发新工作。保存原 taskId、contextId、messageId 和 Relay 收据，超时后查询原任务，不新建指令。ListTasks 不开放；只查询当前调用方自己创建的任务。
+SendMessage 的 `params.message.metadata.workbuddyMode` 可选择 cloud 或 desktop，省略使用接收端默认值。同 messageId 重试和同 context 后续轮次保持原位置；已有未决任务时不能另发新工作。保存原 taskId、contextId、messageId 和 Relay 收据，超时后查询原任务，不新建指令。ListTasks 按当前调用方的任务和上下文归属过滤，支持分页；只返回有 task_read 的自有任务。
 
 新用户创建独立身份；不要覆盖别人的 WorkBuddy 账号。保留数据库、Redis 和加密密钥。账号授权不触发任务，安装检查也不自动派发业务。

@@ -30,7 +30,7 @@ Send only the user's requested work; connection inspection does not authorize a 
 
 For direct HTTP, use the exact `params.message` envelope, `role: "ROLE_USER"`, a nonempty unique `messageId`, and `parts: [{"text": "..."}]` from the guide. A bare `text`, `role: "user"`, or JSON-RPC `id` alone is insufficient. Keep the same payload and IDs for any explicitly justified exact retry; never change IDs merely because an outcome is uncertain.
 
-Save the returned A2A task ID and context ID. Query `GetTask` using `params.id` and the same caller credentials. Relay requires both `task_read` and ownership by this caller; random IDs or tasks created by another/old identity cannot test access. Do not use `ListTasks` as a permission or readiness probe: it is unsupported through Relay even if a receiver implements it locally.
+Save the returned A2A task ID and context ID. Query `GetTask` using `params.id` and the same caller credentials. Relay requires both `task_read` and ownership by this caller; random IDs or tasks created by another/old identity cannot test access. Use ListTasks/tasks/list to enumerate only tasks durably owned by this caller, with task_read. Follow the HTTP guide for filters and five-minute Relay pagination. An empty list is not an invoke/readiness test or proof of non-execution.
 
 After timeout/disconnection, recover `GET /relay/requests/<original-relay-request-id>` with the same identity before any resend. Relay supports this journal. A 404 can mean no reservation, expiry, wrong caller, or revoked access; it is not proof of non-execution. Read the guide's ID and error tables instead of inferring global capabilities from one response.
 

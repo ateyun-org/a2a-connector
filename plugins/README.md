@@ -21,7 +21,7 @@ Choose a host from the [installation index](../AGENT_INSTALL.md). Shared pairing
 | WorkBuddy MCP | `skills/a2a-coordination/SKILL.md` | Included by MCP submission packager |
 | Standalone Connector | Common install guide and `docs/relay-http.md` | Does not install a host plugin or load model skills |
 
-All instruction sets distinguish enterprise caller → target grants, operation-specific permissions, owned-task reads, unsupported enterprise ListTasks, valid messages and durable receipt recovery. `docs/relay-http.md` is the canonical HTTP guide; the sync script copies it into Hermes/OpenClaw/DSH. These are source/package checks: actual remote installation, current-session loading and real-account execution are separate verification steps.
+All instruction sets distinguish enterprise caller → target grants, operation-specific permissions, owned-task reads, caller-isolated ListTasks with filtered totals/pagination, valid messages and durable receipt recovery. `docs/relay-http.md` is the canonical HTTP guide; the sync script copies it into Hermes/OpenClaw/DSH. These are source/package checks: actual remote installation, current-session loading and real-account execution are separate verification steps.
 
 After changing the canonical Connector `src/`, run `node scripts/sync-plugins.mjs` from the repository root. All four packages carry generated Connector sources in `vendor/connector/`. Do not edit those copies directly. The native DSH adapter is package-specific and is not copied to other hosts. To bump versions across the root package and all host plugins, run `./bump-version.sh <version|patch|minor|major>`.
 

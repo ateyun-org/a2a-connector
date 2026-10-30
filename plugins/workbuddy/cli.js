@@ -9,7 +9,7 @@ import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { callAgent, getAgentTask, listTargets, recoverDispatch, controlAgentTask } from './a2a-client.js';
+import { callAgent, getAgentTask, listAgentTasks, listTargets, recoverDispatch, controlAgentTask } from './a2a-client.js';
 import { desktopControlInstructions, platformAccessToken, platformSetupURL, platformRelayURL, platformRequest } from './platform-client.js';
 import { acquireStateLock, connectorStatus, lockOwner, ownerAlive } from './vendor/connector/state-lock.js';
 import { loadEnrollment, validateConfig } from './vendor/connector/connector.js';
@@ -476,6 +476,23 @@ try {
   else if (command === 'doctor') await doctor();
   else if (command === 'connection status') await connectionStatus();
   else if (command === 'targets') console.log(JSON.stringify(await listTargets(await platformOptions())));
+  else if (argv[0] === 'tasks' && argv.length >= 2) {
+    const params = {};
+    for (let i = 2; i < argv.length; i++) {
+      const option = argv[i];
+      if (option === '--include-artifacts') { params.includeArtifacts = true; continue; }
+      const fields = { '--context-id': 'contextId', '--status': 'status', '--page-token': 'pageToken',
+        '--page-size': 'pageSize', '--history-length': 'historyLength', '--status-timestamp-after': 'statusTimestampAfter' };
+      if (!fields[option] || !argv[i + 1]) throw new Error('Invalid task list option');
+      const value = argv[++i];
+      if (['--page-size', '--history-length'].includes(option)) {
+        const parsed = Number(value);
+        if (!Number.isInteger(parsed) || parsed < (option === '--page-size' ? 1 : 0) || parsed > (option === '--page-size' ? 100 : 1000)) throw new Error('Invalid task list numeric option');
+        params[fields[option]] = parsed;
+      } else params[fields[option]] = value;
+    }
+    console.log(JSON.stringify(await listAgentTasks({ ...(await platformOptions()), targetId: argv[1] }, params)));
+  }
   else if (argv.length === 3 && argv[0] === 'adapter' && argv[1] === 'task') await localTask(argv[2]);
   else if (argv[0] === 'auth' && argv[1] === 'enroll') await enroll(argv.slice(2));
   else if (command === 'auth login') await login();
@@ -519,5 +536,5 @@ try {
   else if (command === 'platform login') await platformLogin();
   else if (command === 'platform status') await platformStatus();
   else if (command === 'platform logout') await platformLogout();
-  else throw new Error('Usage: workbuddy-a2a setup --relay <wss-url> [--mode desktop|cloud] [--task-id <cloud-session-id>] [--cwd /workspace] [--name <name>], doctor, connection status, targets, auth enroll --relay <wss-url> --agent-id <Agent-ID> (private A2A_PAIR_CODE), auth connect|login|status|logout, platform login|status|logout, start|stop|run, call <target-agent-id> [--message-id <id>] [--context-id <id>] [--mode cloud|desktop] (stdin), outbound <request-id>, task <target-agent-id> <task-id>, adapter task <task-id>, cloud tasks, cloud task <cloud-session-id>, cancel <target-agent-id> <task-id>, release <target-agent-id> <task-id> [recovered-cloud-task-id], resume <target-agent-id> <task-id>, reconcile <target-agent-id> <task-id>, permission <target-agent-id> <task-id> <request-id-as-json> <option-id>');
+  else throw new Error('Usage: workbuddy-a2a setup --relay <wss-url> [--mode desktop|cloud] [--task-id <cloud-session-id>] [--cwd /workspace] [--name <name>], doctor, connection status, targets, tasks <target-agent-id> [--page-size <1..100>] [--page-token <token>] [--context-id <id>] [--status <state>] [--history-length <n>] [--include-artifacts], auth enroll --relay <wss-url> --agent-id <Agent-ID> (private A2A_PAIR_CODE), auth connect|login|status|logout, platform login|status|logout, start|stop|run, call <target-agent-id> [--message-id <id>] [--context-id <id>] [--mode cloud|desktop] (stdin), outbound <request-id>, task <target-agent-id> <task-id>, adapter task <task-id>, cloud tasks, cloud task <cloud-session-id>, cancel <target-agent-id> <task-id>, release <target-agent-id> <task-id> [recovered-cloud-task-id], resume <target-agent-id> <task-id>, reconcile <target-agent-id> <task-id>, permission <target-agent-id> <task-id> <request-id-as-json> <option-id>');
 } catch (error) { console.error(error.message); process.exitCode = 1; }

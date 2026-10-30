@@ -8,7 +8,7 @@
 
 DSH 的模型侧入口是实际注册的原生工具：`a2a_agents`、`a2a_send`、`a2a_task`、`a2a_conversations`、`a2a_reconcile`、`a2a_cancel`。其工具说明直接包含企业授权、任务归属和恢复规则；完整说明随包放在 `skills/a2a-relay-calling/SKILL.md`，需要时通过实际宿主的文件/上下文机制读取。本包未声明 DSH skill 自动加载 API，不把文件存在当作当前模型已经读到。`agents` 未配置时不会注册出站工具，不能拿 MCP 的参数 schema 猜这些工具的调用方式。
 
-`a2a_send` 使用 `agent_id`、`message`、可选 `message_id`/`conversation_id`，由 SDK 构造 ROLE_USER、messageId 和文本 parts。企业授权在**目标 Agent** 的「谁能访问」里选择当前 DSH 为机器调用方；卡片需要 discover，发送需要 invoke，GetTask 需要 task_read 及当前调用方的任务归属，个人身份还需成员权限交集。企业 ListTasks 不开放；GetTask 403 不表示一定没有派单权限。HTTP 协议详见随包 references，其维护源为仓库 `docs/relay-http.md`，与 Hermes、OpenClaw 共用。
+`a2a_send` 使用 `agent_id`、`message`、可选 `message_id`/`conversation_id`，由 SDK 构造 ROLE_USER、messageId 和文本 parts。企业授权在**目标 Agent** 的「谁能访问」里选择当前 DSH 为机器调用方；卡片需要 discover，发送需要 invoke，GetTask 需要 task_read 及当前调用方的任务归属，个人身份还需成员权限交集。ListTasks 只返回当前调用方任务，使用 task_read；GetTask 403 不表示一定没有派单权限。HTTP 协议详见随包 references，其维护源为仓库 `docs/relay-http.md`，与 Hermes、OpenClaw 共用。
 
 ## 安装与配置
 
@@ -74,7 +74,7 @@ Subagent 总等待默认 `taskTimeoutMs: 1800000`，从派发时开始计时；�
 `a2a_send` 在 HTTP 派发前保存 `conversationId`、稳定 `messageId` 和 `relayRequestId`。内联完成的 Task 直接返回去重后的正文；工具保留数字 `state`，并增加 `stateName`。若返回 `dispatchState: unknown`（如 504/断网），按以下步骤处理：
 
 1. 从返回值取得 `conversationId`；调用中止未展示返回值时，用 `a2a_conversations` 找到待派发/未知记录。
-2. 调用 `a2a_reconcile({conversation_id: "..."})`。它是客户端恢复工具，查询 Relay 收据或原任务，不是Relay未开放的远端 ReconcileCloudTask。新版 Relay 可返回迟到的 Task 或 Message 正文；收据 404 仍保持 unknown，不自动回退到Relay不支持的 ListTasks，更不能据此重发。只有直接访问非 Relay A2A 服务时，才可能按已知 contextId 和远端 history 中的 messageId 匹配任务。
+2. 调用 `a2a_reconcile({conversation_id: "..."})`。它是客户端恢复工具，查询 Relay 收据或原任务，不是Relay未开放的远端 ReconcileCloudTask。新版 Relay 可返回迟到的 Task 或 Message 正文；收据 404 仍保持 unknown，不自动用 ListTasks 推断丢失收据的任务是否执行，更不能据此重发。只有直接访问非 Relay A2A 服务时，才可能按已知 contextId 和远端 history 中的 messageId 匹配任务。
 3. 换 DSH session 后，显式调用 `a2a_conversations({include_previous_sessions: true})` 和 `a2a_reconcile({conversation_id: "...", include_previous_sessions: true})` 进行只读查询。历史查询不转移所有权；续聊/取消仍需要原 session。这个 store 是同一本机 profile 的共享查询边界，多用户应使用不同 storePath/凭据。
 4. `outcome: unknown`、空列表、404、过期索引都**不能证明未执行**，不自动重发。`safeToResubmit` 保持 false；应继续对账或核对远端执行记录。需要显式幂等键时，`a2a_send` 可带 `message_id`，同键只能用于同一派发和同一内容；本地已知键只对账，新版 Relay 也会去重。新生成的 messageId 是新派发，不按正文自动合并。
 

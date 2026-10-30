@@ -113,6 +113,14 @@ export async function getAgentTask(options, taskId) {
   return presentTask(options.targetId, task);
 }
 
+export async function listAgentTasks(options, params = {}) {
+  const rpc = await openRPC(options);
+  const result = await rpc('ListTasks', params);
+  if (!Array.isArray(result?.tasks) || typeof result.nextPageToken !== 'string' ||
+      !Number.isInteger(result.totalSize) || result.totalSize < 0) throw new Error('A2A ListTasks returned an invalid collection');
+  return result;
+}
+
 export async function callAgent({ relay, allowInsecure = false, enrollment, targetId, prompt,
   pollIntervalMs = 2000, deadlineMs = 120000, messageId = randomUUID(), contextId, executionMode, relayRequestId, onTask, onDispatch }) {
   if (typeof prompt !== 'string' || !prompt.trim()) throw new Error('task text is required on stdin');

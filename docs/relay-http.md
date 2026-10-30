@@ -48,9 +48,25 @@ Use the same target and caller identity. Replace the task ID with the actual ret
 
 Send to the same `/agents/<targetAgentId>/rpc` with Bearer authentication and JSON content type. `GetTask` requires `task_read` and a stable ownership record for this caller. A grant does not transfer tasks created by another identity. Do not try random task IDs or old-identity tasks to infer invoke permission.
 
-Relay rejects `ListTasks` / `tasks/list` with HTTP 501 `rpc_method_not_supported`; older deployments returned 403. The receiver's local listing capability does not change this. Use your saved task IDs, not unfiltered enumeration. Do not request extra invoke grants merely because listing fails.
+## List only your tasks
 
-Other receiver extensions are not automatically exposed by Relay. The current Relay allowlist includes SendMessage, GetTask, CancelTask, RespondPermission and ReleaseCloudTask (and supported protocol aliases); it does not include ResumeCloudTask or ReconcileCloudTask. Do not try to unlock those extensions with additional grants. For hosted WorkBuddy recovery, keep reading the original GetTask; the receiver schedules eligible read-only recovery internally. Local receiver capabilities can differ.
+Use `ListTasks` (alias `tasks/list`) on the same authenticated target RPC endpoint:
+
+```json
+{"jsonrpc":"2.0","id":"list-1","method":"ListTasks","params":{"pageSize":50}}
+```
+
+Requires `task_read`, credential `call` scope, and the same live machine/member authorization as GetTask. Relay filters provider tasks using MySQL task **and context** ownership; unknown/unbound tasks and other callers are omitted. It computes `totalSize` and pagination only after filtering. No global task count or provider cursor is returned. No extra invoke grant is needed for listing itself. A target that does not implement ListTasks returns its unsupported-method error.
+
+Optional filters: `contextId`, `status` (for example `TASK_STATE_WORKING`), and inclusive RFC3339 `statusTimestampAfter`. `pageSize` defaults to 50, maximum 100. `historyLength` defaults to 0 (maximum 1000); `includeArtifacts` defaults to false. Relay also enforces filtering/projection when the provider ignores those parameters.
+
+The result contains `tasks`, `totalSize`, `pageSize` and `nextPageToken`. Pass the returned Relay token with identical filters/page size and the same caller/target/endpoint. Pages are a stable snapshot for five minutes; a fresh list refreshes status. Permissions and ownership are rechecked on each page, so revocation immediately stops access. Expired, forged or mismatched tokens return JSON-RPC -32602. Scans are bounded to 100 provider pages, 10000 tasks and 16 MiB; over-limit/malformed/repeating provider pagination fails without returning an unfiltered or partial collection.
+
+MCP exposes `a2a_tasks({targetAgentId,...filters})`. WorkBuddy CLI exposes `workbuddy-a2a tasks TARGET [--page-size N] [--page-token TOKEN] [--context-id ID] [--status STATE] [--history-length N] [--include-artifacts]`.
+
+A list omission does not prove an uncertain send never executed: ownership may not have been durably bound or the provider may have pruned the task. Preserve original IDs and use the original receipt/GetTask for recovery; do not resend merely because listing is empty. Older Relay releases return 501 for ListTasks and require upgrading, not extra grants.
+
+Other receiver extensions are not automatically exposed by Relay. The current Relay allowlist includes SendMessage, GetTask, ListTasks, CancelTask, RespondPermission and ReleaseCloudTask (and supported protocol aliases); it does not include ResumeCloudTask or ReconcileCloudTask. Do not try to unlock those extensions with additional grants. For hosted WorkBuddy recovery, keep reading the original GetTask; the receiver schedules eligible read-only recovery internally. Local receiver capabilities can differ.
 
 ## Durable receipts and uncertain sends
 
@@ -75,7 +91,7 @@ On timeout, disconnect, `unknown`, or ownership persistence failure, inspect the
 | HTTP 401 `unauthorized` | Credential invalid/expired/revoked; check the actual caller identity and private credential source |
 | HTTP 403 `access_denied` on card/send | Check that operation's grant, token scopes, Agent capabilities/status, enterprise, and personal member intersection; card access does not imply invoke |
 | HTTP 403 on GetTask | Check `task_read` **and task ownership**; it does not establish whether SendMessage is allowed |
-| HTTP 501 `rpc_method_not_supported` on ListTasks | Enterprise collection listing unavailable; no additional grant enables it |
+| Unsupported ListTasks | Check Relay/provider version and capability; do not request extra invoke grants or resend |
 | JSON-RPC `-32602` user message validation | Check `params.message`, exact role, unique messageId, and text parts; this is not an ACL denial |
 | HTTP 409 `idempotency_conflict` | Same key was used with changed input; recover the original attempt instead of replacing it |
 | Receipt HTTP 404 `request_not_found` | Missing/inaccessible evidence; not proof of non-execution |

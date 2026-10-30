@@ -393,7 +393,7 @@ export class A2AOrchestrator {
     }
     if (agent.isRelay) {
       return { conversation: record, historical, outcome: 'unknown', safeToResubmit: false,
-        diagnostic: 'Relay receipt is missing or inaccessible; enterprise ListTasks is unsupported. Preserve the original IDs and inspect the original task/session; do not infer non-execution or resend.' };
+        diagnostic: 'Relay receipt is missing or inaccessible; task listing cannot prove the outcome of a missing receipt. Preserve the original IDs and inspect the original task/session; do not infer non-execution or resend.' };
     }
     if (record.contextId) {
       let pageToken = '';

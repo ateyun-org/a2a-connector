@@ -25,7 +25,7 @@ Relay credentials come from the same configured Connector state (connectorState 
 
 Enrollment uses the one-time identity-bound ticket from /console → Agent 管理 → 接入 Agent → Connector. For access grants, open the **target's** 谁能访问 (older UI: 授权), choose this DSH identity as 机器调用方 and grant caller → target. Personal callers need machine grants intersected with bound member direct/group grants; service callers use explicit machine grants. Credential call scope and active/canCall status also matter; administrator status is not a task-permission bypass.
 
-discover reads cards; invoke sends; task_read reads owned tasks. Other actions have their own grants. A random task ID or old caller's task is not a valid invoke probe. GetTask denial can mean wrong ownership; SendMessage -32602 means parameter validation. Enterprise ListTasks/tasks/list is unsupported (501 rpc_method_not_supported, older releases 403), even if a local receiver implements it. Extra invoke grants do not enable listing. Use owned saved task IDs and local conversation records.
+discover reads cards; invoke sends; task_read reads owned tasks. Other actions have their own grants. A random task ID or old caller's task is not a valid invoke probe. GetTask denial can mean wrong ownership; SendMessage -32602 means parameter validation. ListTasks/tasks/list supports only the current caller's owned tasks with task_read. Raw HTTP listing uses the shared guide and five-minute Relay page tokens; local a2a_task continues using its session-owned conversation mapping. Listing cannot replace the original receipt/task when recovering an uncertain send.
 
 ## Completion and recovery
 

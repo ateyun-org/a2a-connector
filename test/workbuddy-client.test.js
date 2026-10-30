@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
 import test from 'node:test';
-import { callAgent, getAgentTask } from '../plugins/workbuddy/a2a-client.js';
+import { callAgent, getAgentTask, listAgentTasks } from '../plugins/workbuddy/a2a-client.js';
 
 async function fixture(t, handler) {
   const server = createServer(handler);
@@ -13,6 +13,29 @@ async function fixture(t, handler) {
 }
 
 const enrollment = { agentId: 'workbuddy', token: 'agt_workbuddy.secret' };
+
+test('WorkBuddy task listing preserves filters and Relay pagination without sending work', async t => {
+  let calls = 0;
+  const options = { contextId: 'owned-context', pageSize: 2, pageToken: 'opaque-relay-cursor', includeArtifacts: true };
+  const relay = await fixture(t, async (req, res) => {
+    assert.equal(req.headers.authorization, `Bearer ${enrollment.token}`);
+    res.setHeader('content-type', 'application/json');
+    if (req.url.endsWith('/agent-card.json')) {
+      res.end(JSON.stringify({ supportedInterfaces: [{ protocolBinding: 'JSONRPC', url: `http://127.0.0.1:${req.socket.localPort}/agents/reviewer/rpc` }] }));
+      return;
+    }
+    let raw = ''; for await (const chunk of req) raw += chunk;
+    const request = JSON.parse(raw);
+    assert.equal(request.method, 'ListTasks');
+    assert.deepEqual(request.params, options);
+    calls++;
+    res.end(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { tasks: [], nextPageToken: '', totalSize: 0, pageSize: 2 } }));
+  });
+  const result = await listAgentTasks({ relay, allowInsecure: true, enrollment, targetId: 'reviewer' }, options);
+  assert.deepEqual(result.tasks, []);
+  assert.equal(result.totalSize, 0);
+  assert.equal(calls, 1);
+});
 
 test('WorkBuddy can call an authorized Relay target and poll its task', async t => {
   let polls = 0;

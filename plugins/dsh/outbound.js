@@ -5,7 +5,7 @@ const output = { type: 'object', additionalProperties: false, properties: {
   text: { type: 'string', required: true },
 } };
 
-const relayGuidance = 'For enterprise Relay, the administrator grants caller → target on the target row at /console → 谁能访问. Cards need discover, sends invoke, owned task reads task_read; personal callers also need member permissions. ListTasks is unsupported and its failure does not prove missing invoke permission. Read this plugin\'s skills/a2a-relay-calling/SKILL.md for the full Relay workflow.';
+const relayGuidance = 'For enterprise Relay, the administrator grants caller → target on the target row at /console → 谁能访问. Cards need discover, sends invoke, owned task reads task_read; personal callers also need member permissions. ListTasks returns only the current caller\'s owned tasks with task_read and Relay pagination; empty results do not prove non-execution. Read this plugin\'s skills/a2a-relay-calling/SKILL.md for the full Relay workflow.';
 
 function tool(name, description, parameters, execute) {
   return defineTool({ name, description, parameters,

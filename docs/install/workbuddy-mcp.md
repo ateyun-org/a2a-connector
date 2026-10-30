@@ -78,7 +78,7 @@ MCP 地址：`https://dsh-relay.chuanbota.com/mcp`。
 1. MCP 客户端发现服务并注册，打开 Relay 授权页。
 2. Relay 要求用户登录 Relay、选择其所属企业并确认 OAuth，Relay 创建或复用该成员的个人 MCP Controller。它和已有 Connector 的身份可能不同，授权时核对准确 Agent ID。
 3. 企业管理员在 `/console` 的**目标 Agent** 行点击「谁能访问」，选择这个 MCP Controller 为机器调用方并授予所需动作；个人 Controller 的机器授权还需与绑定成员的有效成员/用户组权限取交集。这个主控身份不需要运行入站隧道，显示按需连接不代表主控不可用；目标接收端的连接状态另行检查。
-4. 用户在原授权页确认，客户端得到 MCP OAuth token。可以认证但没有可发现目标时 `a2a_targets` 为空；能够读取卡片也不表示拥有所有任务动作。`a2a_send` 需要调用权限，`a2a_task` 需要读取权限及本身份的任务归属。Relay不开放 ListTasks，但支持 `a2a_request` 收据恢复。工具中不提供管理员操作，也不自动增加权限。
+4. 用户在原授权页确认，客户端得到 MCP OAuth token。可以认证但没有可发现目标时 `a2a_targets` 为空；能够读取卡片也不表示拥有所有任务动作。`a2a_send` 需要调用权限，`a2a_task` 需要读取权限及本身份的任务归属。`a2a_tasks` 提供按调用方隔离的 ListTasks，支持过滤和分页；`a2a_request` 用于原收据恢复。工具中不提供管理员操作，也不自动增加权限。
 
 支持 WorkBuddy 私有协议回调 `workbuddy://workbuddy/mcp/connector:chuanbota-a2a/oauth/callback`、平台分配的 `oc_...` 连接器 ID 回调和精确注册的 HTTP loopback 回调。回调必须先精确注册，不能在授权时更换。拒绝 plain PKCE、重定向不匹配和其他资源的 token。允许反向代理将 Host 改为内部上游地址，不要求新增代理配置。默认允许同源请求与无 Origin 的原生客户端；浏览器客户端来源须在 `mcpAllowedOrigins` 中明确配置，重复 Origin 也拒绝。所有请求仍需有效的 MCP 令牌和目标权限；Host 与转发请求头不参与 OAuth 地址或令牌受众生成。
 

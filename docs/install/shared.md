@@ -55,6 +55,6 @@ rtk proxy node src/cli.js -relay wss://YOUR_RELAY/connect \
 
 ## 通道与任务边界
 
-Relay 只转发已知 A2A 操作并检查动作、任务和上下文归属。ListTasks 返回501，不是缺少 invoke 的证据；GetTask 需要 task_read 和当前调用方创建的 taskId。详细格式和收据恢复见[Relay HTTP 协议](../relay-http.md)。保留稳定 messageId、调用方/目标 ID、Relay request ID、taskId/contextId；超时不重新派发，先读原收据或任务，404也不证明未执行。
+Relay 只转发已知 A2A 操作并检查动作、任务和上下文归属。ListTasks 使用 task_read，只返回当前调用方的任务，总数和分页均在归属过滤后计算；GetTask 需要 task_read 和当前调用方创建的 taskId。详细格式和收据恢复见[Relay HTTP 协议](../relay-http.md)。保留稳定 messageId、调用方/目标 ID、Relay request ID、taskId/contextId；超时不重新派发，先读原收据或任务，404也不证明未执行。
 
 将本机 origin 绑定 loopback 并保护 Card/RPC。Connector 默认正文上限16MiB；DSH内置 adapter/隧道统一1MiB。当前缓冲整个正文，不支持SSE转发。普通断线重连复用凭据，不重复接入。

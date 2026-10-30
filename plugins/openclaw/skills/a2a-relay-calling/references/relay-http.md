@@ -66,7 +66,27 @@ MCP exposes `a2a_tasks({targetAgentId,...filters})`. WorkBuddy CLI exposes `work
 
 A list omission does not prove an uncertain send never executed: ownership may not have been durably bound or the provider may have pruned the task. Preserve original IDs and use the original receipt/GetTask for recovery; do not resend merely because listing is empty. Older Relay releases return 501 for ListTasks and require upgrading, not extra grants.
 
-Other receiver extensions are not automatically exposed by Relay. The current Relay allowlist includes SendMessage, GetTask, ListTasks, CancelTask, RespondPermission and ReleaseCloudTask (and supported protocol aliases); it does not include ResumeCloudTask or ReconcileCloudTask. Do not try to unlock those extensions with additional grants. For hosted WorkBuddy recovery, keep reading the original GetTask; the receiver schedules eligible read-only recovery internally. Local receiver capabilities can differ.
+Receiver extensions require an explicit Relay method mapping. Relay releases reporting `workbuddyNativeVersion:"completion-recovery-v3"` expose ReconcileCloudTask with `task_read` and ResumeCloudTask with **both** `task_read` and `invoke`; both require the original caller's task ownership. Resume only handles a known session whose business prompt was never attempted. Earlier releases reject these two methods before forwarding; extra grants cannot enable a missing mapping. GetTask plus the hosted receiver's automatic read-only recovery remains available. Local receiver capabilities can differ.
+
+CancelTask requires `task_cancel`, RespondPermission requires `permission_respond`, and ReleaseCloudTask requires `tracking_release`, each with task ownership. Personal callers additionally need the corresponding member direct/group grants intersected with explicit machine grants. A flat Relay 403 can indicate a missing action grant or wrong ownership; administrator status does not bypass either. Authorized calls to unsupported target methods retain JSON-RPC -32601. Authorization alone does not guarantee a control can run: cancellation requires a usable live connection; release requires an unresolved task without a live connection or active recovery, verified provider inactivity, and explicit user intent.
+
+Native WorkBuddy URI-only artifacts use `parts[].url` with `metadata.contentAvailability:"reference_only"`; actual provider text uses `parts[].text` with `contentAvailability:"inline"`. An `agent:///...` URI is a provider workspace reference, not inline contents or a Relay download endpoint. A reference does not establish successful completion. Preserve recovered inline output even while completion remains unverified.
+
+## Download a registered WorkBuddy file
+
+Relay health `workbuddyArtifactVersion:"download-v1"` and the native Agent Card's `metadata.artifactDownloadMethod:"GetArtifact"` identify support. Call this read-only extension on the target's JSONRPC endpoint:
+
+```json
+{"jsonrpc":"2.0","id":"file-1","method":"GetArtifact","params":{"id":"ORIGINAL_A2A_TASK_ID","artifactId":"agent:///workspace/relay-doctor.mjs","maxBytes":8388608}}
+```
+
+Requires `task_read`, original task ownership and live caller authorization. Card discovery additionally requires `discover`. Personal callers need the corresponding member/machine grant intersection. It works independently of pending task state; it does not submit instructions, approve permissions, cancel, release tracking, or create a dispatch receipt. Keep using the original task ID even when completion remains unknown.
+
+The server reads only an artifact registered in the original cloud session. It verifies task identity and gets a fresh task ticket, uses inline provider text or downloads the registered media file via Entry.url / sandbox path, and refreshes an expired ticket once. No arbitrary URL/path parameter is accepted. Tickets stay on the original sandbox origin; signed external URLs receive no ticket. Redirects and private/reserved network addresses are blocked. Signed URLs/tickets are never included in results or journals. Sandbox ACP links ending in `/acp` are supported; gateway-only `/sessions/...` links report an unsupported endpoint.
+
+The result is `{artifact:{artifactId,name,parts:[{raw,filename,mediaType}],metadata:{contentAvailability:"inline",sizeBytes,sha256}}}`. `raw` is Base64 of exact file bytes. Verify size and SHA-256 before writing. `maxBytes` defaults to 8 MiB and may only reduce that bound; reads are bounded and never partial-success downloads. -32602 means invalid parameters/non-file artifact, -32001 means missing/deleted artifact, -32003 means over the byte limit, and -32002 means unavailable upstream/session. Unsupported targets return -32601. None of these errors authorizes resending work.
+
+CLI: `workbuddy-a2a artifact TARGET TASK_ID 'agent:///workspace/relay-doctor.mjs' --output ./relay-doctor.mjs` verifies integrity and writes mode 0600 without overwriting an existing file. MCP: `a2a_artifact({targetAgentId,taskId,artifactId})` reads up to 512 KiB, returning UTF-8 text inline or binary Base64 raw bytes. Do not probe arbitrary RPC methods or HTTP paths for file contents.
 
 ## Durable receipts and uncertain sends
 

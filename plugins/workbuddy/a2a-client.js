@@ -1,4 +1,6 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { open, unlink } from 'node:fs/promises';
+import { resolve } from 'node:path';
 
 const agentIdPattern = /^[A-Za-z0-9_-]{1,64}$/;
 const maxResponseBytes = 16 * 1024 * 1024;
@@ -111,6 +113,47 @@ export async function getAgentTask(options, taskId) {
   const task = taskFrom(await rpc('GetTask', { id: taskId }));
   if (!task) throw new Error('A2A GetTask returned no task');
   return presentTask(options.targetId, task);
+}
+
+export function validArtifactURI(uri) {
+  if (typeof uri !== 'string' || !uri.startsWith('agent:///') || uri.length > 2048 || /[\u0000-\u001f\u007f%\\?#]/.test(uri)) return false;
+  return uri.slice('agent:///'.length).split('/').every(part => part && part !== '.' && part !== '..');
+}
+
+/** Read an existing registered artifact without submitting or releasing a task. */
+export async function getAgentArtifact(options, taskId, artifactId) {
+  if (typeof taskId !== 'string' || !taskId || taskId.length > 255 || /[\u0000-\u001f\u007f]/.test(taskId)) throw new Error('invalid task ID');
+  if (!validArtifactURI(artifactId)) throw new Error('invalid artifact URI');
+  const rpc = await openRPC(options);
+  const result = await rpc('GetArtifact', { id: taskId, artifactId });
+  const artifact = result?.artifact;
+  const part = artifact?.parts?.[0];
+  if (artifact?.artifactId !== artifactId || !Array.isArray(artifact.parts) || artifact.parts.length !== 1 ||
+      typeof part?.raw !== 'string' || part.text !== undefined || part.url !== undefined ||
+      !Number.isSafeInteger(artifact.metadata?.sizeBytes) || artifact.metadata.sizeBytes < 0 || artifact.metadata.sizeBytes > 8 * 1024 * 1024 ||
+      !/^[a-f0-9]{64}$/.test(artifact.metadata?.sha256 || '')) throw new Error('A2A GetArtifact returned invalid file contents');
+  const bytes = Buffer.from(part.raw, 'base64');
+  if (bytes.toString('base64') !== part.raw || bytes.length !== artifact.metadata.sizeBytes ||
+      createHash('sha256').update(bytes).digest('hex') !== artifact.metadata.sha256) throw new Error('A2A artifact integrity check failed');
+  return { artifact, bytes };
+}
+
+/** Preserve the exact bytes and refuse to overwrite any existing output file. */
+export async function downloadAgentArtifact(options, taskId, artifactId, outputPath) {
+  if (typeof outputPath !== 'string' || !outputPath.trim()) throw new Error('an explicit --output path is required');
+  const destination = resolve(outputPath);
+  const { artifact, bytes } = await getAgentArtifact(options, taskId, artifactId);
+  const file = await open(destination, 'wx', 0o600);
+  try {
+    await file.writeFile(bytes);
+    await file.close();
+  } catch (error) {
+    await file.close().catch(() => {});
+    await unlink(destination).catch(() => {});
+    throw error;
+  }
+  return { targetId: options.targetId, taskId, artifactId, path: destination,
+    sizeBytes: bytes.length, sha256: artifact.metadata.sha256 };
 }
 
 export async function listAgentTasks(options, params = {}) {

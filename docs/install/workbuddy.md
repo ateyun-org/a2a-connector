@@ -82,6 +82,18 @@ ACP 地址仅信任官方 `acp.workbuddy.cn/sessions/<id>`、文档中的 `*.age
 
 对于业务指令已发送但结束回执丢失的自有新建会话，`workbuddy-a2a reconcile TARGET_AGENT_ID A2A_TASK_ID`（A2A 方法 `ReconcileCloudTask`）仅连接并回放原会话，不创建任务、不发送 prompt。必须唯一匹配创建时间之后的原始用户指令及提供方轮次 ID，再找到该轮次唯一的明确 endTurn，才更新终态；重复同文指令、错误轮次、没有结束信号或外部绑定会话均保持未核实。`providerCompletionSignal` 标明实时通知或只读回放核实的依据。
 
+企业 Relay 从 `workbuddyNativeVersion=completion-recovery-v3` 开始开放上述两个 RPC：reconcile 需要 `task_read`，resume 同时需要 `task_read` 和 `invoke`，并校验原调用身份的任务归属；个人身份还需对应成员权限与机器授权的交集。旧版 Relay 缺少方法映射，补授权不能解锁。取消、审批回复、释放跟踪分别需要 `task_cancel`、`permission_respond`、`tracking_release`；管理员身份不会绕过授权或归属检查。释放还要求用户明确放弃跟踪、没有活动连接或恢复操作，并确认云端已停止活动。
+
+原生 Go 接收端对只有 URI 的文件产物返回 `parts[].url` 和 `metadata.contentAvailability=reference_only`；实际内联正文才放在 `parts[].text`，标记为 `inline`。`agent:///...` 是提供方工作区引用，不是 Relay 下载地址；产物记录存在不能证明业务轮次已完成。
+
+Relay 健康接口包含 `workbuddyArtifactVersion=download-v1` 时，可以读取原任务的登记产物，不必取消或释放未决任务：
+
+```bash
+rtk proxy workbuddy-a2a artifact TARGET_AGENT_ID ORIGINAL_A2A_TASK_ID 'agent:///workspace/relay-doctor.mjs' --output ./relay-doctor.mjs
+```
+
+需要 `task_read`、原任务归属及客户端发现能力卡所需的 `discover`；不要求 `invoke`。CLI 调用 `GetArtifact({id,artifactId})`，校验文件大小和 SHA-256 后按原始字节保存，权限为 0600，已有文件不会覆盖。RPC/CLI 单文件上限 8 MiB；MCP 工具 `a2a_artifact({targetAgentId,taskId,artifactId})` 上限 512 KiB，文本文件直接返回正文。此功能当前适用于提供 `/acp` 沙箱端点的原生 Go 云端接收端；不支持的目标返回明确错误。下载成功不改变任务状态，也不代表业务轮次已完成。上游票据和签名地址只在服务端短暂使用，不返回客户端。
+
 接收端重启后会自动对符合上述条件的原任务执行只读核实；断线后的未知结果也会每30秒重试核实。普通 `GetTask` 会触发后台检查，不需要接收端获得调用自身的 ACL，也不要求主控先调用 reconcile。核实必须恢复对应轮次的结果正文；只有平台 completed、旧的流式片段或缺失 endTurn，均不能报告成功。`metadata.recoveryState=pending/awaiting_evidence` 表示等待原会话证据，主控应继续查询原 task ID，不重新派发；核实成功后为 verified，普通 GetTask 返回恢复后的完整正文并释放串行队列。无法核实的记录仍阻止新任务，不自动 release。接收端停机或沙箱休眠时无法恢复，须先恢复接收进程。
 
 恢复正文与确认终态分别处理：若已唯一匹配原提供方轮次并回放出正文，但 endTurn 缺失或冲突，GetTask 仍返回已恢复的内容，标明 `recoveryState=output_recovered`、`completionVerified=false`、`recoveryBlockedReason`（missing_end_turn / conflicting_end_turn / unconfirmed_stop_reason）。状态继续为 input-required，不把正文当作已验证完成的结果。`recoveryEndTurnCount` 区分没有结束事件和重复事件；相同提供方轮次、相同 stopReason 的重复通知按幂等证据处理，冲突的原因仍拒绝确认。

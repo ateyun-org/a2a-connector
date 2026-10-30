@@ -9,7 +9,7 @@ import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { callAgent, getAgentTask, listAgentTasks, listTargets, recoverDispatch, controlAgentTask } from './a2a-client.js';
+import { callAgent, getAgentTask, listAgentTasks, listTargets, recoverDispatch, controlAgentTask, downloadAgentArtifact } from './a2a-client.js';
 import { desktopControlInstructions, platformAccessToken, platformSetupURL, platformRelayURL, platformRequest } from './platform-client.js';
 import { acquireStateLock, connectorStatus, lockOwner, ownerAlive } from './vendor/connector/state-lock.js';
 import { loadEnrollment, validateConfig } from './vendor/connector/connector.js';
@@ -533,8 +533,11 @@ try {
   }
   else if (argv.length === 2 && argv[0] === 'outbound') await outboundStatus(argv[1]);
   else if (argv.length === 3 && argv[0] === 'task') await task(argv[1], argv[2]);
+  else if (argv.length === 6 && argv[0] === 'artifact' && argv[4] === '--output') {
+    console.log(JSON.stringify(await downloadAgentArtifact({ ...(await platformOptions()), targetId: argv[1] }, argv[2], argv[3], argv[5])));
+  }
   else if (command === 'platform login') await platformLogin();
   else if (command === 'platform status') await platformStatus();
   else if (command === 'platform logout') await platformLogout();
-  else throw new Error('Usage: workbuddy-a2a setup --relay <wss-url> [--mode desktop|cloud] [--task-id <cloud-session-id>] [--cwd /workspace] [--name <name>], doctor, connection status, targets, tasks <target-agent-id> [--page-size <1..100>] [--page-token <token>] [--context-id <id>] [--status <state>] [--history-length <n>] [--include-artifacts], auth enroll --relay <wss-url> --agent-id <Agent-ID> (private A2A_PAIR_CODE), auth connect|login|status|logout, platform login|status|logout, start|stop|run, call <target-agent-id> [--message-id <id>] [--context-id <id>] [--mode cloud|desktop] (stdin), outbound <request-id>, task <target-agent-id> <task-id>, adapter task <task-id>, cloud tasks, cloud task <cloud-session-id>, cancel <target-agent-id> <task-id>, release <target-agent-id> <task-id> [recovered-cloud-task-id], resume <target-agent-id> <task-id>, reconcile <target-agent-id> <task-id>, permission <target-agent-id> <task-id> <request-id-as-json> <option-id>');
+  else throw new Error('Usage: workbuddy-a2a setup --relay <wss-url> [--mode desktop|cloud] [--task-id <cloud-session-id>] [--cwd /workspace] [--name <name>], doctor, connection status, targets, tasks <target-agent-id> [--page-size <1..100>] [--page-token <token>] [--context-id <id>] [--status <state>] [--history-length <n>] [--include-artifacts], auth enroll --relay <wss-url> --agent-id <Agent-ID> (private A2A_PAIR_CODE), auth connect|login|status|logout, platform login|status|logout, start|stop|run, call <target-agent-id> [--message-id <id>] [--context-id <id>] [--mode cloud|desktop] (stdin), outbound <request-id>, task <target-agent-id> <task-id>, artifact <target-agent-id> <task-id> <agent-uri> --output <file>, adapter task <task-id>, cloud tasks, cloud task <cloud-session-id>, cancel <target-agent-id> <task-id>, release <target-agent-id> <task-id> [recovered-cloud-task-id], resume <target-agent-id> <task-id>, reconcile <target-agent-id> <task-id>, permission <target-agent-id> <task-id> <request-id-as-json> <option-id>');
 } catch (error) { console.error(error.message); process.exitCode = 1; }

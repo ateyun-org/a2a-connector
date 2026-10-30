@@ -86,7 +86,7 @@ ACP 地址仅信任官方 `acp.workbuddy.cn/sessions/<id>`、文档中的 `*.age
 
 原生 Go 接收端对只有 URI 的文件产物返回 `parts[].url` 和 `metadata.contentAvailability=reference_only`；实际内联正文才放在 `parts[].text`，标记为 `inline`。`agent:///...` 是提供方工作区引用，不是 Relay 下载地址；产物记录存在不能证明业务轮次已完成。
 
-Relay 健康接口包含 `workbuddyArtifactVersion=download-v1` 时，可以读取原任务的登记产物，不必取消或释放未决任务：
+Relay 健康接口包含 `workbuddyArtifactVersion=download-v1` 或 `download-v2` 时，可以读取原任务的登记产物，不必取消或释放未决任务：
 
 ```bash
 rtk proxy workbuddy-a2a artifact TARGET_AGENT_ID ORIGINAL_A2A_TASK_ID 'agent:///workspace/relay-doctor.mjs' --output ./relay-doctor.mjs

@@ -33,7 +33,8 @@ async function fixture(t, mutate = value => value) {
     const artifact = { artifactId: uri, name: '../../untrusted-name.mjs',
       parts: [{ raw: contents.toString('base64'), filename: '../../untrusted-name.mjs', mediaType: 'application/javascript' }],
       metadata: { sizeBytes: contents.length, sha256: createHash('sha256').update(contents).digest('hex') } };
-    res.end(JSON.stringify({ jsonrpc: '2.0', id: rpc.id, result: { artifact: mutate(artifact) } }));
+    const value = mutate(artifact);
+    res.end(JSON.stringify({ jsonrpc: '2.0', id: rpc.id, ...(value?.error ? { error: value.error } : { result: { artifact: value } }) }));
   });
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
@@ -91,4 +92,28 @@ test('artifact CLI uses the paired identity and explicit output path', async t =
   assert.deepEqual(await readFile(destination), f.contents);
   assert.deepEqual(f.methods, ['GetArtifact']);
   assert.equal(stdout.includes(enrollment.token), false);
+});
+
+test('artifact read errors retain structured diagnostics and show only safe status summaries', async t => {
+  const data = { stage: 'artifact_download', artifactRegistered: true, retryable: false,
+    url: 'https://private.example/signed?private-secret', ticket: 'private-secret',
+    attempts: [{ source: 'entry_url', reason: 'http_status', httpStatus: 403, url: 'https://private.example/private-secret' },
+      { source: 'sandbox_path', reason: 'http_status', httpStatus: 404 }] };
+  const f = await fixture(t, () => ({ error: { code: -32002, message: 'Cloud artifact unavailable', data } }));
+  await assert.rejects(getAgentArtifact(f.options, 'unresolved-task', uri), error => {
+    assert.equal(error.code, -32002);
+    assert.deepEqual(error.data, data);
+    assert.match(error.message, /stage=artifact_download; entry_url=HTTP_403; sandbox_path=HTTP_404; retryable=false/);
+    assert.equal(error.message.includes('private-secret'), false);
+    return true;
+  });
+  await writeFile(join(f.dir, 'workbuddy.json'), JSON.stringify({ ...enrollment, card: `${f.base}/agents/caller/.well-known/agent-card.json` }), { mode: 0o600 });
+  await assert.rejects(execute(process.execPath, [resolve('plugins/workbuddy/cli.js'), 'artifact', 'receiver', 'unresolved-task', uri, '--output', join(f.dir, 'result')],
+    { env: { ...process.env, A2A_CONNECTOR_CONFIG_DIR: f.dir, A2A_CONNECTOR_INSTANCE: 'default' } }), error => {
+    assert.match(error.stderr, /entry_url=HTTP_403; sandbox_path=HTTP_404; retryable=false/);
+    assert.equal(error.stderr.includes('private-secret'), false);
+    return true;
+  });
+  assert.deepEqual(await readdir(f.dir), ['workbuddy.json']);
+  assert.deepEqual(f.methods, ['GetArtifact', 'GetArtifact']);
 });

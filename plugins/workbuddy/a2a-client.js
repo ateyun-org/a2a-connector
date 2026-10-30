@@ -76,7 +76,21 @@ async function openRPC({ relay, allowInsecure = false, enrollment, targetId, rel
     const reply = await request(endpoint, enrollment.token, { method: 'POST',
       ...(method === 'SendMessage' && relayRequestId ? { headers: { 'X-Relay-Request-Id': relayRequestId } } : {}),
       body: JSON.stringify({ jsonrpc: '2.0', id: ++id, method, params }) });
-    if (reply?.error) throw new Error(`A2A ${method} failed: ${reply.error.message || reply.error.code}`);
+    if (reply?.error) {
+      let summary = '';
+      const data = reply.error.data;
+      if (method === 'GetArtifact' && data && ['artifact_list', 'artifact_lookup', 'artifact_download'].includes(data.stage)) {
+        const reasons = new Set(['http_status', 'ticket_expired', 'redirect_blocked', 'request_failed', 'timeout', 'canceled', 'address_blocked', 'invalid_request', 'invalid_response', 'not_found', 'untrusted_url', 'size_limit', 'body_read_failed']);
+        const attempts = (Array.isArray(data.attempts) ? data.attempts : []).slice(0, 2)
+          .filter(attempt => ['entry_url', 'sandbox_path', 'artifact_list'].includes(attempt?.source))
+          .map(attempt => `${attempt.source}=${Number.isInteger(attempt.httpStatus) && attempt.httpStatus >= 100 && attempt.httpStatus <= 599 ? `HTTP_${attempt.httpStatus}` : reasons.has(attempt.reason) ? attempt.reason : 'unavailable'}`);
+        summary = `; stage=${data.stage}${attempts.length ? '; ' + attempts.join('; ') : ''}${typeof data.retryable === 'boolean' ? `; retryable=${data.retryable}` : ''}`;
+      }
+      const error = new Error(`A2A ${method} failed: ${reply.error.message || reply.error.code}${summary}`);
+      error.code = reply.error.code;
+      error.data = data;
+      throw error;
+    }
     if (!reply || !('result' in reply)) throw new Error(`A2A ${method} returned no result`);
     return reply.result;
   };

@@ -80,10 +80,11 @@ async function openRPC({ relay, allowInsecure = false, enrollment, targetId, rel
       let summary = '';
       const data = reply.error.data;
       if (method === 'GetArtifact' && data && ['artifact_list', 'artifact_lookup', 'artifact_download'].includes(data.stage)) {
-        const reasons = new Set(['http_status', 'ticket_expired', 'redirect_blocked', 'request_failed', 'timeout', 'canceled', 'address_blocked', 'invalid_request', 'invalid_response', 'not_found', 'untrusted_url', 'size_limit', 'body_read_failed']);
-        const attempts = (Array.isArray(data.attempts) ? data.attempts : []).slice(0, 2)
-          .filter(attempt => ['entry_url', 'sandbox_path', 'artifact_list'].includes(attempt?.source))
-          .map(attempt => `${attempt.source}=${Number.isInteger(attempt.httpStatus) && attempt.httpStatus >= 100 && attempt.httpStatus <= 599 ? `HTTP_${attempt.httpStatus}` : reasons.has(attempt.reason) ? attempt.reason : 'unavailable'}`);
+        const reasons = new Set(['http_status', 'authentication_required', 'ticket_expired', 'redirect_blocked', 'request_failed', 'timeout', 'canceled', 'address_blocked', 'invalid_request', 'invalid_response', 'not_found', 'untrusted_url', 'size_limit', 'body_read_failed']);
+        const rejections = new Set(['data_origin_missing', 'invalid_data_origin', 'invalid_acp_origin', 'acp_origin_not_sandbox', 'data_scheme_not_https', 'data_port_not_https', 'data_host_not_envd', 'sandbox_id_mismatch', 'sandbox_region_mismatch', 'sandbox_family_mismatch', 'data_userinfo_not_allowed', 'data_query_not_supported', 'data_fragment_not_allowed', 'data_path_not_supported']);
+        const attempts = (Array.isArray(data.attempts) ? data.attempts : []).slice(0, 3)
+          .filter(attempt => ['entry_url', 'sandbox_data', 'sandbox_path', 'artifact_list'].includes(attempt?.source))
+          .map(attempt => `${attempt.source}=${Number.isInteger(attempt.httpStatus) && attempt.httpStatus >= 100 && attempt.httpStatus <= 599 ? `HTTP_${attempt.httpStatus}` : reasons.has(attempt.reason) ? attempt.reason : 'unavailable'}${rejections.has(attempt.rejection) ? `(${attempt.rejection})` : ''}`);
         summary = `; stage=${data.stage}${attempts.length ? '; ' + attempts.join('; ') : ''}${typeof data.retryable === 'boolean' ? `; retryable=${data.retryable}` : ''}`;
       }
       const error = new Error(`A2A ${method} failed: ${reply.error.message || reply.error.code}${summary}`);

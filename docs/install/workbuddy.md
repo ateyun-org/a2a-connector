@@ -196,3 +196,9 @@ rtk proxy sh scripts/install-connector.sh install --host workbuddy --relay wss:/
 Relay `completion-recovery-v4` 同时读取 GET SSE 和原始 prompt 的 POST SSE；后者的最终 JSON-RPC 响应按原请求 ID 匹配。响应流不受 15 秒发起请求期限截断，沿用原 turn 的等待期限。没有用户回显时，只接纳可关联到原 prompt 的 POST 正文；无法关联的实时文字单独保留为 `outputVerified:false` 的内联产物，不据此判定完成，也不自动重发。
 
 `download-v3` 在确认原会话产物登记后，优先 Entry URL，再尝试经同一沙箱 ID/区域校验的上游 `sandboxDataLink` envd `GET /files?path=…`，最后保留原 ACP 路径兼容。envd 的 `49983` 与 ACP 的 `65225` 是不同服务。不会猜测主机、跨 origin 转发 ACP ticket 或把其冒充 envd X-Access-Token；当前无 envd 凭证契约时匿名读取，401/403 如实记录。诊断新增 `sandbox_data` 来源、数据面资格/尝试标记和 GET/POST 收流计数。
+
+`completion-recovery-v5` 增加双通道 2 分钟无字节读取超时；任一 SSE 通道的数据或心跳都会续期，权限待答暂停空闲计时。超时仅停止本地跟踪并标记结果未知，不取消远端、不自动释放未决槽位、不自动重发。持续心跳但无最终响应仍受原 30 分钟 turn 上限约束，诊断的 lastByteAt/bytesReceived 可区分这两种情况。
+
+`download-v4` 接受等价的 HTTPS `:443` 和主机名大小写；其他 URL 拒绝增加固定 rejection 分类，CLI 会显示 sandbox_data 和全部三个下载来源。需要同时提供 upstream 的 link/sandboxDataLink 脱敏 shape 与 rejection 才能确定失败条件；不能单凭 untrusted_url 放宽主机、签名 query 或跨沙箱校验。
+
+`download-v4` 同时覆盖 AgentOS 数据面：原 ACP `65225-<沙箱ID>.<区域>.agentos-run.net/acp` 与上游返回的 `49983-<同沙箱ID>.<同区域>.agentos-run.net/` 通过配对校验。AgentOS 的 ID 按不透明字母数字标识处理，区别于 CloudStudio 的 32 位十六进制格式。两侧须同域名族，不允许 AgentOS / CloudStudio 混搭；错误分类为 sandbox_family_mismatch。hadQuery 是原生 Go 脱敏结构的可选布尔标记，false 时省略，缺少该字段不表示数据面资格或尝试状态。

@@ -117,3 +117,23 @@ test('artifact read errors retain structured diagnostics and show only safe stat
   assert.deepEqual(await readdir(f.dir), ['workbuddy.json']);
   assert.deepEqual(f.methods, ['GetArtifact', 'GetArtifact']);
 });
+
+test('artifact diagnostics include data-plane rejection and all three paths without leaking unknown values', async t => {
+  for (const rejection of ['data_query_not_supported', 'sandbox_family_mismatch', 'private-secret']) {
+    const data = { stage: 'artifact_download', artifactRegistered: true, retryable: false,
+      attempts: [{ source: 'entry_url', reason: 'http_status', httpStatus: 403 },
+        { source: 'sandbox_data', reason: 'untrusted_url', rejection, url: 'https://private.example/?private-secret' },
+        { source: 'sandbox_path', reason: 'http_status', httpStatus: 404 }] };
+    const f = await fixture(t, () => ({ error: { code: -32002, message: 'Cloud artifact unavailable', data } }));
+    await assert.rejects(getAgentArtifact(f.options, 'unresolved-task', uri), error => {
+      assert.match(error.message, /entry_url=HTTP_403; sandbox_data=untrusted_url/);
+      assert.match(error.message, /sandbox_path=HTTP_404/);
+      assert.equal(error.message.includes('private-secret'), false);
+      if (rejection === 'data_query_not_supported') assert.match(error.message, /\(data_query_not_supported\)/);
+      if (rejection === 'sandbox_family_mismatch') assert.match(error.message, /\(sandbox_family_mismatch\)/);
+      assert.deepEqual(error.data, data);
+      return true;
+    });
+    assert.deepEqual(f.methods, ['GetArtifact']);
+  }
+});

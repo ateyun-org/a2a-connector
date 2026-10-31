@@ -207,3 +207,8 @@ Relay `completion-recovery-v4` 同时读取 GET SSE 和原始 prompt 的 POST SS
 `download-v5` 在下载失败的 error.data 增加 registration.entryURLPresent / entryURLKind，证据来自原会话 REST Entry。GetTask 的 agent:/// parts 不显示签名 Entry URL，不能据此断言 provider 没给 URL。若实际 Entry 无可用 URL、envd 需认证且 ACP 文件路径 404，则固定 blocker 为 provider_file_access_contract。provider 注册的相对 Entry URL 已可用；仍需 provider 给出真实下载路由或独立数据面鉴权契约，不能从 agent URI 编造 URL 或转发 ACP 凭据。
 
 `completion-recovery-v6` 将 prompt 发出后收到的 history 正文按提供方轮次、GET/POST 通道分别保留，总量上限 512 KiB。只展示独立关联到原轮次的回放，不把其他历史并入答案。终态时若回放包含全部已接收正文，则补全答案；重复通道快照不重复拼接，冲突内容分开保留并标为完整性未核实。metadata.outputIntegrity 与最终正文 artifact 给出 completeness / sizeBytes / sha256 / truncated；stream_complete 仅表示已收到的关联流结束且没有已知丢失或歧义，不担保与 provider UI 内容相同。实际达到采集或 provider 限制才标 truncated；仅有大量 history 不足以证明截断。completionVerified 仍表示轮次结束信号被核实，不能单独用作正文完整性凭据。旧版已经丢弃的帧不能靠升级重建，若旧诊断记录 answer_ignored_history，则完整性保持 unverified。
+
+
+`completion-recovery-v7` 给 Unverified live output、关联回放、provider 内联文本都加上各自的 outputIntegrity，校验和与字节数仅对应本 artifact 的真实正文。没有关联 Answer 的云端完成提示命名为 WorkBuddy completion notice，contentRole=execution_notice。请求的目标长度不能作为 provider 实际生成长度；无已知截断时，未验证输出保持 unverified。
+
+execution.updates 按固定的 ACP SessionUpdate 类型记录帧数、标准内容块文本字节数、非标准文本字节数、content shape 和通道；思考/工具/状态不算作答案。统计不含正文、ID、命令、rawInput/rawOutput。lastResponse.hasProviderId 只表示结果中是否出现已识别的 provider 标识。旧诊断无法回补这些统计。回放正文入口是独立关联后的 correlated-replay artifact，并非 GetTask.history；没有 history 计数时不能断言未交付正文被保留在历史缓冲区。

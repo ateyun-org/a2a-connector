@@ -190,3 +190,9 @@ rtk proxy sh scripts/install-connector.sh install --host workbuddy --relay wss:/
 ```
 
 修复配对时遵循[通用恢复顺序](shared.md#兑换失败重复申请与安全恢复)，不可因未知结果重复兑换一次性 pairing code 或覆盖凭据。
+
+### 原生 Go 接收端的 POST SSE 与 envd 文件路由
+
+Relay `completion-recovery-v4` 同时读取 GET SSE 和原始 prompt 的 POST SSE；后者的最终 JSON-RPC 响应按原请求 ID 匹配。响应流不受 15 秒发起请求期限截断，沿用原 turn 的等待期限。没有用户回显时，只接纳可关联到原 prompt 的 POST 正文；无法关联的实时文字单独保留为 `outputVerified:false` 的内联产物，不据此判定完成，也不自动重发。
+
+`download-v3` 在确认原会话产物登记后，优先 Entry URL，再尝试经同一沙箱 ID/区域校验的上游 `sandboxDataLink` envd `GET /files?path=…`，最后保留原 ACP 路径兼容。envd 的 `49983` 与 ACP 的 `65225` 是不同服务。不会猜测主机、跨 origin 转发 ACP ticket 或把其冒充 envd X-Access-Token；当前无 envd 凭证契约时匿名读取，401/403 如实记录。诊断新增 `sandbox_data` 来源、数据面资格/尝试标记和 GET/POST 收流计数。

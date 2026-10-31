@@ -90,6 +90,22 @@ The result is `{artifact:{artifactId,name,parts:[{raw,filename,mediaType}],metad
 
 CLI: `workbuddy-a2a artifact TARGET TASK_ID 'agent:///workspace/relay-doctor.mjs' --output ./relay-doctor.mjs` verifies integrity and writes mode 0600 without overwriting an existing file. MCP: `a2a_artifact({targetAgentId,taskId,artifactId})` reads up to 512 KiB, returning UTF-8 text inline or binary Base64 raw bytes. Do not probe arbitrary RPC methods or HTTP paths for file contents.
 
+## Read server-side task diagnostics
+
+Relay health `workbuddyDiagnosticsVersion:"diagnostics-v1"` and native card metadata `taskDiagnosticsMethod:"GetTaskDiagnostics"` identify support. Use the original caller/target and A2A task ID on the same JSONRPC endpoint:
+
+```json
+{"jsonrpc":"2.0","id":"diag-1","method":"GetTaskDiagnostics","params":{"id":"ORIGINAL_A2A_TASK_ID"}}
+```
+
+Requires `task_read` and task ownership, with the usual personal member/machine grant intersection. Card lookup also needs discover. The receiver refreshes only the original cloud task metadata, verifies its identity, and returns `{taskId,contextId,state,dispatchState,diagnostics,upstreamRefresh}`. It works for retained released/terminal tasks without claiming a slot, changing task status/timestamp, sending work, opening ACP, or creating a dispatch receipt. A failed refresh sets `upstreamRefresh.succeeded:false`; cached observations retain their original timestamp.
+
+`diagnostics.upstream` contains separate sanitized shapes of link/sandboxLink/sandboxDataLink: scheme, host/port and redacted path. Query values, user info, fragments, tickets, unknown path segments and signed URLs are omitted. `artifactBasePolicy` / `sandboxDataLinkUsed` describe the implemented file mapping, not proof of file existence. These fields are for diagnosis only; never construct authenticated requests from them.
+
+`diagnostics.execution` and `diagnostics.recovery` are separate bounded ACP summaries: local request IDs, per-method POST HTTP status/content type, frame and matched/unmatched response counts, numeric response ID/type, recognized stop-reason presence, session/provider correlation counts, recognized provider-field presence/types, accepted/ignored answer chunks, and fixed failure stage/reason. No raw frames or body text are exposed. GetTask.metadata.diagnostics also carries recorded summaries and a live execution snapshot. Checkpoints retain sanitized summaries in the encrypted task journal. Older/crashed tasks explicitly return executionCapture/recoveryCapture=not_recorded; do not interpret missing instrumentation as zero upstream messages. Endpoint refresh cannot reconstruct historical ACP traffic.
+
+CLI: `workbuddy-a2a diagnostics TARGET TASK_ID`. MCP: `a2a_diagnostics({targetAgentId,taskId})`. Neither requires a target-side CLI. Native hosted WorkBuddy connects ACP inside the Go Relay process. A cloud-task metadata command does not provide a historical raw ACP transcript.
+
 ## Durable receipts and uncertain sends
 
 Read `GET /relay/requests/<relayRequestId>` with the **same caller credentials**. This endpoint works through Relay. It reports the original request state and, when completed, its `responseBody`; parse that body to get the task/error. Receipt completion is HTTP response completion, not necessarily task completion.

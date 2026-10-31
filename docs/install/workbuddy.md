@@ -94,6 +94,10 @@ rtk proxy workbuddy-a2a artifact TARGET_AGENT_ID ORIGINAL_A2A_TASK_ID 'agent:///
 
 需要 `task_read`、原任务归属及客户端发现能力卡所需的 `discover`；不要求 `invoke`。CLI 调用 `GetArtifact({id,artifactId})`，校验文件大小和 SHA-256 后按原始字节保存，权限为 0600，已有文件不会覆盖。RPC/CLI 单文件上限 8 MiB；MCP 工具 `a2a_artifact({targetAgentId,taskId,artifactId})` 上限 512 KiB，文本文件直接返回正文。此功能当前适用于提供 `/acp` 沙箱端点的原生 Go 云端接收端；不支持的目标返回明确错误。下载成功不改变任务状态，也不代表业务轮次已完成。上游票据和签名地址只在服务端短暂使用，不返回客户端。
 
+健康接口 `workbuddyDiagnosticsVersion=diagnostics-v1` 表示支持服务端诊断。沿用原调用身份和 RPC 地址调用 `GetTaskDiagnostics({id: 原 A2A task ID})`，或运行 `workbuddy-a2a diagnostics TARGET TASK_ID`；MCP 使用 `a2a_diagnostics({targetAgentId,taskId})`。需要 `task_read` 和原任务归属。可查询保留的 REJECTED/tracking_released 任务，只刷新原云任务元信息，不发 prompt、不重连 ACP、不改变任务状态或占槽。
+
+返回 `diagnostics.upstream` 中 link/sandboxLink/sandboxDataLink 的 host/port 和脱敏路径，用于核对当前 `artifactBasePolicy`。新采集的 `execution`、`recovery` 分开报告 POST 状态/内容类型、请求 ID、响应匹配、session/provider 关联、正文接纳/过滤计数和失败阶段。GetTask.metadata.diagnostics 同步展示已有及实时执行摘要。历史任务没有采集到的协议数据标记为 `not_recorded`，不会伪造旧帧；刷新地址也无法还原历史 ACP 流。不会返回 token、签名 URL、正文或原始帧。原生 Go 接收端的 ACP 位于 Relay 进程内，不需要目标机安装 Node adapter/CLI；cloud task 查询命令也不自动提供原始 ACP 记录。
+
 接收端重启后会自动对符合上述条件的原任务执行只读核实；断线后的未知结果也会每30秒重试核实。普通 `GetTask` 会触发后台检查，不需要接收端获得调用自身的 ACL，也不要求主控先调用 reconcile。核实必须恢复对应轮次的结果正文；只有平台 completed、旧的流式片段或缺失 endTurn，均不能报告成功。`metadata.recoveryState=pending/awaiting_evidence` 表示等待原会话证据，主控应继续查询原 task ID，不重新派发；核实成功后为 verified，普通 GetTask 返回恢复后的完整正文并释放串行队列。无法核实的记录仍阻止新任务，不自动 release。接收端停机或沙箱休眠时无法恢复，须先恢复接收进程。
 
 恢复正文与确认终态分别处理：若已唯一匹配原提供方轮次并回放出正文，但 endTurn 缺失或冲突，GetTask 仍返回已恢复的内容，标明 `recoveryState=output_recovered`、`completionVerified=false`、`recoveryBlockedReason`（missing_end_turn / conflicting_end_turn / unconfirmed_stop_reason）。状态继续为 input-required，不把正文当作已验证完成的结果。`recoveryEndTurnCount` 区分没有结束事件和重复事件；相同提供方轮次、相同 stopReason 的重复通知按幂等证据处理，冲突的原因仍拒绝确认。

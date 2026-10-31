@@ -129,6 +129,19 @@ export async function getAgentTask(options, taskId) {
   return presentTask(options.targetId, task);
 }
 
+/** Query only the original task's sanitized server-side diagnostic view. */
+export async function getAgentDiagnostics(options, taskId) {
+  if (typeof taskId !== 'string' || !taskId || taskId.length > 255 || /[\u0000-\u001f\u007f]/.test(taskId)) throw new Error('invalid task ID');
+  const rpc = await openRPC(options);
+  const result = await rpc('GetTaskDiagnostics', { id: taskId });
+  if (result?.taskId !== taskId || result.diagnostics?.version !== 'diagnostics-v1' ||
+      !['recorded', 'not_recorded'].includes(result.diagnostics.executionCapture) ||
+      typeof result.upstreamRefresh?.attempted !== 'boolean' || typeof result.upstreamRefresh?.succeeded !== 'boolean') {
+    throw new Error('A2A GetTaskDiagnostics returned an invalid diagnostic view');
+  }
+  return result;
+}
+
 export function validArtifactURI(uri) {
   if (typeof uri !== 'string' || !uri.startsWith('agent:///') || uri.length > 2048 || /[\u0000-\u001f\u007f%\\?#]/.test(uri)) return false;
   return uri.slice('agent:///'.length).split('/').every(part => part && part !== '.' && part !== '..');

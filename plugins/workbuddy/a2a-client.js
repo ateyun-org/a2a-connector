@@ -86,6 +86,8 @@ async function openRPC({ relay, allowInsecure = false, enrollment, targetId, rel
           .filter(attempt => ['entry_url', 'sandbox_data', 'sandbox_path', 'artifact_list'].includes(attempt?.source))
           .map(attempt => `${attempt.source}=${Number.isInteger(attempt.httpStatus) && attempt.httpStatus >= 100 && attempt.httpStatus <= 599 ? `HTTP_${attempt.httpStatus}` : reasons.has(attempt.reason) ? attempt.reason : 'unavailable'}${rejections.has(attempt.rejection) ? `(${attempt.rejection})` : ''}`);
         summary = `; stage=${data.stage}${attempts.length ? '; ' + attempts.join('; ') : ''}${typeof data.retryable === 'boolean' ? `; retryable=${data.retryable}` : ''}`;
+        if (['absent', 'relative', 'absolute', 'provider_reference', 'invalid'].includes(data.registration?.entryURLKind)) summary += `; entryURL=${data.registration.entryURLKind}`;
+        if (data.blocker === 'provider_file_access_contract') summary += '; blocker=provider_file_access_contract';
       }
       const error = new Error(`A2A ${method} failed: ${reply.error.message || reply.error.code}${summary}`);
       error.code = reply.error.code;

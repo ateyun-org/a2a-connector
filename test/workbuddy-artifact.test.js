@@ -137,3 +137,22 @@ test('artifact diagnostics include data-plane rejection and all three paths with
     assert.deepEqual(f.methods, ['GetArtifact']);
   }
 });
+
+test('artifact diagnostics distinguish a missing provider file-access contract using fixed safe labels', async t => {
+  for (const known of [true, false]) {
+    const data = { stage: 'artifact_download', artifactRegistered: true, retryable: false,
+      registration: { entryURLPresent: false, entryURLKind: known ? 'absent' : 'private-secret' },
+      blocker: known ? 'provider_file_access_contract' : 'private-secret',
+      attempts: [{ source: 'sandbox_data', reason: 'authentication_required', httpStatus: 401 },
+        { source: 'sandbox_path', reason: 'http_status', httpStatus: 404 }] };
+    const f = await fixture(t, () => ({ error: { code: -32002, message: 'Cloud artifact unavailable', data } }));
+    await assert.rejects(getAgentArtifact(f.options, 'unresolved-task', uri), error => {
+      assert.match(error.message, /sandbox_data=HTTP_401; sandbox_path=HTTP_404; retryable=false/);
+      assert.equal(error.message.includes('entryURL=absent; blocker=provider_file_access_contract'), known);
+      assert.equal(error.message.includes('private-secret'), false);
+      assert.deepEqual(error.data, data);
+      return true;
+    });
+    assert.deepEqual(f.methods, ['GetArtifact']);
+  }
+});

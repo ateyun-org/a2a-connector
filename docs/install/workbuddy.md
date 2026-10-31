@@ -202,3 +202,8 @@ Relay `completion-recovery-v4` 同时读取 GET SSE 和原始 prompt 的 POST SS
 `download-v4` 接受等价的 HTTPS `:443` 和主机名大小写；其他 URL 拒绝增加固定 rejection 分类，CLI 会显示 sandbox_data 和全部三个下载来源。需要同时提供 upstream 的 link/sandboxDataLink 脱敏 shape 与 rejection 才能确定失败条件；不能单凭 untrusted_url 放宽主机、签名 query 或跨沙箱校验。
 
 `download-v4` 同时覆盖 AgentOS 数据面：原 ACP `65225-<沙箱ID>.<区域>.agentos-run.net/acp` 与上游返回的 `49983-<同沙箱ID>.<同区域>.agentos-run.net/` 通过配对校验。AgentOS 的 ID 按不透明字母数字标识处理，区别于 CloudStudio 的 32 位十六进制格式。两侧须同域名族，不允许 AgentOS / CloudStudio 混搭；错误分类为 sandbox_family_mismatch。hadQuery 是原生 Go 脱敏结构的可选布尔标记，false 时省略，缺少该字段不表示数据面资格或尝试状态。
+
+
+`download-v5` 在下载失败的 error.data 增加 registration.entryURLPresent / entryURLKind，证据来自原会话 REST Entry。GetTask 的 agent:/// parts 不显示签名 Entry URL，不能据此断言 provider 没给 URL。若实际 Entry 无可用 URL、envd 需认证且 ACP 文件路径 404，则固定 blocker 为 provider_file_access_contract。provider 注册的相对 Entry URL 已可用；仍需 provider 给出真实下载路由或独立数据面鉴权契约，不能从 agent URI 编造 URL 或转发 ACP 凭据。
+
+`completion-recovery-v6` 将 prompt 发出后收到的 history 正文按提供方轮次、GET/POST 通道分别保留，总量上限 512 KiB。只展示独立关联到原轮次的回放，不把其他历史并入答案。终态时若回放包含全部已接收正文，则补全答案；重复通道快照不重复拼接，冲突内容分开保留并标为完整性未核实。metadata.outputIntegrity 与最终正文 artifact 给出 completeness / sizeBytes / sha256 / truncated；stream_complete 仅表示已收到的关联流结束且没有已知丢失或歧义，不担保与 provider UI 内容相同。实际达到采集或 provider 限制才标 truncated；仅有大量 history 不足以证明截断。completionVerified 仍表示轮次结束信号被核实，不能单独用作正文完整性凭据。旧版已经丢弃的帧不能靠升级重建，若旧诊断记录 answer_ignored_history，则完整性保持 unverified。

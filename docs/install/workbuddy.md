@@ -219,3 +219,12 @@ execution.updates 按固定的 ACP SessionUpdate 类型记录帧数、标准内�
 已完成 cloud 任务也可显式调用 ReconcileCloudTask 回查正文，前提是原会话仍可读取；不会重开 rejected / released / canceled 任务。metadata.outputRecovery 包含 state / liveBytes / replayBytes / ordered。state 可为 pending、reconciled、unavailable、no_unique_original_prompt、no_original_turn_text、unverified_ordering、conflict、capture_limit。只有同通道的 load 响应排在所选回放之后，才记 ordered=true；不能仅靠另一通道的 load 响应断言 GET 已收齐。无法核实正文时保持 completeness=unverified，已确认本轮采集超限才标 partial；completionVerified 仍单独表示权威结束信号。回查不保证能恢复 provider 未保留的正文。
 
 execution.updates 是整个 ACP 连接的统计，包含初始加载的历史答案及重复通道快照；即使只看 agent_message_chunk.textBytes，也不能把它当成本轮应交付字节数。v8 的 updatesByPhase.before_prompt / after_prompt_dispatch 按本地派发时刻分开统计，各类型另有 historyFrames / historyTextBytes。分类依据是接收时序和 provider 标志，不能替代轮次关联。outputRecovery.replayBytes 才是独立关联后的原轮次选定回放长度；精确文件交付仍须核对独立预期的长度和 sha256。文件下载保持 download-v5；实际 Entry 无 URL、envd 401、ACP 路径 404 时，仍需 provider 给出真实下载地址或受支持的数据面授权。
+
+
+`completion-recovery-v9`（原生 Go 接收端）修复“复用会话、业务未派发却永久占槽”：同一 context 的后续轮次复用上一轮云 task，cloudName 与本轮 A2A taskId 不同属于正常情况。已知原会话且持久化记录确认没有业务发送意图、prompt request ID、响应、权限请求或正文证据时，就绪/建连/加载失败记为 FAILED / not-sent，blockedReason=business_prompt_not_sent，保留 failureStage / lastPollError。重启或空闲对账也会收尾这类旧记录，不自动恢复或重发。executionCapture:not_recorded 本身不能证明从未建立 ACP 连接。
+
+若旧记录仍为 INPUT_REQUIRED 且本地 worker、recovery、连接均已退出，可用 CancelTask 本地关闭为 CANCELED / canceled_before_prompt，或 ReleaseCloudTask 关闭为 REJECTED / tracking_released_before_prompt；复用云会话仍 working 也不妨碍收尾本轮未派发的跟踪。这两个本地分支不访问、不取消上一轮的云会话。若已有发送意图/矛盾证据，或云任务创建结果未知且没有原句柄，仍按原规则核实，不能套用此例外。
+
+原生 v9 的显式 ResumeCloudTask 也允许通过已有 context 记录核实的未派发续轮，以及 FAILED / business_prompt_not_sent；它沿用原 task/context/remoteTaskId，仍检查 task_read + invoke、原归属、其他云槽位和 provider 就绪状态。已被用户 cancel/release 的记录不恢复，不自动重发。对仍活跃的旧云会话，新 context 可建立独立会话；不要绕过同 context 的就绪检查。
+
+SendMessage 的 -32000 增加 error.data.slotOccupied / mode。只有请求显式携带已获授权且与占用者相同的 contextId，才返回 blocker 的 taskId/state/dispatchState/businessPromptAttempted/localTrackingActive/releaseBeforePromptEligible/failureStage/updatedAt/ageSeconds；新 context 或不同 context 不返回他人的占用任务标识。releaseBeforePromptEligible 仅描述本地状态，控制操作仍需各自的 action grant。

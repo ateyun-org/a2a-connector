@@ -212,3 +212,10 @@ Relay `completion-recovery-v4` 同时读取 GET SSE 和原始 prompt 的 POST SS
 `completion-recovery-v7` 给 Unverified live output、关联回放、provider 内联文本都加上各自的 outputIntegrity，校验和与字节数仅对应本 artifact 的真实正文。没有关联 Answer 的云端完成提示命名为 WorkBuddy completion notice，contentRole=execution_notice。请求的目标长度不能作为 provider 实际生成长度；无已知截断时，未验证输出保持 unverified。
 
 execution.updates 按固定的 ACP SessionUpdate 类型记录帧数、标准内容块文本字节数、非标准文本字节数、content shape 和通道；思考/工具/状态不算作答案。统计不含正文、ID、命令、rawInput/rawOutput。lastResponse.hasProviderId 只表示结果中是否出现已识别的 provider 标识。旧诊断无法回补这些统计。回放正文入口是独立关联后的 correlated-replay artifact，并非 GetTask.history；没有 history 计数时不能断言未交付正文被保留在历史缓冲区。
+
+
+`completion-recovery-v8` 在原 prompt 的权威 end_turn 之后、最终交付之前，只读回查原云会话一次（总计最多 20 秒）。POST 的完成响应不能证明 GET 已消费完正文。回查支持拼接原提示词的分片，最多收集每通道 1024 个轮次，答案总量 4 MiB、单轮次/通道 512 KiB；前四个旧轮次不再挤掉本轮。必须以完整原提示词、创建时间和可选已存 provider ID 唯一关联；只用包含全部已接收正文的同轮次回放补全答案，不拼接冲突快照，也不重发业务指令、取消或权限决定。
+
+已完成 cloud 任务也可显式调用 ReconcileCloudTask 回查正文，前提是原会话仍可读取；不会重开 rejected / released / canceled 任务。metadata.outputRecovery 包含 state / liveBytes / replayBytes / ordered。state 可为 pending、reconciled、unavailable、no_unique_original_prompt、no_original_turn_text、unverified_ordering、conflict、capture_limit。只有同通道的 load 响应排在所选回放之后，才记 ordered=true；不能仅靠另一通道的 load 响应断言 GET 已收齐。无法核实正文时保持 completeness=unverified，已确认本轮采集超限才标 partial；completionVerified 仍单独表示权威结束信号。回查不保证能恢复 provider 未保留的正文。
+
+execution.updates 是整个 ACP 连接的统计，包含初始加载的历史答案及重复通道快照；即使只看 agent_message_chunk.textBytes，也不能把它当成本轮应交付字节数。v8 的 updatesByPhase.before_prompt / after_prompt_dispatch 按本地派发时刻分开统计，各类型另有 historyFrames / historyTextBytes。分类依据是接收时序和 provider 标志，不能替代轮次关联。outputRecovery.replayBytes 才是独立关联后的原轮次选定回放长度；精确文件交付仍须核对独立预期的长度和 sha256。文件下载保持 download-v5；实际 Entry 无 URL、envd 401、ACP 路径 404 时，仍需 provider 给出真实下载地址或受支持的数据面授权。

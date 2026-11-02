@@ -88,6 +88,10 @@ async function openRPC({ relay, allowInsecure = false, enrollment, targetId, rel
         summary = `; stage=${data.stage}${attempts.length ? '; ' + attempts.join('; ') : ''}${typeof data.retryable === 'boolean' ? `; retryable=${data.retryable}` : ''}`;
         if (['absent', 'relative', 'absolute', 'provider_reference', 'invalid'].includes(data.registration?.entryURLKind)) summary += `; entryURL=${data.registration.entryURLKind}`;
         if (data.blocker === 'provider_file_access_contract') summary += '; blocker=provider_file_access_contract';
+        if (data.downloadSource === 'relay_temp') {
+          summary += '; source=relay_temp';
+          if (['relay_artifact_expired_or_missing', 'relay_artifact_integrity_failed', 'relay_artifact_unavailable', 'artifact_exceeds_byte_limit'].includes(data.reason)) summary += `; reason=${data.reason}`;
+        }
       }
       const error = new Error(`A2A ${method} failed: ${reply.error.message || reply.error.code}${summary}`);
       error.code = reply.error.code;

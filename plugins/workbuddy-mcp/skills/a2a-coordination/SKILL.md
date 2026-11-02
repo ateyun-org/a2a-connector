@@ -1,6 +1,6 @@
 ---
 name: a2a-coordination
-description: Use Chuanbota's OAuth-protected MCP tools to delegate authorized A2A tasks, track durable requests and retrieve results.
+description: Use Chuanbota's OAuth-protected MCP tools to delegate authorized A2A tasks, recover durable requests and retrieve results or file deliverables using native delivery and Relay fallback.
 ---
 
 Relay uses organization authorization as its only runtime. Manage identities and grants in `/console`; there is no global pairing approval or shared administrator/client token authentication.
@@ -26,6 +26,18 @@ The connector uses its own OAuth tokens. They are distinct from the Buddy applic
 6. `a2a_cancel(targetAgentId, taskId)`: request cancellation when asked. Query afterwards until the actual canceled state arrives. Desktop localassistant targets may explicitly report cancellation unsupported.
 7. `a2a_permission(targetAgentId, taskId, requestId, optionId)`: only after the human explicitly chooses an option, send that exact original optionId and preserve requestId's string/number type. Show the actual tool details and options first. Never select an approval merely to continue execution.
 8. `a2a_release(targetAgentId, taskId, cloudTaskId?)`: only when the human explicitly asks to abandon unresolved tracking. The target requires an inactive cloud session and verifies recovered creation IDs by their original cloudName. This marks tracking rejected/unverified, not remotely canceled or successfully completed. Never release an unknown task automatically to free a queue.
+
+## Retrieve delivered files
+
+Prefer native file bytes or a verified caller-accessible URL. If a Connector-backed target (including Hermes/OpenClaw) returned only a local path, the user-authorized file delivery can require a separate transfer-only follow-up to that same receiving Agent: supply the original task ID and exact existing deliverable path, use the supported context and a new stable message ID, and ask it to upload that file with its own paired Connector helper. Recover an uncertain original send first; never repeat the business work or supply this Controller's credentials. Relay health `artifactTransferVersion: relay-temp-v1` or card `relayArtifactTransferVersion` advertises this generic fallback. After registration, read the original task and use its exact artifact ID with this same Controller. If the receiver cannot upload or the file is gone, report it.
+
+When the target card advertises `artifactTransferVersion: relay-temp-v1`, new hosted cloud turns receive private sandbox-to-Relay upload instructions automatically. Request the user's required deliverable files in the task text; do not invent an upload token or ask for connector/ACP/envd credentials.
+
+Inspect the original task with `a2a_task`. For each file in `artifacts`, retain its exact `artifactId`. `metadata.downloadSource: relay_temp`, `transferStatus: ready` and `expiresAt` identify temporary file delivery, normally retained for one hour after upload. Download promptly even before task completion or when the final answer is absent. An `agent:///` identifier is not a public URL.
+
+If registered in this session, call `a2a_artifact({targetAgentId, taskId, artifactId})` with the original target and task ID. It uses this MCP Controller's original task ownership and `task_read`, returns UTF-8 text or Base64 raw bytes with size/SHA-256, and is limited to 512 KiB. Verify against the task's recorded file metadata and inspect the requested deliverable before reporting successful file delivery. This does not prove business completion. If the file exceeds the tool limit or the tool is unavailable, report the concrete limitation; a different Connector/CLI identity cannot read this Controller's task merely because it has `task_read`. Do not guess an HTTP URL or request private OAuth tokens.
+
+On `relay_artifact_expired_or_missing`, `relay_artifact_integrity_failed` or `retryable:false`, report the blocker without resending the business task, releasing tracking or repeatedly polling unchanged reads. Download retries do not extend retention. Older/provider-only files retain the existing advertised download behavior; automatic WorkBuddy sandbox instructions do not add hosted desktop file upload; Connector-backed receivers use their explicit generic helper.
 
 ## Results and recovery
 

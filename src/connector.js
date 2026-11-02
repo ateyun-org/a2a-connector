@@ -1,5 +1,5 @@
-import { randomBytes } from 'node:crypto';
-import { mkdir, open, readFile, rename, rm, stat } from 'node:fs/promises';
+import { createHash, randomBytes } from 'node:crypto';
+import { mkdir, open, readFile, realpath, rename, rm, stat } from 'node:fs/promises';
 import { homedir, platform } from 'node:os';
 import { dirname, join } from 'node:path';
 import WebSocket from 'ws';
@@ -76,6 +76,62 @@ export async function loadEnrollment(path) {
   const value = JSON.parse(await readFile(path, 'utf8'));
   if (!value.agentId || !value.token) throw new Error('connector state is incomplete');
   return value;
+}
+
+// Receiving-side fallback for an explicitly selected local deliverable. Native
+// inline bytes and usable URLs should be returned directly instead. Nothing in
+// this helper scans model output or automatically reads paths from remote text.
+export async function uploadArtifact({ relay, enrollment, taskId, file, artifactId, allowInsecure = false, signal }) {
+  const url = relayHTTPURL(relay, '/relay/artifacts/publish', allowInsecure);
+  if (!enrollment?.agentId || !enrollment?.token) throw new Error('paired receiving Connector identity is required');
+  if (typeof taskId !== 'string' || !taskId || Buffer.byteLength(taskId) > 255 || /[\0\r\n]/.test(taskId)) throw new Error('invalid original A2A task ID');
+  if (typeof file !== 'string' || !file) throw new Error('an explicit deliverable file path is required');
+  const resolved = await realpath(file);
+  const source = await open(resolved, 'r');
+  let bytes;
+  try {
+    const info = await source.stat();
+    if (!info.isFile() || info.size > 8 * 1024 * 1024) throw new Error('deliverable must be a regular file of at most 8 MiB');
+    // Bound the read even if another process grows the file after stat.
+    const chunks = [];
+    let size = 0;
+    for await (const chunk of source.createReadStream({ autoClose: false })) {
+      size += chunk.length;
+      if (size > 8 * 1024 * 1024) throw new Error('deliverable exceeds 8 MiB');
+      chunks.push(chunk);
+    }
+    bytes = Buffer.concat(chunks);
+  } finally { await source.close(); }
+  const absolute = resolved.replaceAll('\\', '/');
+  const uri = artifactId ?? `agent://${absolute.startsWith('/') ? absolute : '/' + absolute}`;
+  if (!validTransferURI(uri)) throw new Error('artifact ID must be a canonical agent:/// file URI');
+  const sha256 = createHash('sha256').update(bytes).digest('hex');
+  let response;
+  try {
+    response = await fetch(url, { method: 'POST', redirect: 'manual', signal: boundedSignal(signal, 120000),
+      headers: { authorization: `Bearer ${enrollment.token}`, 'content-type': 'application/octet-stream',
+        'x-artifact-task': taskId, 'x-artifact-uri': encodeURI(uri), 'x-artifact-sha256': sha256 }, body: bytes });
+  } catch {
+    throw new Error('artifact upload outcome unknown; retry only this file upload, never the business task');
+  }
+  if (response.status !== 200) {
+    await response.body?.cancel();
+    throw new Error(`artifact upload HTTP ${response.status}; do not repeat the business task`);
+  }
+  let result;
+  try { result = JSON.parse((await limitedBody(response, 64 * 1024)).toString()); }
+  catch { throw new Error('artifact upload response unavailable; retry only this file upload'); }
+  const artifact = result?.artifact;
+  if (result?.taskId !== taskId || artifact?.artifactId !== uri || artifact.metadata?.sizeBytes !== bytes.length ||
+      artifact.metadata?.sha256 !== sha256 || artifact.metadata?.downloadSource !== 'relay_temp' ||
+      !Number.isFinite(Date.parse(artifact.metadata?.expiresAt))) throw new Error('artifact upload returned invalid registration; do not repeat the business task');
+  return { taskId, artifact };
+}
+
+function validTransferURI(uri) {
+  if (typeof uri !== 'string' || !uri.startsWith('agent:///') || uri.length > 2048 || /[%\\?#\x00-\x1f\x7f]/.test(uri)) return false;
+  const file = uri.slice('agent://'.length);
+  return file !== '/' && !file.endsWith('/') && !file.includes('//') && !file.split('/').some(part => part === '.' || part === '..');
 }
 
 function copyHeaders(source) {

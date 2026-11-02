@@ -14,6 +14,22 @@ const execute = promisify(execFile);
 const uri = 'agent:///workspace/relay-doctor.mjs';
 const enrollment = { agentId: 'caller', token: 'agt_caller.private' };
 
+test('temporary relay downloads report expiry safely without dispatching work', async t => {
+  for (const reason of ['relay_artifact_expired_or_missing', 'relay_artifact_integrity_failed', 'private-secret']) {
+    await t.test(reason, async t => {
+      const data = { stage: 'artifact_download', downloadSource: 'relay_temp', reason, retryable: false };
+      const f = await fixture(t, () => ({ error: { code: -32002, message: 'Temporary artifact unavailable', data } }));
+      await assert.rejects(getAgentArtifact(f.options, 'unresolved-task', uri), error => {
+        assert.match(error.message, /source=relay_temp/);
+        assert.equal(error.message.includes(`reason=${reason}`), reason !== 'private-secret');
+        assert.equal(error.message.includes('private-secret'), false);
+        return true;
+      });
+      assert.deepEqual(f.methods, ['GetArtifact']);
+    });
+  }
+});
+
 async function fixture(t, mutate = value => value) {
   const dir = await mkdtemp(join(tmpdir(), 'workbuddy-artifact-'));
   t.after(() => rm(dir, { recursive: true, force: true }));

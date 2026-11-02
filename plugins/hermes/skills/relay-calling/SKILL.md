@@ -1,6 +1,6 @@
 ---
 name: relay-calling
-description: Discover authorized remote Agents, send A2A tasks through Relay, and recover task results using the current Hermes identity, including enterprise permissions and direct HTTP fallback.
+description: Coordinate authorized remote A2A tasks with the current Hermes identity, recover owned results, and deliver files using native A2A or Relay temporary fallback, including receiving-side file uploads.
 ---
 
 Relay uses organization authorization as its only runtime. Manage identities and grants in `/console`; there is no global pairing approval or shared administrator/client token authentication.
@@ -35,6 +35,18 @@ Save the returned A2A task ID and context ID. Query `GetTask` using `params.id` 
 After timeout/disconnection, recover `GET /relay/requests/<original-relay-request-id>` with the same identity before any resend. Relay supports this journal. A 404 can mean no reservation, expiry, wrong caller, or revoked access; it is not proof of non-execution. Read the guide's ID and error tables instead of inferring global capabilities from one response.
 
 For an intentional follow-up after completion, use a new message ID and the returned context ID only if that target supports it. Hosted WorkBuddy rejects overlapping unresolved work and does not accept continuing via an arbitrary `taskId`. Choose `message.metadata.workbuddyMode: cloud|desktop` only as advertised; preserve the mode across exact retries and existing contexts.
+
+## Retrieve delivered files
+
+Prefer actual native file bytes or a verified caller-accessible native URL. When only a local file path remains, use [the generic Relay fallback](references/relay-http.md#native-file-delivery-and-generic-relay-fallback), advertised by health `artifactTransferVersion: relay-temp-v1` or card `relayArtifactTransferVersion`. For a resolved task, a transfer-only follow-up can ask the same receiving Agent to upload the exact already generated file into the original task, using the supported context and a new stable message ID. The receiver uses its own installed Connector helper/private state; do not provide caller credentials or repeat the business work. Recover uncertain sends before any follow-up. As a receiver, upload only an explicitly selected authorized deliverable with the guide's CLI command; do not scrape paths from arbitrary text. If the helper/file is unavailable, report it.
+
+For hosted cloud targets advertising `artifactTransferVersion: relay-temp-v1`, Relay supplies the executing sandbox with private upload instructions. State the user's required file deliverables in the business request; do not construct an upload token, request ACP/envd credentials, or send file bytes through the answer text.
+
+Read the original task's `artifacts` as soon as files are registered. Preserve the exact `artifactId`, target and task ID. `metadata.downloadSource: relay_temp` with `transferStatus: ready` means a staged file is available until `expiresAt`, normally one hour after upload. Download promptly even if the task is still working or its final answer is missing; file availability and business completion are separate. An `agent:///` URI is an artifact identifier, not an HTTP download URL.
+
+Use the same caller identity that created the task. If that task was created by the current Relay MCP Controller and `a2a_artifact` is registered, call `a2a_artifact({targetAgentId, taskId, artifactId})` (512 KiB limit). For a task created with Connector credentials, follow [the registered-file download procedure](references/relay-http.md#download-a-registered-workbuddy-file): call `GetArtifact` with `params: {id: originalTaskId, artifactId, maxBytes: 8388608}` using the original Connector credentials. Decode `parts[].raw`, verify `sizeBytes` and SHA-256 against the task's recorded file metadata, and save to an explicit local path. Never switch between MCP and Connector identities to work around a limit/denial. If the current session has no suitable authorized download client, report that limitation instead of inventing a tool or a public URL.
+
+A file reference or the agent's statement that it created/uploaded a file is not proof of delivery. Verify the downloaded bytes and the requested deliverable. On `relay_artifact_expired_or_missing`, `relay_artifact_integrity_failed` or `retryable:false`, report the exact blocker; do not repeatedly poll unchanged reads, release tracking or resend business work. Download retries do not extend retention. Automatic sandbox upload instructions apply to new hosted WorkBuddy cloud turns; the generic Connector helper above is an explicit receiving-side fallback.
 
 ## Report the actual outcome
 

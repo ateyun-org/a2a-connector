@@ -92,6 +92,8 @@ Relay 健康接口包含 `workbuddyArtifactVersion=download-v1` 或 `download-v2
 rtk proxy workbuddy-a2a artifact TARGET_AGENT_ID ORIGINAL_A2A_TASK_ID 'agent:///workspace/relay-doctor.mjs' --output ./relay-doctor.mjs
 ```
 
+支持 `artifactTransferVersion: relay-temp-v1` 的 Relay 会自动向新云端任务提供临时上传指引：沙箱将实际文件字节上传到 Relay，校验后独立登记到原任务。调用方沿用下方下载方式，返回 `downloadSource: relay_temp` 和 `expiresAt`。文件上传后保留 1 小时，到期清理；每任务最多 16 个文件、每文件 8 MiB。不需要七牛云或新增数据库表。上传成功不等于业务完成；过期、文件缺失或完整性失败不授权重发业务任务。
+
 需要 `task_read`、原任务归属及客户端发现能力卡所需的 `discover`；不要求 `invoke`。CLI 调用 `GetArtifact({id,artifactId})`，校验文件大小和 SHA-256 后按原始字节保存，权限为 0600，已有文件不会覆盖。RPC/CLI 单文件上限 8 MiB；MCP 工具 `a2a_artifact({targetAgentId,taskId,artifactId})` 上限 512 KiB，文本文件直接返回正文。此功能当前适用于提供 `/acp` 沙箱端点的原生 Go 云端接收端；不支持的目标返回明确错误。下载成功不改变任务状态，也不代表业务轮次已完成。上游票据和签名地址只在服务端短暂使用，不返回客户端。
 
 健康接口 `workbuddyDiagnosticsVersion=diagnostics-v1` 表示支持服务端诊断。沿用原调用身份和 RPC 地址调用 `GetTaskDiagnostics({id: 原 A2A task ID})`，或运行 `workbuddy-a2a diagnostics TARGET TASK_ID`；MCP 使用 `a2a_diagnostics({targetAgentId,taskId})`。需要 `task_read` 和原任务归属。可查询保留的 REJECTED/tracking_released 任务，只刷新原云任务元信息，不发 prompt、不重连 ACP、不改变任务状态或占槽。

@@ -2,14 +2,14 @@
 import { createHash } from 'node:crypto';
 import { basename } from 'node:path';
 import { acquireStateLock, canonicalState, connectorStatus } from './state-lock.js';
-import { Connector, loadEnrollment, register, saveEnrollment, statePath } from './connector.js';
+import { Connector, loadEnrollment, register, saveEnrollment, statePath, uploadArtifact } from './connector.js';
 
 function options(argv) {
   const result = {};
   for (let i = 0; i < argv.length; i++) {
     const key = argv[i].replace(/^-+/, '');
     if (['allow-insecure', 'enroll-only', 'status'].includes(key)) result[key] = true;
-    else if (['relay', 'local', 'token', 'local-token', 'state', 'agent-id', 'max-request-body'].includes(key)) result[key] = argv[++i];
+    else if (['relay', 'local', 'token', 'local-token', 'state', 'agent-id', 'max-request-body', 'artifact-upload', 'task-id', 'artifact-id'].includes(key)) result[key] = argv[++i];
     else throw new Error(`unknown option ${argv[i]}`);
   }
   return result;
@@ -23,6 +23,14 @@ async function main() {
   const args = options(process.argv.slice(2));
   const path = await canonicalState(args.state || statePath());
   if (args.status) { console.log(JSON.stringify(await connectorStatus(path))); return; }
+  if (Object.hasOwn(args, 'artifact-upload')) {
+    if (args.token || args['local-token'] || args['enroll-only']) throw new Error('artifact upload uses only the existing private Connector state');
+    const enrollment = await loadEnrollment(path);
+    if (args['agent-id'] && enrollment.agentId !== args['agent-id']) throw new Error('stored identity does not match the configured Agent ID');
+    console.log(JSON.stringify(await uploadArtifact({ relay: args.relay, enrollment, taskId: args['task-id'], file: args['artifact-upload'],
+      artifactId: args['artifact-id'], allowInsecure: !!args['allow-insecure'] })));
+    return;
+  }
   const lock = await acquireStateLock(path, { parentInstance: process.env.A2A_HERMES_RUNNER_INSTANCE });
   try {
     const fingerprint = createHash('sha256').update(path).digest('hex').slice(0, 8);

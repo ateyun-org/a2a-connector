@@ -103,6 +103,35 @@ stdout/stderr 都保存在 state 路径替换扩展名后的 `.stderr.log`，例
 
 `.a2a-runtime.json` 可能包含兼容服务临时 token，status 不输出它。runtime 文件存在、进程存活、凭据落盘都不能单独证明 WSS 已连通。短暂断线由 worker 自动处理，不需要 Gateway 重启。
 
+## 原生 A2A 的五分钟长任务超时
+
+原生 Hermes 返回 `[agent did not reply in time]` 时，应先检查它的 `A2A_REPLY_TIMEOUT`，默认 300 秒。某些版本的 `SendMessage` 即使收到 `configuration.returnImmediately: true` 仍同步等待最终回复，到期就结束 A2A 任务并丢掉 pending 回调。单独延长 Relay 或 DSH 的超时不能修复这个接收端行为。先保留并核对原任务与实际执行结果；不要把等待超时当作未执行的证明，也不要自动新建一份任务。
+
+仓库提供 `scripts/patch-hermes-a2a-async.py`，修复已识别的**根路径 / local profile 原生接收端**。它沿用原生任务、权限检查、回复脱敏及 input-required 处理；立即返回同一任务的 `WORKING` 回执，在后台回复到达后通过原生 finalizer 写入结果，主控用 `GetTask` 继续查询。原有同步请求保持同步。转发到其他本机 profile 的 `_forward_to_profile` 不属于此补丁范围。
+
+在目标 Hermes 主机的 Connector 仓库目录中，用该 Hermes **实际使用的 Python** 和源码目录执行：
+
+```bash
+rtk proxy /actual/hermes/python scripts/patch-hermes-a2a-async.py --hermes-root /actual/hermes-agent --check
+rtk proxy /actual/hermes/python scripts/patch-hermes-a2a-async.py --hermes-root /actual/hermes-agent --apply
+```
+
+默认只检查。`--apply` 只修复已识别的原生回执处理和待处理回复登记，先创建带内容摘要的原文件备份，再原子写入；重复执行返回 `already_patched`。后台结果保留完成该回复的实际 profile 上下文，包括回复早于回调注册的情况。接口结构、防孤儿任务机制或宿主的上下文线程工具不匹配时拒绝覆盖，需先核对/升级实际 Hermes 版本。它不修改 `.env`、Connector 凭据或 Gateway 配置，也不自动重启或补发任务。升级 Hermes 后需重新检查，避免源码更新覆盖补丁。
+
+此修复需要按上文流程从 Gateway 外部重新加载。**原生任务仍在内存中，重启前应先处理已有未决任务**；本补丁不提供跨重启恢复，也不能找回旧版本已经丢弃的最终回复。回退时还原输出中的 `backup` 文件，再从外部重新加载。更新 Relay 或仅重新安装 Connector 不会自动应用此原生源码补丁。
+
+验证下一次明确授权的任务是否立即返回 `taskId/contextId` 和 `WORKING`，随后使用同一调用方查询同一任务，确认超过原等待窗口后的结果仍可取得。`INPUT_REQUIRED` 需保留给人工决定，不视为完成或自动继续。
+
+本地回归入口：
+
+```bash
+rtk proxy python3 -m unittest discover -s test -p test_hermes_native_async.py -v
+rtk proxy /actual/hermes/python test/hermes-native-reference.py --hermes-root /actual/hermes-agent
+```
+
+第二条使用外部官方源码的 adapter、protocol、security 和脱敏模块，在临时 loopback 服务上对比修复前后行为；Gateway、profile 和模型运行时使用受控替身，不启动真实 Agent、不修改该源码副本。要求包含这些模块的官方源码及其支持的 Python 版本。
+在已安装 DSH 测试依赖的仓库中，可加 `--with-dsh`，验证真实 DSH SDK 发出立即回执请求，并通过同一任务/上下文取得晚到结果。
+
 ## 兼容服务范围
 
 兼容服务只绑定 `127.0.0.1`，临时 token 自动生成，默认从 9900 起尝试 20 个端口；其他实例占用端口不会被误当成宿主 A2A。已有外部 adapter 使用明确的 `--local http://127.0.0.1:实际端口`。运行时验证 Agent Card 和认证后的只读 GetTask；已有官方模块未启用或不可达时报告失败，不启动兼容服务。

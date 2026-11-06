@@ -405,3 +405,45 @@ test('Relay duplicate receipt replaces the preallocated handle before recording 
   assert.equal(conversation.forwarded, true);
   assert.equal((await a2a.store.get(conversation.id)).relayRequestId, actualId);
 });
+
+test('Relay denial preserves HTTP correlation separately from receipt IDs without resending', async () => {
+  for (const withHeaders of [false, true]) {
+    const requestId = (withHeaders ? 'b' : 'a').repeat(32);
+    const receiptId = 'c'.repeat(32);
+    let originalReceiptId, sends = 0;
+    const a2a = new A2AOrchestrator({ ...config, storePath: join(directory, `denied-correlation-${withHeaders}.json`),
+      connectorState: join(directory, 'not-enrolled.json'),
+      agents: [{ id: 'coder', card: 'https://relay.example/agents/coder/.well-known/agent-card.json' }] },
+    { fetchImpl: async (input, init) => {
+      const url = String(input);
+      if (url.includes('agent-card')) return new Response(JSON.stringify({ name: 'Coder', supportedInterfaces: [
+        { url: 'https://relay.example/agents/coder/', protocolBinding: 'JSONRPC', protocolVersion: '1.0' },
+      ] }));
+      if (url.includes('/relay/requests/')) return new Response('{}', { status: 404 });
+      sends++;
+      originalReceiptId = init.headers.get('X-Relay-Request-Id');
+      return new Response(JSON.stringify({ error: 'access_denied', agentId: 'caller', targetAgentId: 'coder',
+        requestId: 'a'.repeat(32), token: 'TOP_SECRET' }), { status: 403,
+        headers: withHeaders ? { 'X-Request-Id': requestId, 'X-Relay-Request-Id': receiptId, 'X-Target-Agent-Id': 'coder' } : {} });
+    } });
+    const params = { agentId: 'coder', parentId: 'denied-parent', messageId: 'denied-message',
+      content: [{ type: 'text', text: 'authorized instruction' }] };
+    const { conversation, diagnostic } = await a2a.send(params);
+    assert.equal(conversation.requestId, requestId);
+    assert.equal(conversation.targetAgentId, 'coder');
+    assert.equal(conversation.relayRequestId, withHeaders ? receiptId : originalReceiptId);
+    assert.notEqual(conversation.relayRequestId, requestId);
+    assert.equal(conversation.dispatchHttpStatus, 403);
+    assert.equal(conversation.dispatchState, 'unknown');
+    assert.equal(conversation.forwarded, undefined);
+    assert.match(diagnostic, new RegExp(`requestId=${requestId}`));
+    const saved = await a2a.store.get(conversation.id);
+    assert.equal(saved.requestId, requestId);
+    assert.equal(saved.targetAgentId, 'coder');
+    assert.doesNotMatch(JSON.stringify(saved) + diagnostic, /TOP_SECRET/);
+    const result = await a2a.reconcile(conversation.id, params.parentId);
+    assert.equal(result.safeToResubmit, false);
+    await a2a.send(params);
+    assert.equal(sends, 1);
+  }
+});

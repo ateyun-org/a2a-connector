@@ -43,6 +43,7 @@ export function installOutbound(ctx, config) {
     return JSON.stringify({ conversationId: conversation.id, taskId: conversation.taskId,
       contextId: conversation.contextId, state: conversation.state, stateName: stateName(conversation.state),
       messageId: conversation.messageId, relayRequestId: conversation.relayRequestId, dispatchState: conversation.dispatchState, diagnostic,
+      requestId: conversation.requestId, targetAgentId: conversation.targetAgentId,
       response: response && (!('status' in response) || ['completed', 'failed', 'canceled', 'rejected'].includes(stateName(conversation.state))) ? responseParts(response) : undefined });
   }));
   ctx.tools.register(tool('a2a_task', 'Get status, output and artifact metadata of a conversation owned by this DSH session. Relay also requires task_read and ownership by the same caller Agent. A 403 on an old/foreign task does not establish whether sending is permitted; use the saved conversation ID, not a random task ID. Files with downloadSource=relay_temp expire at expiresAt (normally one hour); read skills/a2a-relay-calling/SKILL.md for the GetArtifact download procedure using the original caller identity. An agent:/// identifier is not a public URL, and file availability does not prove task completion.', {

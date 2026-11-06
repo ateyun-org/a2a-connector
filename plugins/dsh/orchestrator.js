@@ -169,14 +169,22 @@ export class A2AOrchestrator {
         const dispatch = this.dispatches.get(headers.get('X-Relay-Request-Id'));
         if (dispatch) {
           let actualID = response.headers.get('X-Relay-Request-Id');
+          let requestID = response.headers.get('X-Request-Id');
+          let targetID = response.headers.get('X-Target-Agent-Id');
           if (!response.ok && relayCard.pathname.startsWith('/agents/')) {
             try {
               const detail = await response.clone().json();
               actualID ||= detail.relayRequestId;
+              requestID ||= detail.requestId;
+              targetID ||= detail.targetAgentId;
               if (typeof detail.forwarded === 'boolean') dispatch.forwarded = detail.forwarded;
             } catch { /* preserve the pre-dispatch handle */ }
           }
           if (/^[0-9a-f]{32}$/.test(actualID || '')) dispatch.relayRequestId = actualID;
+          // HTTP correlation IDs identify errors before a receipt is created;
+          // they must never replace the durable receipt handle.
+          if (/^[0-9a-f]{32}$/.test(requestID || '')) dispatch.requestId = requestID;
+          if (/^[a-zA-Z0-9_-]{1,64}$/.test(targetID || '')) dispatch.targetAgentId = targetID;
           dispatch.dispatchHttpStatus = response.status;
           await this.store.put(dispatch);
         }
@@ -190,6 +198,8 @@ export class A2AOrchestrator {
         if ([401, 403].includes(response.status) && relayCard.pathname.startsWith('/agents/') && target.origin === base.origin) {
           let body;
           try { body = await response.json(); } catch { /* Non-JSON gateway error. */ }
+          const requestID = response.headers.get('X-Request-Id') || body?.requestId;
+          const correlation = /^[0-9a-f]{32}$/.test(requestID || '') ? ` [requestId=${requestID}]` : '';
           if (body?.error === 'access_denied') {
             const id = typeof body.agentId === 'string' && /^[a-zA-Z0-9_-]{1,64}$/.test(body.agentId)
               ? ` (${body.agentId})` : '';
@@ -200,11 +210,11 @@ export class A2AOrchestrator {
               : ['GetTask', 'tasks/get'].includes(method) ? '任务查询需要 task_read，且任务必须归属当前调用方'
                 : ['SendMessage', 'message/send'].includes(method) ? '发送需要 invoke；已有上下文还需归属当前调用方'
                   : '检查当前操作的动作权限及任务/上下文归属';
-            throw new RelayAuthError(`Relay access_denied${id}: ${permission}。企业管理员在 ${base.origin}/console 的目标 Agent「谁能访问」中选择本机为机器调用方（调用方 → 目标），并核对个人成员权限交集、凭据 scope 和 Agent 状态。`);
+            throw new RelayAuthError(`Relay access_denied${id}: ${permission}。企业管理员在 ${base.origin}/console 的目标 Agent「谁能访问」中选择本机为机器调用方（调用方 → 目标），并核对个人成员权限交集、凭据 scope 和 Agent 状态。${correlation}`);
           }
-          throw new RelayAuthError(response.status === 401
+          throw new RelayAuthError((response.status === 401
             ? 'Relay unauthorized (401): 检查本机 Connector 配对状态、凭据是否已轮换及 connectorState 路径。'
-            : 'Relay access_denied (403): 检查当前操作的权限、scope 和任务归属；企业目标授权位于 /console，不凭一次拒绝推断缺少 invoke。');
+            : 'Relay access_denied (403): 检查当前操作的权限、scope 和任务归属；企业目标授权位于 /console，不凭一次拒绝推断缺少 invoke。') + correlation);
         }
         return response;
       };

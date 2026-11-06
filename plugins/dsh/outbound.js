@@ -25,8 +25,7 @@ export function installOutbound(ctx, config) {
   for (const agent of a2a.configuredAgents()) {
     ctx.subagents.registerProvider({
       name: `a2a:${agent.id}`,
-      capabilities: { agentOptions: false, outputSchema: false, depthLimit: false,
-        toolFilter: false, persona: false },
+      capabilities: { agentOptions: false, agentPreset: false, outputSchema: false, depthLimit: false },
       inheritsParentContext: false,
       start: request => a2a.startRun(agent.id, request),
     });

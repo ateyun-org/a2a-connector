@@ -12,6 +12,8 @@ DSH 的模型侧入口是实际注册的原生工具：`a2a_agents`、`a2a_send`
 
 ## 安装与配置
 
+本插件当前以 [DSH 0.2.2-rc.1](https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.2.2-rc.1) 为兼容基线，开发验证使用同版本 SDK 与 Schemastery 3.19.0。安装前确认目标 profile 的 DSH 满足 `plugins/dsh/package.json` 中的 SDK peer 版本范围；运行时继续使用宿主提供的 SDK。
+
 若 DSH 已有可访问的 A2A origin（例如 adapter 已配置），且不需要宿主内的配对工具，可改用[独立 Connector 安装脚本](../../scripts/install-connector.sh)：从仓库根目录执行 `sh scripts/install-connector.sh install --host dsh --instance reviewer --expect-name 'DSH Code Reviewer' --relay wss://dsh-relay.chuanbota.com/connect --local auto --port-start 9900`。脚本会在已启动的本机服务中按 Agent Card `name` 找到实际端口；此路径不会配置 DSH adapter 或下方插件，不要同时运行两种路径连接同一个 Agent。
 
 1. 在目标 DSH Agent 主机安装 `plugins/dsh`。这个包只需注册**一个** `dsh-a2a-connector` 条目：未配置已有本机 A2A origin 时，插件自动启动内置服务，再启动 Relay Connector；配置 `agents` 后，同一条目还会注册向外调用 Agent 的工具和 Subagent Provider。Relay 主控认证使用 Connector 身份，企业管理员在 `/console` 的目标 Agent「谁能访问」中授予「DSH 调用方 → 目标」权限。

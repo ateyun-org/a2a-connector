@@ -8,7 +8,7 @@ export function createDSHSessionFactory(ctx) {
     const handle = await ctx.agents.create({
       sessionId: `session-${randomUUID()}`, meta: { cwd: process.cwd() },
       agentOptions: { provider: selection.provider, model: selection.model },
-      setup: agentCtx => { installModelSelection(agentCtx, { current: selection, assembled: undefined }); },
+      setup: agentCtx => { installModelSelection(agentCtx); },
     });
     const { agent } = handle;
     let cancelled = false;

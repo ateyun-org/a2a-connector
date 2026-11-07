@@ -302,21 +302,24 @@ export class A2AOrchestrator {
     }));
   }
 
-  async send({ agentId, parentId, content, conversationId, messageId, signal }) {
+  async send({ agentId, parentId, content, conversationId, messageId, workbuddyMode, signal }) {
     if (!parentId) throw new Error('A2A conversation requires a parent session id');
+    if (workbuddyMode !== undefined && !['cloud', 'desktop'].includes(workbuddyMode)) throw new Error('Invalid workbuddy_mode; use cloud or desktop');
     const parts = fromContent(content);
     const contentHash = createHash('sha256').update(JSON.stringify(parts)).digest('hex');
     if (messageId && !/^[A-Za-z0-9_.:-]{1,128}$/.test(messageId)) throw new Error('Invalid message_id');
+    let previous = conversationId ? await this.owned(conversationId, parentId) : undefined;
+    if (previous && previous.agentId !== agentId) throw new Error('A2A conversation belongs to another agent');
+    workbuddyMode ??= previous?.workbuddyMode;
+    if (previous?.workbuddyMode && previous.workbuddyMode !== workbuddyMode) throw new Error('Use a new conversation to switch WorkBuddy mode');
     if (messageId) {
       const saved = (await this.store.list(parentId)).find(item => item.messageId === messageId && item.agentId === agentId);
       if (saved) {
-        if (saved.contentHash !== contentHash || (saved.sourceConversationId || '') !== (conversationId || '')) throw new Error('message_id was already used with different content');
+        if (saved.contentHash !== contentHash || saved.workbuddyMode !== workbuddyMode || (saved.sourceConversationId || '') !== (conversationId || '')) throw new Error('message_id was already used with different content or WorkBuddy mode');
         const result = await this.reconcile(saved.id, parentId, { signal });
         return { conversation: result.conversation ?? saved, response: result.response, diagnostic: result.diagnostic };
       }
     }
-    let previous = conversationId ? await this.owned(conversationId, parentId) : undefined;
-    if (previous && previous.agentId !== agentId) throw new Error('A2A conversation belongs to another agent');
     if (previous && ['pending', 'unknown'].includes(previous.dispatchState)) throw new Error(`Dispatch outcome unknown; use a2a_reconcile with ${previous.id} before sending again`);
     if (previous?.taskId && !FINAL.has(previous.state)) {
       await this.getTask(previous.id, parentId, { signal });
@@ -332,9 +335,9 @@ export class A2AOrchestrator {
     try {
       const message = { messageId: messageId || randomUUID(), contextId: previous?.contextId ?? '',
         taskId: previous && PAUSED.has(previous.state) ? previous.taskId ?? '' : '',
-        role: Role.ROLE_USER, parts, metadata: undefined, extensions: [], referenceTaskIds: [] };
+        role: Role.ROLE_USER, parts, metadata: workbuddyMode ? { workbuddyMode } : undefined, extensions: [], referenceTaskIds: [] };
       const record = { id, parentId, agentId, contextId: message.contextId, taskId: '',
-        state: TaskState.TASK_STATE_UNSPECIFIED, messageId: message.messageId, contentHash, sourceConversationId: conversationId || '',
+        state: TaskState.TASK_STATE_UNSPECIFIED, messageId: message.messageId, contentHash, workbuddyMode, sourceConversationId: conversationId || '',
         relayRequestId: randomUUID().replaceAll('-', ''), dispatchState: 'pending',
         sentAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
       await this.store.put(record); // Durable handle exists BEFORE the side effect.

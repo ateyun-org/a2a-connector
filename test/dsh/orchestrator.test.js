@@ -127,6 +127,67 @@ test('registers a DSH provider and exposes its purpose to the controller', async
   assert.equal(agent.skills[0].description, 'Write code');
 });
 
+test('a2a_send passes WorkBuddy mode inside the message and persists it before dispatch', async () => {
+  taskState = 'TASK_STATE_COMPLETED';
+  const tools = [];
+  const storePath = join(directory, 'workbuddy-modes.json');
+  const seen = [];
+  const a2a = installOutbound({ subagents: { registerProvider() {} },
+    tools: { register: definition => tools.push(definition) } }, { ...config, storePath });
+  const send = tools.find(tool => tool.name === 'a2a_send');
+  const client = await a2a.client('coder');
+  const originalSend = client.sendMessage.bind(client);
+  client.sendMessage = async (request, options) => {
+    const saved = await a2a.store.list('mode-parent');
+    const record = saved.find(item => item.messageId === request.message.messageId);
+    assert.equal(record.dispatchState, 'pending');
+    assert.equal(record.workbuddyMode, request.message.metadata?.workbuddyMode);
+    seen.push(request);
+    return originalSend(request, options);
+  };
+  for (const mode of [undefined, 'cloud', 'desktop']) {
+    const result = JSON.parse((await send.execute({ agent_id: 'coder', message: 'Use the selected mode',
+      message_id: `mode-${mode || 'default'}`, ...(mode ? { workbuddy_mode: mode } : {}) },
+    { agent: { session: { id: 'mode-parent' } } })).text);
+    assert.ok(result.conversationId);
+    assert.equal(result.dispatchState, 'acknowledged');
+    assert.equal(result.workbuddyMode, mode);
+    const message = requests.filter(item => item.method === 'SendMessage').at(-1).params.message;
+    assert.deepEqual(message.metadata, mode ? { workbuddyMode: mode } : undefined);
+    assert.equal(seen.at(-1).metadata, undefined);
+  }
+  const restored = new A2AOrchestrator({ ...config, storePath });
+  const records = await restored.listConversations('mode-parent');
+  assert.equal(records.find(item => item.messageId === 'mode-desktop').workbuddyMode, 'desktop');
+  assert.equal(records.find(item => item.messageId === 'mode-cloud').workbuddyMode, 'cloud');
+});
+
+test('WorkBuddy mode is part of dispatch identity and follows its saved conversation', async () => {
+  taskState = 'TASK_STATE_COMPLETED';
+  const a2a = new A2AOrchestrator({ ...config, storePath: join(directory, 'mode-identity.json') });
+  const input = { agentId: 'coder', parentId: 'mode-identity-parent', messageId: 'desktop-instruction',
+    workbuddyMode: 'desktop', content: [{ type: 'text', text: 'Desktop task' }] };
+  const first = await a2a.send(input);
+  const count = () => requests.filter(item => item.method === 'SendMessage').length;
+  const sent = count();
+  await a2a.send(input);
+  assert.equal(count(), sent);
+  await assert.rejects(() => a2a.send({ ...input, workbuddyMode: 'cloud' }), /different content|different.*mode/);
+  await assert.rejects(() => a2a.send({ ...input, workbuddyMode: undefined }), /different content|different.*mode/);
+  assert.equal(count(), sent);
+  await a2a.send({ agentId: 'coder', parentId: input.parentId, conversationId: first.conversation.id,
+    messageId: 'desktop-follow-up', content: [{ type: 'text', text: 'Continue the desktop task' }] });
+  const followUp = requests.filter(item => item.method === 'SendMessage').at(-1).params.message;
+  assert.deepEqual(followUp.metadata, { workbuddyMode: 'desktop' });
+  assert.equal(followUp.contextId, first.conversation.contextId);
+  await assert.rejects(() => a2a.send({ ...input, messageId: 'switch-mode', workbuddyMode: 'cloud',
+    conversationId: first.conversation.id }), /new conversation/);
+  for (const mode of ['', null, 'automatic', {}, 1]) {
+    await assert.rejects(() => a2a.send({ ...input, messageId: 'invalid-mode', workbuddyMode: mode }), /Invalid workbuddy_mode/);
+  }
+  assert.equal(count(), sent + 1);
+});
+
 test('accepts a full relay Agent Card URL as registry entry', async () => {
   const port = server.address().port;
   const relay = new A2AOrchestrator({ ...config, agents: [{ id: 'relay-coder',
@@ -273,10 +334,12 @@ test('dispatch is journaled before HTTP, and 504 recovery never resends or trans
     messageId = init.headers.get('Idempotency-Key');
     assert.equal(saved.relayRequestId, relayRequestId);
     assert.equal(saved.messageId, messageId);
+    assert.equal(saved.workbuddyMode, 'desktop');
+    assert.deepEqual(JSON.parse(init.body).params.message.metadata, { workbuddyMode: 'desktop' });
     return new Response(JSON.stringify({ error: 'agent_timeout', relayRequestId, forwarded: true }), { status: 504 });
   };
   const a2a = new A2AOrchestrator(settings, { fetchImpl });
-  const sent = await a2a.send({ agentId: 'coder', parentId: 'old-session', messageId: 'recover-this', content: [{ type: 'text', text: 'work' }] });
+  const sent = await a2a.send({ agentId: 'coder', parentId: 'old-session', messageId: 'recover-this', workbuddyMode: 'desktop', content: [{ type: 'text', text: 'work' }] });
   assert.equal(sent.conversation.dispatchState, 'unknown');
   assert.equal(sent.response, undefined);
   assert.match(sent.diagnostic, /outcome unknown/);
@@ -291,8 +354,10 @@ test('dispatch is journaled before HTTP, and 504 recovery never resends or trans
   assert.equal(recovered.historical, true);
   assert.equal(recovered.safeToResubmit, false);
   assert.equal((await restarted.store.get(sent.conversation.id)).dispatchState, 'unknown');
+  assert.equal((await restarted.store.get(sent.conversation.id)).workbuddyMode, 'desktop');
   await assert.rejects(() => restarted.cancel(sent.conversation.id, 'new-session'), /not found/);
-  const duplicate = await restarted.send({ agentId: 'coder', parentId: 'old-session', messageId, content: [{ type: 'text', text: 'work' }] });
+  await assert.rejects(() => restarted.send({ agentId: 'coder', parentId: 'old-session', messageId, workbuddyMode: 'cloud', content: [{ type: 'text', text: 'work' }] }), /different content/);
+  const duplicate = await restarted.send({ agentId: 'coder', parentId: 'old-session', messageId, workbuddyMode: 'desktop', content: [{ type: 'text', text: 'work' }] });
   assert.equal(duplicate.response.id, 'recovered-task');
   assert.equal(sends, 1);
   await assert.rejects(() => restarted.send({ agentId: 'coder', parentId: 'old-session', messageId, content: [{ type: 'text', text: 'changed' }] }), /different content/);

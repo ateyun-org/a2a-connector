@@ -37,11 +37,12 @@ export function installOutbound(ctx, config) {
     message: { type: 'string', required: true, description: 'Text request for the remote agent.' },
     conversation_id: { type: 'string', description: 'Existing A2A conversation ID, when continuing.' },
     message_id: { type: 'string', description: 'Optional stable idempotency key. Reuse only for the same dispatch and content; use a2a_reconcile after an unknown outcome.' },
+    workbuddy_mode: { type: 'string', description: 'Optional WorkBuddy execution mode: cloud or desktop. A new conversation defaults to the Agent Card; follow-ups inherit the saved selection. Desktop requires the WorkBuddy app online with remote control enabled. Keep this choice unchanged on retries; start a new conversation to switch modes.' },
   }, async (args, parentId, signal) => {
     const { conversation, response, diagnostic } = await a2a.send({ agentId: args.agent_id,
-      parentId, content: [{ type: 'text', text: args.message }], conversationId: args.conversation_id, messageId: args.message_id, signal });
+      parentId, content: [{ type: 'text', text: args.message }], conversationId: args.conversation_id, messageId: args.message_id, workbuddyMode: args.workbuddy_mode, signal });
     return JSON.stringify({ conversationId: conversation.id, taskId: conversation.taskId,
-      contextId: conversation.contextId, state: conversation.state, stateName: stateName(conversation.state),
+      contextId: conversation.contextId, workbuddyMode: conversation.workbuddyMode, state: conversation.state, stateName: stateName(conversation.state),
       messageId: conversation.messageId, relayRequestId: conversation.relayRequestId, dispatchState: conversation.dispatchState, diagnostic,
       requestId: conversation.requestId, targetAgentId: conversation.targetAgentId,
       response: response && (!('status' in response) || ['completed', 'failed', 'canceled', 'rejected'].includes(stateName(conversation.state))) ? responseParts(response) : undefined });

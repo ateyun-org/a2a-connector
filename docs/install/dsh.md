@@ -69,6 +69,8 @@ agents:
 
 这里的 `storePath`、`agents` 与旧 `dsh-a2a` 配置含义相同；迁移时沿用**原有** `storePath` 可保留会话索引。不填 `storePath` 时，默认写在 Connector `state` 路径旁的 `.conversations.json` 文件。出站访问 Relay 自动读取同一条目的配对状态，若原先显式使用其他状态文件，可设置 `connectorState`。直接访问其他 A2A 服务时，`agents` 项仍可使用旧版 `url`、`tokenEnv`、`apiKeyEnv`、`allowHttp`、`allowedOrigins` 等字段。`agents` 未配置时不注册出站工具。
 
+调用 WorkBuddy 时，可以使用 `a2a_send({agent_id: "workbuddy", message: "已授权的任务", message_id: "stable-instruction-id", workbuddy_mode: "desktop"})`；`agent_id` 替换为实际配置的 ID。`workbuddy_mode` 只接受 `cloud` 或 `desktop`，会写入 `params.message.metadata.workbuddyMode`，并在发出请求前保存到本地会话索引。桌面模式需要 WorkBuddy app 在线并开启远程控制。新会话省略模式时使用 Agent Card 默认值；通过 `conversation_id` 继续时沿用已保存的显式选择。重试必须保留原来的模式、正文和 `message_id`，结果不明时先 `a2a_reconcile`；确认原任务状态后，获授权切换模式需另开会话并使用新的 `message_id`。
+
 出站请求 `requestTimeoutMs` 默认 600000 ms（10 分钟）。Relay HTTP 等待默认 9 分钟；推荐保持 **Relay 等待 < Connector HTTP 超时 < 公网反代读取超时**，例如 9 / 10 / 11 分钟。9 < 10 本身是正确顺序，不代表超时配置有误。Relay 额外以 `processingTimeout`（默认 30 分钟）保留首次派发的迟到响应，并以 `requestRetention`（默认 24 小时）保存查询/去重记录；不是取消远端任务的时间。Relay 启动校验 `timeout < processingTimeout < requestRetention`。各节点无法自动获知对方和反代的配置，需一起核对。
 
 Subagent 总等待默认 `taskTimeoutMs: 1800000`，从派发时开始计时；到期尽力请求取消并报告超时。轮询从 `pollIntervalMs`（默认 1000 ms）指数退避至 `maxPollIntervalMs`（默认 30000 ms），带抖动；429 按 `Retry-After` 进入该目标的本地冷却，停止当前轮询，不自动重发消息。远端仍应及时返回 taskId；`returnImmediately` 是请求选项，不能保证远端遵守。Push capability 只表示对端支持回调，当前尚未安装可鉴权回调通道。

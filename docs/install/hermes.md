@@ -109,6 +109,8 @@ stdout/stderr 都保存在 state 路径替换扩展名后的 `.stderr.log`，例
 
 仓库提供 `scripts/patch-hermes-a2a-async.py`，修复已识别的**根路径 / local profile 原生接收端**。它沿用原生任务、权限检查、回复脱敏及 input-required 处理；立即返回同一任务的 `WORKING` 回执，在后台回复到达后通过原生 finalizer 写入结果，主控用 `GetTask` 继续查询。原有同步请求保持同步。转发到其他本机 profile 的 `_forward_to_profile` 不属于此补丁范围。
 
+已部署版本的精确源码差异和基线校验值保存在 [patches/](../../patches/README.md)，与修复脚本生成的结果一致。
+
 在目标 Hermes 主机的 Connector 仓库目录中，用该 Hermes **实际使用的 Python** 和源码目录执行：
 
 ```bash

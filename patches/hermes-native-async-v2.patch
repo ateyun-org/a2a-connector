@@ -1,0 +1,79 @@
+diff --git a/plugins/platforms/a2a/adapter.py b/plugins/platforms/a2a/adapter.py
+index 67c0d43c32..1eb01160d4 100644
+--- a/plugins/platforms/a2a/adapter.py
++++ b/plugins/platforms/a2a/adapter.py
+@@ -459,13 +459,24 @@ class A2AAdapter(BasePlatformAdapter):
+         return protocol.skills_from_toolsets(configured or [])
+ 
+     def _add_pending(self, task_id: str, context_id: str) -> Future:
+-        fut: Future = Future()
++        """Capture the reply's profile scope before exposing its Future to the Gateway."""
++        from contextvars import copy_context
++        from threading import Event
++        fut = Future()
++        fut._a2a_reply_context_ready = Event()
++
++        def remember_scope(completed):
++            completed._a2a_reply_context = copy_context()
++            completed._a2a_reply_context_ready.set()
++
++        fut.add_done_callback(remember_scope)
+         with self._pending_lock:
+             self._active_tasks.add(task_id)
+             self._pending[task_id] = (context_id, fut)
+             self._pending_order.setdefault(context_id, deque()).append(task_id)
+         return fut
+ 
++
+     def _activate_task(self, task_id: str) -> None:
+         with self._pending_lock:
+             self._active_tasks.add(task_id)
+@@ -662,12 +673,46 @@ class A2AAdapter(BasePlatformAdapter):
+                                   (protocol.STATE_FAILED, "[agent did not reply in time]"))
+ 
+     def _rpc_message_send(self, req_id: Any, params: dict, peer: str, agent: Optional[dict] = None, v1_response: bool = False) -> dict:
++        """connector-native-async-v2: retain the native task until its reply arrives."""
++        configuration = params.get("configuration")
++        if not (isinstance(configuration, dict) and configuration.get("returnImmediately") is True):
++            task, pending = self._prepare_task(params, peer, agent=agent)
++            if task is None:
++                state, reply = self._finalize_task(pending, *self._await_reply(pending))
++                task = protocol.build_task(pending["task_id"], pending["context_id"], state, reply, created_at=pending["created_iso"])
++            return _ok(req_id, protocol.send_message_response(task) if v1_response else task)
++
++        from agent.memory_provider import spawn_context_thread
+         task, pending = self._prepare_task(params, peer, agent=agent)
+         if task is None:
+-            state, reply = self._finalize_task(pending, *self._await_reply(pending))
+-            task = protocol.build_task(pending["task_id"], pending["context_id"], state, reply, created_at=pending["created_iso"])
++            task = protocol.build_task(pending["task_id"], pending["context_id"], protocol.STATE_WORKING,
++                                       created_at=pending["created_iso"])
++
++            def completed(future):
++                def finalize():
++                    # set_result marks the Future done before invoking its callbacks.
++                    # A concurrently registered callback can run before scope capture.
++                    future._a2a_reply_context_ready.wait()
++
++                    def finish():
++                        try:
++                            outcome = future.result()
++                        except Exception:
++                            outcome = (protocol.STATE_FAILED, "[agent reply failed]")
++                        self._finalize_task(pending, *outcome)
++
++                    # Use the completing Gateway turn's actual scope, including when
++                    # the Future was already done before this callback was registered.
++                    future._a2a_reply_context.copy().run(finish)
++
++                # Native send()/disconnect() resolve Futures while holding _pending_lock.
++                # Finalization takes that lock again; never run it inline in the callback.
++                spawn_context_thread(finalize, name="a2a-finalize-" + pending["task_id"], daemon=True).start()
++
++            pending["future"].add_done_callback(completed)
+         return _ok(req_id, protocol.send_message_response(task) if v1_response else task)
+ 
++
+     @staticmethod
+     def _sse_headers(handler) -> None:
+         handler.send_response(200)

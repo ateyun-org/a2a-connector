@@ -26,3 +26,11 @@ a7ece70509f163688d3fe77388b6a77219ab637c1b2f3c4cc88c49baa3d39038
 实际部署优先使用修复脚本，它会核对宿主结构、保存备份并原子写入。操作与重启要求见 [Hermes 安装说明](../docs/install/hermes.md#原生-a2a-的五分钟长任务超时)。这个补丁文件记录特定基线的精确差异；更新 Hermes 后应重新检查兼容性。
 
 上游代码许可为 [MIT](https://github.com/NousResearch/hermes-agent/blob/f14699a1379838862d3020b97785796aa555d36d/LICENSE)。
+
+## 审批状态观察补丁
+
+[`hermes_approval_state.py`](hermes_approval_state.py) 由 [`patch-hermes-a2a-approval.py`](../scripts/patch-hermes-a2a-approval.py) 安装为原生平台的 `approval_state.py`。修复版本为 `connector-approval-state-v1`，包含上述异步修复，并在已验证的原生方法中接入审批生命周期钩子、任务投影和最终结果分类。它不改变审批决定或命令执行权限。
+
+检查默认不修改目标文件；应用会保存带摘要的原文件备份，并在写入失败时恢复已替换文件。辅助模块被修改、原生方法与已验证实现不一致或缺少 profile-aware thread helper 时拒绝覆盖。范围、状态字段、回退与重启要求见 [Hermes 安装说明](../docs/install/hermes.md#将审批等待回传给主控)。
+
+[`hermes-approval-reference.py`](../test/hermes-approval-reference.py) 在临时 loopback 服务中验证真实原生 adapter/protocol/security，复现修复前的审批消息丢失，并验证等待、超时、通过、拒绝、通知失败、任务/profile 隔离及真实 DSH SDK 主控可见性。只替换 Gateway/模型运行时与审批事件，不执行业务命令，也不改动传入的源码目录。

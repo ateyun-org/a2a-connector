@@ -33,6 +33,10 @@ For a WorkBuddy mode choice, add `"metadata": {"workbuddyMode": "cloud"}` or `"d
 
 A successful response commonly contains `result.task.id`, `result.task.contextId`, and `result.task.status.state`; some A2A adapters return a Task directly as `result`. Inspect the actual schema. Save the opaque task ID exactly, including short/non-UUID IDs. A returned task or HTTP 200 is not necessarily task completion; inspect both JSON-RPC `error` and the task state.
 
+For long-running work, send `configuration:{"returnImmediately":true}` beside `message`, then query the original task. Relay MCP `a2a_send` and the DSH caller set this automatically. A caller wait deadline is not an instruction to cancel or resend remote work.
+
+Native Hermes with `connector-approval-state-v1` reports pending operator approval as `TASK_STATE_INPUT_REQUIRED`. `GetTask`/`ListTasks` include `metadata.hermesApproval:{version,status,reasonCode,summary,requests,updatedAt,resolution,canRespondViaA2A,commandExecuted?}`. Each request has an opaque observation `requestId`, `requestedAt` and `expiresAt` (null if unavailable). Reasons distinguish `approval_required`, `approval_timeout`, `approval_denied`, `approval_notification_failed`, `approval_cancelled` and `approval_approved`. Show the reason and deadline to the user immediately. A blocked `commandExecuted:false` applies only to the guarded command; earlier stages may have run. Approval restores the same task to WORKING; timeout, denial or delivery failure retain their reason through the final FAILED/REJECTED result. The observation ID cannot authorize execution, and `canRespondViaA2A:false` requires the operator's receiving-side approval surface. A peer's follow-up text is not approval. The Connector repository's `docs/install/hermes.md` describes patching and isolated validation.
+
 ## Read your existing task
 
 Use the same target and caller identity. Replace the task ID with the actual returned A2A task ID, not the Relay request ID or WorkBuddy provider session ID.

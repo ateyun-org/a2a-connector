@@ -89,7 +89,34 @@ class RelayAuthError extends Error {}
 class RateLimitError extends RelayAuthError {}
 
 export function stateName(state) {
-  return (TaskState[state] || 'TASK_STATE_UNSPECIFIED').replace('TASK_STATE_', '').toLowerCase();
+  const name = typeof state === 'string' ? state : TaskState[state];
+  return (typeof name === 'string' ? name : 'TASK_STATE_UNSPECIFIED').replace('TASK_STATE_', '').toLowerCase();
+}
+
+export function taskDetails(task) {
+  if (!task?.status) return {};
+  const approval = task.metadata?.hermesApproval;
+  return { taskId: task.id, contextId: task.contextId,
+    state: task.status.state, stateName: stateName(task.status.state),
+    statusTimestamp: task.status.timestamp,
+    ...(approval ? { ...(approval.status === 'approved' ? {} : { stage: 'approval' }),
+      reasonCode: approval.reasonCode, approval } : {}) };
+}
+
+function taskOutcome(task, fallbackReason) {
+  const state = task.status?.state ?? TaskState.TASK_STATE_COMPLETED;
+  const details = taskDetails(task);
+  const paused = PAUSED.has(state);
+  const reasonCode = details.reasonCode || (paused ? 'remote_input_required' : fallbackReason);
+  const stopReason = state === TaskState.TASK_STATE_COMPLETED ? 'completed'
+    : state === TaskState.TASK_STATE_CANCELED ? 'aborted'
+    : state === TaskState.TASK_STATE_REJECTED ? 'refusal' : 'error';
+  const diagnostic = paused
+    ? `A2A task ${stateName(state)}: ${reasonCode}. Business completion is unverified; inspect the original task. A receiving-side approval requires an explicit operator decision.`
+    : stopReason === 'error' ? `A2A task ${reasonCode || 'failed'}; inspect the original task without resending.` : undefined;
+  return { output: [...toContent(task), ...(paused || fallbackReason || (details.approval && stopReason !== 'completed') ? [
+    { type: 'text', text: JSON.stringify({ ...details, reasonCode, businessCompleted: false }) },
+  ] : [])], stopReason, ...(diagnostic ? { diagnostic } : {}), task: details };
 }
 
 function pause(ms, signal) {
@@ -118,7 +145,7 @@ export class A2AOrchestrator {
     this.pollIntervalMs = config.pollIntervalMs ?? 1000;
     this.requestTimeoutMs = config.requestTimeoutMs ?? 600000;
     this.taskTimeoutMs = config.taskTimeoutMs ?? 1800000;
-    this.maxPollIntervalMs = config.maxPollIntervalMs ?? 30000;
+    this.maxPollIntervalMs = config.maxPollIntervalMs ?? 5000;
     this.inflight = new Set();
     this.dispatches = new Map();
     this.rateLimits = new Map();
@@ -361,6 +388,7 @@ export class A2AOrchestrator {
         taskId: isTask ? response.id : '', dispatchState: 'acknowledged',
         state: isTask ? response.status?.state ?? TaskState.TASK_STATE_UNSPECIFIED : TaskState.TASK_STATE_COMPLETED,
         updatedAt: new Date().toISOString() });
+      if (isTask) record.lastObservation = taskDetails(response);
       if (!isTask) record.inlineMessage = Message.toJSON(response);
       await this.store.put(record);
       return { conversation: record, response };
@@ -377,6 +405,7 @@ export class A2AOrchestrator {
         taskId: isTask ? response.id : '', dispatchState: 'acknowledged',
         state: isTask ? response.status?.state : TaskState.TASK_STATE_COMPLETED, updatedAt: new Date().toISOString() };
       if (!isTask) updated.inlineMessage = Message.toJSON(response);
+      else updated.lastObservation = taskDetails(response);
       // Historical recovery is read-only. Ownership never silently transfers.
       if (!historical) await this.store.put(updated);
       return { conversation: updated, response, outcome: 'found', historical, safeToResubmit: false };
@@ -436,7 +465,8 @@ export class A2AOrchestrator {
     const record = await this.owned(id, parentId);
     if (!record.taskId) throw new Error('A2A conversation has no task');
     const task = await (await this.client(record.agentId)).getTask({ tenant: '', id: record.taskId }, { signal });
-    await this.store.put({ ...record, state: task.status?.state ?? record.state, updatedAt: new Date().toISOString() });
+    await this.store.put({ ...record, state: task.status?.state ?? record.state,
+      lastObservation: taskDetails(task), updatedAt: new Date().toISOString() });
     return task;
   }
 
@@ -468,21 +498,36 @@ export class A2AOrchestrator {
         delay = Math.min(delay * 2, this.maxPollIntervalMs);
       } catch (error) {
         if (bounded.aborted) {
-          const cancellation = AbortSignal.timeout(5000);
-          await this.cancel(conversation.id, conversation.parentId, { signal: cancellation }).catch(() => {});
-          return { output: [], stopReason: signal?.aborted ? 'aborted' : 'error',
-            diagnostic: signal?.aborted ? undefined : 'A2A task timeout; cancellation requested (best effort)' };
+          if (signal?.aborted) {
+            await this.cancel(conversation.id, conversation.parentId,
+              { signal: AbortSignal.timeout(5000) }).catch(() => {});
+            return { output: [], stopReason: 'aborted' };
+          }
+          // Expiry of the caller's wait is not a cancellation decision. Recover
+          // the latest state once, retaining the same task and dispatch IDs.
+          let refreshed = false;
+          try {
+            current = await this.getTask(conversation.id, conversation.parentId,
+              { signal: AbortSignal.timeout(5000) });
+            refreshed = true;
+          } catch {}
+          if (refreshed && (FINAL.has(current.status?.state) || PAUSED.has(current.status?.state))) {
+            return taskOutcome(current);
+          }
+          const details = taskDetails(current);
+          return { output: [...toContent(current), { type: 'text', text: JSON.stringify({
+            ...details, reasonCode: 'task_wait_timeout', businessCompleted: false,
+            observationFresh: refreshed, remoteExecution: 'unverified',
+            instruction: 'Query the original task; do not resend or assume cancellation.',
+          }) }], stopReason: 'error', task: details,
+          diagnostic: 'A2A task timeout while waiting; remote outcome is unverified. Original task retained; query it without resending.' };
         }
-        return { output: [], stopReason: 'error', diagnostic: safeDiagnostic(error) };
+        return { output: [{ type: 'text', text: JSON.stringify({ ...taskDetails(current),
+          reasonCode: 'task_status_unavailable', observationFresh: false, businessCompleted: false }) }],
+        stopReason: 'error', diagnostic: `${safeDiagnostic(error)}; latest task status unavailable. Preserve the original task and do not resend.` };
       }
     }
-    const state = 'status' in current ? current.status?.state : TaskState.TASK_STATE_COMPLETED;
-    const stopReason = state === TaskState.TASK_STATE_COMPLETED ? 'completed'
-      : state === TaskState.TASK_STATE_CANCELED ? 'aborted'
-      : state === TaskState.TASK_STATE_REJECTED ? 'refusal'
-      : PAUSED.has(state) ? 'completed' : 'error';
-    return { output: toContent(current), stopReason,
-      ...(stopReason === 'error' ? { diagnostic: 'A2A task failed' } : {}) };
+    return taskOutcome(current);
   }
 
   async startRun(agentId, request) {
@@ -495,6 +540,7 @@ export class A2AOrchestrator {
       throw new Error('A2A start cancelled');
     }
     let disposed = false;
+    let settled = false;
     const lifetime = new AbortController();
     const onAbort = () => lifetime.abort();
     request.signal.addEventListener('abort', onAbort, { once: true });
@@ -502,12 +548,13 @@ export class A2AOrchestrator {
     const result = this.waitForResult(conversation, response, lifetime.signal)
       .then(outcome => ({ ...outcome, output: [...outcome.output,
         { type: 'text', text: `A2A conversation ID: ${conversation.id}` }] }))
-      .finally(() => request.signal.removeEventListener('abort', onAbort));
+      .finally(() => { settled = true; request.signal.removeEventListener('abort', onAbort); });
     return {
       id: conversation.id, localAgent: undefined, result,
       dispose: async () => {
         if (disposed) return;
         disposed = true;
+        if (settled) return; // Disposing a returned pause/timeout does not cancel remote work.
         lifetime.abort();
         const state = (await this.owned(conversation.id, parentId)).state;
         if (!FINAL.has(state) && !PAUSED.has(state)) {

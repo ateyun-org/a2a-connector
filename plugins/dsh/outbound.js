@@ -1,5 +1,5 @@
 import { defineTool } from '@deepseek-ai/dsh-tools';
-import { A2AOrchestrator, responseParts, stateName } from './orchestrator.js';
+import { A2AOrchestrator, responseParts, stateName, taskDetails } from './orchestrator.js';
 
 const output = { type: 'object', additionalProperties: false, properties: {
   text: { type: 'string', required: true },
@@ -45,14 +45,15 @@ export function installOutbound(ctx, config) {
       contextId: conversation.contextId, workbuddyMode: conversation.workbuddyMode, state: conversation.state, stateName: stateName(conversation.state),
       messageId: conversation.messageId, relayRequestId: conversation.relayRequestId, dispatchState: conversation.dispatchState, diagnostic,
       requestId: conversation.requestId, targetAgentId: conversation.targetAgentId,
-      response: response && (!('status' in response) || ['completed', 'failed', 'canceled', 'rejected'].includes(stateName(conversation.state))) ? responseParts(response) : undefined });
+      ...taskDetails(response),
+      response: response && (!('status' in response) || ['input_required', 'auth_required', 'completed', 'failed', 'canceled', 'rejected'].includes(stateName(conversation.state))) ? responseParts(response) : undefined });
   }));
-  ctx.tools.register(tool('a2a_task', 'Get status, output and artifact metadata of a conversation owned by this DSH session. Relay also requires task_read and ownership by the same caller Agent. A 403 on an old/foreign task does not establish whether sending is permitted; use the saved conversation ID, not a random task ID. Files with downloadSource=relay_temp expire at expiresAt (normally one hour); read skills/a2a-relay-calling/SKILL.md for the GetArtifact download procedure using the original caller identity. An agent:/// identifier is not a public URL, and file availability does not prove task completion.', {
+  ctx.tools.register(tool('a2a_task', 'Get status, output, pending approval and artifact metadata of a conversation owned by this DSH session. INPUT_REQUIRED/AUTH_REQUIRED is not business completion: tell the user the reason and approval deadline, and wait for an explicit operator decision through the receiver approval surface. A wait timeout does not authorize cancellation or another send. Relay also requires task_read and ownership by the same caller Agent. A 403 on an old/foreign task does not establish whether sending is permitted; use the saved conversation ID, not a random task ID. Files with downloadSource=relay_temp expire at expiresAt (normally one hour); read skills/a2a-relay-calling/SKILL.md for the GetArtifact download procedure using the original caller identity. An agent:/// identifier is not a public URL, and file availability does not prove task completion.', {
     conversation_id: { type: 'string', required: true },
   }, async (args, parentId, signal) => {
     const task = await a2a.getTask(args.conversation_id, parentId, { signal });
     return JSON.stringify({ conversationId: args.conversation_id, taskId: task.id,
-      state: task.status?.state, stateName: stateName(task.status?.state), response: responseParts(task),
+      ...taskDetails(task), response: responseParts(task),
       artifacts: task.artifacts?.map(({ parts, ...metadata }) => metadata) });
   }));
   ctx.tools.register(tool('a2a_cancel', 'Request cancellation of a running A2A task owned by this DSH session.', {
@@ -68,7 +69,7 @@ export function installOutbound(ctx, config) {
     const result = await a2a.reconcile(args.conversation_id, parentId, { signal, includePreviousSessions: args.include_previous_sessions });
     const { response, ...details } = result;
     return JSON.stringify({ ...details, response: response ? responseParts(response) : undefined,
-      stateName: stateName(result.conversation?.state) });
+      stateName: stateName(result.conversation?.state), ...taskDetails(response) });
   }));
   return a2a;
 }

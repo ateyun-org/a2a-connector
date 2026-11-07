@@ -134,6 +134,32 @@ rtk proxy /actual/hermes/python test/hermes-native-reference.py --hermes-root /a
 第二条使用外部官方源码的 adapter、protocol、security 和脱敏模块，在临时 loopback 服务上对比修复前后行为；Gateway、profile 和模型运行时使用受控替身，不启动真实 Agent、不修改该源码副本。要求包含这些模块的官方源码及其支持的 Python 版本。
 在已安装 DSH 测试依赖的仓库中，可加 `--with-dsh`，验证真实 DSH SDK 发出立即回执请求，并通过同一任务/上下文取得晚到结果。
 
+## 将审批等待回传给主控
+
+部分原生版本会把 Gateway 的审批提示作为非最终消息忽略，同时返回发送成功。此时主控只能看到 `WORKING`，直到等待超时。仅有上面的异步回执修复仍不能表达这个中间状态。
+
+`scripts/patch-hermes-a2a-approval.py` 包含异步修复，并通过 Hermes 已有的 `pre_approval_request` / `post_approval_response` 钩子更新原生任务。它针对已验证的根路径 / local profile 实现；不授予审批、不提交业务命令、不修改配置，也不代替原操作者作决定。
+
+```bash
+rtk proxy /actual/hermes/python scripts/patch-hermes-a2a-approval.py --hermes-root /actual/hermes-agent --check
+rtk proxy /actual/hermes/python scripts/patch-hermes-a2a-approval.py --hermes-root /actual/hermes-agent --apply
+rtk proxy /actual/hermes/python test/hermes-approval-reference.py --hermes-root /actual/hermes-agent --with-dsh
+```
+
+主控应以 `configuration.returnImmediately: true` 派单，再用原任务的 `GetTask` 读取状态。新版 Relay MCP `a2a_send` 和 DSH 插件均发送此配置。`GetTask` / `ListTasks` 在 `metadata.hermesApproval` 中提供固定原因、观察关联编号、请求时间、审批期限及受保护命令的未执行证据，不包含原始命令、审批理由或凭据。
+
+| 事件 | 任务状态与原因 |
+| --- | --- |
+| 等待操作者审批 | `INPUT_REQUIRED` / `approval_required`，`commandExecuted:false` |
+| 审批通过 | 同一任务恢复 `WORKING` / `approval_approved`；不声称命令已经执行 |
+| 无人响应 | 立即记录 `approval_timeout` 和未执行证据；Gateway 本轮结束时最终为 `FAILED` |
+| 操作者拒绝 | `approval_denied`，本轮结束时最终为 `REJECTED` |
+| 审批通知无法送达 | `approval_notification_failed`，本轮结束时最终为 `FAILED` |
+
+关联编号用于排查，不能作为批准凭据。`canRespondViaA2A:false` 表示操作者仍须通过接收端有效审批入口决定；主控发送“继续”不构成批准。`commandExecuted:false` 仅针对这次受保护命令，不表示此前的预检或整个任务都未执行。多项并行审批全部通过后才恢复 `WORKING`。
+
+DSH 主控轮询的默认间隔上限为 5 秒（显式配置的上限保持不变），在等待审批时返回明确的未完成结果、原因和期限，工具查询保留这些字段；普通等待超时会再查询一次原任务，不自动取消或重新派单。审批状态修复同样需要从 Gateway 外部重新加载，且沿用上文的内存任务限制。应用前检查已有未决任务；脚本会验证原生方法、备份并保留文件模式，重复应用返回 `already_patched`，遇到不支持的源码或被修改的观察模块则拒绝覆盖。回归使用隔离 loopback、受控审批事件和真实 A2A/DSH 客户端，不调用模型或执行业务命令。
+
 ## 兼容服务范围
 
 兼容服务只绑定 `127.0.0.1`，临时 token 自动生成，默认从 9900 起尝试 20 个端口；其他实例占用端口不会被误当成宿主 A2A。已有外部 adapter 使用明确的 `--local http://127.0.0.1:实际端口`。运行时验证 Agent Card 和认证后的只读 GetTask；已有官方模块未启用或不可达时报告失败，不启动兼容服务。

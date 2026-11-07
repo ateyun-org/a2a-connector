@@ -9,6 +9,7 @@ import { installOutbound } from '../../plugins/dsh/outbound.js';
 
 const requests = [];
 let taskState = 'TASK_STATE_WORKING';
+let taskApproval;
 const server = createServer(async (req, res) => {
   if (req.url === '/.well-known/agent-card.json') {
     res.setHeader('content-type', 'application/json');
@@ -28,7 +29,9 @@ const server = createServer(async (req, res) => {
   const task = state => ({ id: 'remote-task-1', contextId: 'remote-context-1',
     status: { state, message: state === 'TASK_STATE_COMPLETED'
       ? { messageId: 'answer', contextId: 'remote-context-1', role: 'ROLE_AGENT',
-        parts: [{ text: 'done', mediaType: 'text/plain' }] } : undefined },
+        parts: [{ text: 'done', mediaType: 'text/plain' }] }
+      : taskApproval ? { messageId: 'approval', role: 'ROLE_AGENT', parts: [{ text: taskApproval.summary }] } : undefined },
+    metadata: taskApproval ? { hermesApproval: taskApproval } : undefined,
     artifacts: state === 'TASK_STATE_COMPLETED' ? [{ artifactId: 'artifact-1',
       parts: [{ text: 'result', mediaType: 'text/plain' }] }] : [] });
   let result;
@@ -409,7 +412,7 @@ test('Relay GetTask denial diagnoses ownership without declaring invoke permissi
   });
 });
 
-test('total wait timeout cancels a task and settles the provider result', async () => {
+test('total wait timeout retains the original task, including after provider disposal', async () => {
   taskState = 'TASK_STATE_WORKING';
   const a2a = new A2AOrchestrator({ ...config, taskTimeoutMs: 30, pollIntervalMs: 10 });
   const run = await a2a.startRun('coder', { parent: { session: { id: 'timeout-owner' } },
@@ -417,8 +420,88 @@ test('total wait timeout cancels a task and settles the provider result', async 
   const result = await run.result;
   assert.equal(result.stopReason, 'error');
   assert.match(result.diagnostic, /task timeout/);
-  assert.equal(taskState, 'TASK_STATE_CANCELED');
+  assert.equal(taskState, 'TASK_STATE_WORKING');
+  const details = JSON.parse(result.output.at(-2).text);
+  assert.equal(details.reasonCode, 'task_wait_timeout');
+  assert.equal(details.taskId, 'remote-task-1');
+  assert.equal(details.observationFresh, true);
   await run.dispose();
+  assert.equal(taskState, 'TASK_STATE_WORKING');
+});
+
+test('a pending approval reaches the controller immediately and is never reported as completion or cancelled by disposal', async () => {
+  taskState = 'TASK_STATE_INPUT_REQUIRED';
+  taskApproval = { version: 'approval-state-v1', status: 'pending', reasonCode: 'approval_required',
+    summary: 'Waiting for receiver operator approval; the guarded command has not executed.', commandExecuted: false,
+    requests: [{ requestId: 'approval-1', expiresAt: '2026-11-07T12:00:00Z' }] };
+  try {
+    const before = requests.length;
+    const a2a = new A2AOrchestrator(config);
+    const run = await a2a.startRun('coder', { parent: { session: { id: 'approval-owner' } },
+      prompt: [{ type: 'text', text: 'Guarded task' }], signal: new AbortController().signal });
+    const result = await run.result;
+    assert.equal(result.stopReason, 'error');
+    assert.match(result.diagnostic, /input_required.*approval_required/);
+    assert.match(JSON.stringify(result.output), /approval-1.*2026-11-07T12:00:00Z/);
+    assert.equal(result.task.approval.commandExecuted, false);
+    await run.dispose();
+    assert.deepEqual(requests.slice(before).map(request => request.method), ['SendMessage']);
+    const restored = new A2AOrchestrator(config);
+    const saved = (await restored.listConversations('approval-owner'))[0];
+    assert.equal(saved.lastObservation.approval.status, 'pending');
+    taskState = 'TASK_STATE_WORKING';
+    taskApproval = { ...taskApproval, status: 'approved', reasonCode: 'approval_approved' };
+    const resumed = await restored.getTask(run.id, 'approval-owner');
+    assert.equal(resumed.id, 'remote-task-1');
+    assert.equal(resumed.status.state, a2aTaskState.TASK_STATE_WORKING);
+    assert.equal(requests.slice(before).filter(request => request.method === 'SendMessage').length, 1);
+  } finally { taskApproval = undefined; }
+});
+
+test('model-facing send and task tools preserve approval reason, deadline and non-execution evidence', async () => {
+  taskState = 'TASK_STATE_INPUT_REQUIRED';
+  taskApproval = { version: 'approval-state-v1', status: 'timed_out', reasonCode: 'approval_timeout',
+    summary: 'Operator approval timed out; the guarded command did not execute.', commandExecuted: false,
+    requests: [{ requestId: 'approval-expired', expiresAt: '2026-11-07T12:00:00Z' }] };
+  try {
+    const tools = [];
+    installOutbound({ subagents: { registerProvider() {} }, tools: { register: value => tools.push(value) } }, config);
+    const exec = { agent: { session: { id: 'approval-tool-owner' } } };
+    const sent = JSON.parse((await tools.find(tool => tool.name === 'a2a_send').execute(
+      { agent_id: 'coder', message: 'Guarded work' }, exec)).text);
+    assert.equal(sent.reasonCode, 'approval_timeout');
+    assert.ok(sent.response.length);
+    const queried = JSON.parse((await tools.find(tool => tool.name === 'a2a_task').execute(
+      { conversation_id: sent.conversationId }, exec)).text);
+    assert.equal(queried.approval.commandExecuted, false);
+    assert.equal(queried.approval.requests[0].requestId, 'approval-expired');
+    assert.equal(queried.stateName, 'input_required');
+  } finally { taskApproval = undefined; }
+});
+
+test('the final read after a wait timeout can recover a pending approval without resubmission', async () => {
+  taskState = 'TASK_STATE_WORKING';
+  const methods = [];
+  const a2a = new A2AOrchestrator({ ...config, taskTimeoutMs: 15, pollIntervalMs: 100 }, {
+    fetchImpl: async (input, init) => {
+      const method = init.body ? JSON.parse(init.body).method : '';
+      if (method) methods.push(method);
+      if (method === 'GetTask') {
+        taskState = 'TASK_STATE_INPUT_REQUIRED';
+        taskApproval = { status: 'pending', reasonCode: 'approval_required', summary: 'Approval pending', commandExecuted: false };
+      }
+      return fetch(input, init);
+    },
+  });
+  try {
+    const run = await a2a.startRun('coder', { parent: { session: { id: 'approval-race-owner' } },
+      prompt: [{ type: 'text', text: 'Guarded task' }], signal: new AbortController().signal });
+    const result = await run.result;
+    assert.match(result.diagnostic, /approval_required/);
+    assert.doesNotMatch(result.diagnostic, /task timeout/);
+    await run.dispose();
+    assert.deepEqual(methods, ['SendMessage', 'GetTask']);
+  } finally { taskApproval = undefined; }
 });
 
 test('429 stops polling with Retry-After diagnostics and does not resend', async () => {

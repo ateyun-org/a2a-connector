@@ -96,6 +96,67 @@ If a completed task returned only a file path and its receiving Agent has not up
 
 After upload, query the original task and download its exact `artifactId` using the original calling identity and the `GetArtifact` procedure below. CLI/raw RPC supports files up to 8 MiB; MCP `a2a_artifact` supports 512 KiB. A different MCP/Connector identity cannot substitute for the original owner. Staged bytes expire one hour after upload and are cleaned from disk at startup and every minute, independently of WorkBuddy enablement. Small task-scoped references/expiry markers expire from Redis after 24 hours; file bytes are never stored there. Repeating an upload/download does not silently renew an expired artifact. Do not keep retrying `retryable:false` or repeat the business task to recover a file.
 
+## Hermes file-delivery request templates
+
+For a Connector-bridged Hermes receiver, include the upload operation in the instruction: generating a file and reporting its path/checksum does not register it with Relay. Hosted WorkBuddy cloud upload instructions are injected separately and must not be assumed for Hermes. The templates below use the example root installation and Relay; replace the CLI path, private state path and Relay URL with the receiving Hermes profile's actual configuration before sending. The receiving Agent uses its own credential; never include the caller's state contents or token in the message.
+
+### Initial business request
+
+Copy this into the authorized business request. The task ID must be the real receiving A2A task ID, not a DSH conversation ID, context ID or invented value. If the receiver cannot obtain it yet, the caller must retain the returned task ID and use the transfer-only template below after Relay has registered the original task.
+
+```text
+任务：<已授权的业务任务及所需文件清单>。
+
+文件交付要求：生成每个指定文件后，请显式调用你本机已安装的 Connector CLI，
+用你自己的 Connector state 将文件上传并注册到本次业务的原始 A2A task ID：
+
+node /root/.hermes/plugins/a2a-connector/vendor/connector/cli.js \
+  --relay wss://dsh-relay.chuanbota.com/connect \
+  --state /root/.config/a2a-connector/hermes.json \
+  --task-id "<本次业务的真实原始 A2A task ID>" \
+  --artifact-upload "<本次指定交付文件的绝对路径>"
+
+每个指定文件分别上传；只上传本任务明确要求的交付物。
+成功后返回 CLI 收据中的 taskId、artifact.artifactId，以及 artifact.metadata 中的
+sizeBytes、sha256、downloadSource、expiresAt；保留准确值，不输出凭据。
+只提供路径、sha256 或 agent:/// 引用不算文件交付完成。
+如果本轮无法取得真实 task ID、Relay 尚未登记原任务、CLI 不可用或上传失败，
+请明确报告阻塞与已生成文件的路径，保留文件，等待主控针对原任务安排补传；
+不要猜 task ID、重新执行业务或把失败说成已上传。
+```
+
+### Transfer only an existing file
+
+First recover any uncertain send and confirm the original business task/file. Send this as a deliberate follow-up to the same receiving Agent using its supported original context (DSH: the saved `conversation_id`) and a new stable `message_id`. A transfer follow-up can create its own A2A task; its upload destination and subsequent download must still use the **original business task ID**. Do not replace it with the follow-up task ID or resend the business instruction.
+
+```text
+仅补传已有交付物：原业务 A2A task ID 为 "<原业务任务ID>"，
+需要交付的已有文件为 "<已确认的文件绝对路径>"。
+请保留已有文件内容，不重新执行原业务、不重新生成文件。
+请使用你自己的 Connector state 执行：
+
+node /root/.hermes/plugins/a2a-connector/vendor/connector/cli.js \
+  --relay wss://dsh-relay.chuanbota.com/connect \
+  --state /root/.config/a2a-connector/hermes.json \
+  --task-id "<原业务任务ID>" \
+  --artifact-upload "<已确认的文件绝对路径>"
+
+即使本条补传指令产生了新任务，也必须上传到上面指定的原业务任务ID。
+成功后返回 CLI 收据中的 taskId、artifact.artifactId，以及 artifact.metadata 中的
+sizeBytes、sha256、downloadSource、expiresAt；保留准确值，不输出凭据。
+如果文件不存在、CLI 不可用或上传失败，请返回实际阻塞；不要重做业务或声称交付成功。
+```
+
+### Caller verification in DSH
+
+DSH's native `a2a_task` reads status/output/artifact metadata. Use its native `a2a_artifact({conversation_id, artifact_id, task_id?, max_bytes?, output_path?})` to download a registered file with the same configured calling identity. It validates Base64, byte count and SHA-256 before returning UTF-8 text/binary Base64 (up to 512 KiB), or saving to an absolute `output_path` (up to 8 MiB, private permissions, no overwrite). It uses the target's allowed JSON-RPC interface and does not send business messages or retry automatically. Never pass Relay MCP's different `{targetAgentId, taskId, artifactId}` schema to this DSH tool.
+
+Before a follow-up, retain the original remote business task ID separately from the local conversation ID and any follow-up task ID. Preserve the exact registered `artifactId`; `agent:///...` and `reference_only` alone are references. The download defaults to the current task; after a transfer follow-up, explicitly select the original business `task_id` already recorded in this conversation. New send/reconcile observations retain these task IDs in the local index; older records without history still support their current task. The active DSH session must own the conversation, and Relay still enforces task_read plus original caller ownership. Downloading a known file does not require business completion or another successful GetTask read.
+
+On an older installation without the native tool, an authorized client may make the [registered-file `GetArtifact` request](#download-a-registered-workbuddy-file) on the target's advertised JSON-RPC endpoint, with `params.id` set to the original business task ID and `maxBytes: 8388608`. This is an explicit protocol fallback. Read the original calling Connector credential privately in that client; do not put its value in messages, command arguments or logs, or substitute a different MCP Controller identity.
+
+Decode `result.artifact.parts[].raw` from Base64 and verify the decoded byte count and SHA-256 against both the download metadata and the original task's registered metadata before saving to an explicit local path. Report delivery only after verifying the actual file bytes; evaluate business completion separately. The Connector upload/raw RPC limit is 8 MiB per file; Relay temporary files normally expire one hour after upload, at the recorded `expiresAt`. Download promptly. If an upload result is uncertain, first check the original task; any necessary retry is limited to that same file upload. Expiry, integrity failure or `retryable:false` requires reporting the blocker rather than unchanged retries or repeating the business work.
+
 ## Download a registered WorkBuddy file
 
 When Relay health advertises `workbuddyArtifactTransferVersion:"relay-temp-v1"` (card `artifactTransferVersion:"relay-temp-v1"`), new hosted cloud turns receive instructions to upload final files directly to Relay. A checksum-verified upload is registered on the original task independently of the final agent reply. Download with the same `GetArtifact`/CLI/MCP operation and original task ownership; successful reads include `metadata.downloadSource:"relay_temp"`, `sizeBytes`, `sha256` and `expiresAt`. Files expire one hour after upload, with at most 16 files of 8 MiB per task. Download promptly; download retries do not extend retention. `error.data.reason:"relay_artifact_expired_or_missing"` or `"relay_artifact_integrity_failed"` with `retryable:false` is not a reason to resend business work. Uploading a file does not prove business completion. Historical/provider-only files keep the existing download route. The sandbox endpoint `/relay/artifacts/upload` accepts only a private task-bound capability supplied to the sandbox, never connector/ACP credentials; callers should not probe or request it.

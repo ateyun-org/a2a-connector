@@ -6,9 +6,23 @@
 
 ## 调用说明与 skill
 
-DSH 的模型侧入口是实际注册的原生工具：`a2a_agents`、`a2a_send`、`a2a_task`、`a2a_conversations`、`a2a_reconcile`、`a2a_cancel`。其工具说明直接包含企业授权、任务归属和恢复规则；完整说明随包放在 `skills/a2a-relay-calling/SKILL.md`，需要时通过实际宿主的文件/上下文机制读取。本包未声明 DSH skill 自动加载 API，不把文件存在当作当前模型已经读到。`agents` 未配置时不会注册出站工具，不能拿 MCP 的参数 schema 猜这些工具的调用方式。
+向 Hermes 派发带文件的任务时，使用[文件交付指令模板](../relay-http.md#hermes-file-delivery-request-templates)，要求接收端显式调用自己的 Connector CLI 上传到原业务 task ID。`a2a_task` 读取任务与 artifact 元数据，原生 `a2a_artifact` 沿用同一调用方凭据执行 `GetArtifact`，校验 Base64、sizeBytes 和 SHA-256 后返回文件内容或保存到明确的本地路径。
+
+DSH 的模型侧入口是实际注册的原生工具：`a2a_agents`、`a2a_send`、`a2a_task`、`a2a_artifact`、`a2a_conversations`、`a2a_reconcile`、`a2a_cancel`。其工具说明直接包含企业授权、任务归属和恢复规则；完整说明随包放在 `skills/a2a-relay-calling/SKILL.md`，需要时通过实际宿主的文件/上下文机制读取。本包未声明 DSH skill 自动加载 API，不把文件存在当作当前模型已经读到。`agents` 未配置时不会注册出站工具，不能拿 MCP 的参数 schema 猜这些工具的调用方式。
 
 `a2a_send` 使用 `agent_id`、`message`、可选 `message_id`/`conversation_id`，由 SDK 构造 ROLE_USER、messageId 和文本 parts。企业授权在**目标 Agent** 的「谁能访问」里选择当前 DSH 为机器调用方；卡片需要 discover，发送需要 invoke，GetTask 需要 task_read 及当前调用方的任务归属，个人身份还需成员权限交集。ListTasks 只返回当前调用方任务，使用 task_read；GetTask 403 不表示一定没有派单权限。HTTP 协议详见随包 references，其维护源为仓库 `docs/relay-http.md`，与 Hermes、OpenClaw 共用。
+
+文件下载示例（工具调用）：
+
+```javascript
+a2a_artifact({
+  conversation_id: "<a2a_send 返回的本地 conversationId>",
+  artifact_id: "agent:///workspace/deliverable.zip",
+  output_path: "/absolute/local/path/deliverable.zip"
+})
+```
+
+省略 `output_path` 时最多读取 512 KiB，返回 UTF-8 文本或二进制 Base64；指定绝对路径时最多保存 8 MiB，文件权限为私有且不覆盖已有文件，只返回路径和校验元数据。可用 `max_bytes` 降低上限。`task_id` 默认取该会话当前远端任务；补传指令产生新任务后，显式指定已记录的原业务 `task_id`。会话索引的 `taskIds` 保留新版派单/对账观察到的任务，不接受任意外部 task ID；旧索引没有历史任务列表时，仍支持其当前任务。工具要求当前 DSH session 拥有该会话，并沿用原目标和配置的调用方身份，Relay 继续检查 task_read 及原调用方任务归属。下载不会重发业务、取消任务或延长临时文件保留期。
 
 ## 安装与配置
 

@@ -5,6 +5,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { ClientFactory, DefaultAgentCardResolver, JsonRpcTransportFactory, RestTransportFactory } from '@a2a-js/sdk/client';
 import { Message, Role, SendMessageResponse, Task, TaskState } from '@a2a-js/sdk';
 import { ConversationStore } from './store.js';
+import { artifactLimit, deliverArtifact, readArtifact, validArtifactId } from './artifacts.js';
 
 const FINAL = new Set([TaskState.TASK_STATE_COMPLETED, TaskState.TASK_STATE_FAILED,
   TaskState.TASK_STATE_CANCELED, TaskState.TASK_STATE_REJECTED]);
@@ -135,6 +136,10 @@ function safeDiagnostic(error) {
   return 'A2A remote transport or protocol error';
 }
 
+function knownTaskIds(record) {
+  return [...new Set([...(record?.taskIds ?? []), record?.taskId].filter(Boolean))];
+}
+
 /** DSH's remote A2A registry and durable conversation control surface. */
 export class A2AOrchestrator {
   constructor(config, { fetchImpl = fetch, store } = {}) {
@@ -234,7 +239,7 @@ export class A2AOrchestrator {
             try { method = JSON.parse(init.body).method; } catch { /* non-JSON or discovery request */ }
             const permission = target.pathname.endsWith('/.well-known/agent-card.json')
               ? '卡片读取需要 discover'
-              : ['GetTask', 'tasks/get'].includes(method) ? '任务查询需要 task_read，且任务必须归属当前调用方'
+              : ['GetTask', 'tasks/get', 'GetArtifact'].includes(method) ? '任务查询需要 task_read，且任务必须归属当前调用方'
                 : ['SendMessage', 'message/send'].includes(method) ? '发送需要 invoke；已有上下文还需归属当前调用方'
                   : '检查当前操作的动作权限及任务/上下文归属';
             throw new RelayAuthError(`Relay access_denied${id}: ${permission}。企业管理员在 ${base.origin}/console 的目标 Agent「谁能访问」中选择本机为机器调用方（调用方 → 目标），并核对个人成员权限交集、凭据 scope 和 Agent 状态。${correlation}`);
@@ -260,11 +265,13 @@ export class A2AOrchestrator {
     return [...this.agents.values()].map(agent => ({ id: agent.id, url: agent.url }));
   }
 
-  async discover(id, { refresh = false } = {}) {
+  async discover(id, { refresh = false, signal } = {}) {
     const agent = this.agents.get(id);
     if (!agent) throw new Error(`unknown A2A agent: ${id}`);
     if (!refresh && this.clients.has(id)) return this.clients.get(id).card;
-    const card = await agent.resolver.resolve(agent.url, agent.cardPath);
+    const resolver = signal ? new DefaultAgentCardResolver({ fetchImpl: (input, init = {}) =>
+      agent.scopedFetch(input, { ...init, signal: init.signal ? AbortSignal.any([signal, init.signal]) : signal }) }) : agent.resolver;
+    const card = await resolver.resolve(agent.url, agent.cardPath);
     if (!card.name || !Array.isArray(card.supportedInterfaces)) throw new Error(`invalid A2A Agent Card for ${id}`);
     const interfaces = card.supportedInterfaces.filter(item =>
       item.protocolVersion === '1.0' && ['JSONRPC', 'HTTP+JSON'].includes(item.protocolBinding) &&
@@ -363,7 +370,7 @@ export class A2AOrchestrator {
       const message = { messageId: messageId || randomUUID(), contextId: previous?.contextId ?? '',
         taskId: previous && PAUSED.has(previous.state) ? previous.taskId ?? '' : '',
         role: Role.ROLE_USER, parts, metadata: workbuddyMode ? { workbuddyMode } : undefined, extensions: [], referenceTaskIds: [] };
-      const record = { id, parentId, agentId, contextId: message.contextId, taskId: '',
+      const record = { id, parentId, agentId, contextId: message.contextId, taskId: '', taskIds: knownTaskIds(previous),
         state: TaskState.TASK_STATE_UNSPECIFIED, messageId: message.messageId, contentHash, workbuddyMode, sourceConversationId: conversationId || '',
         relayRequestId: randomUUID().replaceAll('-', ''), dispatchState: 'pending',
         sentAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
@@ -388,7 +395,10 @@ export class A2AOrchestrator {
         taskId: isTask ? response.id : '', dispatchState: 'acknowledged',
         state: isTask ? response.status?.state ?? TaskState.TASK_STATE_UNSPECIFIED : TaskState.TASK_STATE_COMPLETED,
         updatedAt: new Date().toISOString() });
-      if (isTask) record.lastObservation = taskDetails(response);
+      if (isTask) {
+        record.taskIds = knownTaskIds(record);
+        record.lastObservation = taskDetails(response);
+      }
       if (!isTask) record.inlineMessage = Message.toJSON(response);
       await this.store.put(record);
       return { conversation: record, response };
@@ -405,7 +415,10 @@ export class A2AOrchestrator {
         taskId: isTask ? response.id : '', dispatchState: 'acknowledged',
         state: isTask ? response.status?.state : TaskState.TASK_STATE_COMPLETED, updatedAt: new Date().toISOString() };
       if (!isTask) updated.inlineMessage = Message.toJSON(response);
-      else updated.lastObservation = taskDetails(response);
+      else {
+        updated.taskIds = [...new Set([...knownTaskIds(record), response.id])];
+        updated.lastObservation = taskDetails(response);
+      }
       // Historical recovery is read-only. Ownership never silently transfers.
       if (!historical) await this.store.put(updated);
       return { conversation: updated, response, outcome: 'found', historical, safeToResubmit: false };
@@ -468,6 +481,35 @@ export class A2AOrchestrator {
     await this.store.put({ ...record, state: task.status?.state ?? record.state,
       lastObservation: taskDetails(task), updatedAt: new Date().toISOString() });
     return task;
+  }
+
+  async getArtifact(id, parentId, { artifactId, taskId, maxBytes, outputPath, signal } = {}) {
+    const record = await this.owned(id, parentId);
+    taskId ??= record.taskId;
+    if (!taskId || !knownTaskIds(record).includes(taskId)) throw new Error('A2A task is not recorded in this conversation');
+    if (!validArtifactId(artifactId)) throw new Error('A2A artifact_id must be an exact registered agent:/// file URI');
+    maxBytes = artifactLimit(maxBytes, outputPath);
+    if (signal?.aborted) throw new Error('A2A artifact request cancelled');
+    let card;
+    try { card = await this.discover(record.agentId, { signal }); }
+    catch (error) { throw new Error(safeDiagnostic(error)); }
+    const endpoint = card.supportedInterfaces.find(item => item.protocolBinding === 'JSONRPC');
+    if (!endpoint) throw new Error('A2A GetArtifact requires an allowed JSONRPC interface');
+    const agent = this.agents.get(record.agentId);
+    if (agent.isRelay) {
+      const targetPath = new URL(agent.card || agent.cardPath, agent.base).pathname.replace(/\/\.well-known\/agent-card\.json$/, '/');
+      if (!new URL(endpoint.url).pathname.startsWith(targetPath)) throw new Error('A2A GetArtifact endpoint belongs to another Relay target');
+    }
+    const requestId = randomUUID();
+    let response;
+    try {
+      response = await agent.scopedFetch(endpoint.url, { method: 'POST', signal,
+        headers: { 'content-type': 'application/json', 'A2A-Version': '1.0' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: requestId, method: 'GetArtifact',
+          params: { id: taskId, artifactId, maxBytes } }) });
+    } catch (error) { throw new Error(safeDiagnostic(error)); }
+    const file = await readArtifact(response, requestId, artifactId, maxBytes);
+    return { conversationId: id, taskId, ...await deliverArtifact(file, { outputPath, signal }) };
   }
 
   async listRemoteTasks(agentId, { contextId = '', pageSize = 50, pageToken = '', signal } = {}) {

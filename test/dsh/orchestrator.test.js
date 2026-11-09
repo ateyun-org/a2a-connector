@@ -119,7 +119,7 @@ test('registers a DSH provider and exposes its purpose to the controller', async
   assert.equal(providers[0].name, 'a2a:coder');
   assert.equal(providers[0].capabilities.depthLimit, false);
   assert.deepEqual(tools.map(tool => tool.name),
-    ['a2a_agents', 'a2a_send', 'a2a_task', 'a2a_cancel', 'a2a_conversations', 'a2a_reconcile']);
+    ['a2a_agents', 'a2a_send', 'a2a_task', 'a2a_artifact', 'a2a_cancel', 'a2a_conversations', 'a2a_reconcile']);
   assert.match(tools[0].description, /coder: Reviews Go and Node.js code/);
   assert.match(tools[1].description, /coder: Reviews Go and Node.js code/);
   const [agent] = await a2a.listAgents();

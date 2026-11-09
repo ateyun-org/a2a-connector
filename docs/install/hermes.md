@@ -77,6 +77,8 @@ python scripts/install-hermes.py --check --home /actual/hermes/home \
 
 ## 日常管理与排错
 
+需要 Hermes 交付文件时，直接套用[文件交付指令模板](../relay-http.md#hermes-file-delivery-request-templates)：首次派单明确要求用接收端自己的 Connector CLI 上传到原业务 task ID；已有文件只补传，不重做业务。模板也说明 task ID 尚不可得时的处理和主控的字节校验步骤。
+
 插件随包提供远程调用 skill，安装和 `--upgrade` 都会复制 `skills/relay-calling/`。新版 Hermes 加载插件时通过 `ctx.register_skill` 注册；远程派单或排查 Relay 前，先调用 `skill_view("a2a-connector:relay-calling")`，按其中链接读取 HTTP 请求、权限和收据恢复说明。`a2a_connector_status` 的工具说明也会提示加载它。旧 Hermes 没有注册 API 时，插件仍可管理 Connector，并提示直接读取安装目录的 `skills/relay-calling/SKILL.md`。插件 skill 是显式加载的；不能把安装成功当作当前会话已读到新说明。见 [Hermes 官方插件 skill 机制](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/developer-guide/plugins/index.md#bundle-skills)。
 
 该 skill 区分企业 `/console` 和旧版配对流程，给出 caller → target 的授权方向，以及精确的 `ROLE_USER`、`params.message`、`messageId` 和文本 parts。ListTasks 按调用方隔离，使用 task_read 及 Relay 分页令牌；GetTask 需要本身份的任务归属；企业仍支持带幂等键的请求收据。不要因这些状态反复重配对或要求管理员重复授权。Hermes 内置 A2A 工具未注册时可使用 skill 中的 HTTPS 协议，不擅自修改宿主配置启用另一套身份。

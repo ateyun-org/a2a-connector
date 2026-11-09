@@ -48,7 +48,7 @@ export function installOutbound(ctx, config) {
       ...taskDetails(response),
       response: response && (!('status' in response) || ['input_required', 'auth_required', 'completed', 'failed', 'canceled', 'rejected'].includes(stateName(conversation.state))) ? responseParts(response) : undefined });
   }));
-  ctx.tools.register(tool('a2a_task', 'Get status, output, pending approval and artifact metadata of a conversation owned by this DSH session. INPUT_REQUIRED/AUTH_REQUIRED is not business completion: tell the user the reason and approval deadline, and wait for an explicit operator decision through the receiver approval surface. A wait timeout does not authorize cancellation or another send. Relay also requires task_read and ownership by the same caller Agent. A 403 on an old/foreign task does not establish whether sending is permitted; use the saved conversation ID, not a random task ID. Files with downloadSource=relay_temp expire at expiresAt (normally one hour); read skills/a2a-relay-calling/SKILL.md for the GetArtifact download procedure using the original caller identity. An agent:/// identifier is not a public URL, and file availability does not prove task completion.', {
+  ctx.tools.register(tool('a2a_task', 'Get status, output, pending approval and artifact metadata of a conversation owned by this DSH session. INPUT_REQUIRED/AUTH_REQUIRED is not business completion: tell the user the reason and approval deadline, and wait for an explicit operator decision through the receiver approval surface. A wait timeout does not authorize cancellation or another send. Relay also requires task_read and ownership by the same caller Agent. A 403 on an old/foreign task does not establish whether sending is permitted; use the saved conversation ID, not a random task ID. Files with downloadSource=relay_temp expire at expiresAt (normally one hour); use a2a_artifact with this conversation ID and the exact registered artifactId to download and verify bytes using the same caller identity. An agent:/// identifier is not a public URL, and file availability does not prove task completion.', {
     conversation_id: { type: 'string', required: true },
   }, async (args, parentId, signal) => {
     const task = await a2a.getTask(args.conversation_id, parentId, { signal });
@@ -56,6 +56,15 @@ export function installOutbound(ctx, config) {
       ...taskDetails(task), response: responseParts(task),
       artifacts: task.artifacts?.map(({ parts, ...metadata }) => metadata) });
   }));
+  ctx.tools.register(tool('a2a_artifact', 'Download an exact registered file from a task recorded in a conversation owned by this DSH session. Uses GetArtifact with the same configured caller credentials and verifies Base64, sizeBytes and SHA-256. Files up to 512 KiB return UTF-8 text or binary Base64; supply an absolute output_path to save up to 8 MiB without overwriting an existing file. Optional task_id selects a previously recorded business task after a transfer follow-up; omit it for the current task. Download promptly before expiresAt. This is read-only remote access: no business message, retry, cancellation or completion claim. Report expired/missing/integrity errors without resending work. Relay requires task_read and original task ownership.', {
+    conversation_id: { type: 'string', required: true, description: 'Local A2A conversation owned by the current DSH session.' },
+    artifact_id: { type: 'string', required: true, description: 'Exact registered agent:/// file artifactId from the original task.' },
+    task_id: { type: 'string', description: 'Optional original remote business task ID already recorded in this conversation; defaults to its current task.' },
+    max_bytes: { type: 'number', description: 'Optional positive integer byte limit. Default/maximum: 524288 inline, or 8388608 with output_path.' },
+    output_path: { type: 'string', description: 'Optional absolute local file path. Saves verified bytes with private permissions and refuses to overwrite; returns metadata and path instead of contents.' },
+  }, async (args, parentId, signal) => JSON.stringify(await a2a.getArtifact(args.conversation_id, parentId, {
+    artifactId: args.artifact_id, taskId: args.task_id, maxBytes: args.max_bytes, outputPath: args.output_path, signal,
+  }))));
   ctx.tools.register(tool('a2a_cancel', 'Request cancellation of a running A2A task owned by this DSH session.', {
     conversation_id: { type: 'string', required: true },
   }, async (args, parentId, signal) => JSON.stringify(await a2a.cancel(args.conversation_id, parentId, { signal }))));

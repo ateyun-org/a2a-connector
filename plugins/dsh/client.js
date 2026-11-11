@@ -67,6 +67,10 @@ var controlContract = {
   }))
 };
 
+// remote-route.js
+var REMOTE_AGENT_PROVIDER = "a2a-remote-agent";
+var REMOTE_AGENT_MODEL = "direct";
+
 // client/remote-selection.js
 var storageKey = "dsh.a2a.remote-agent";
 var RemoteSelection = class {
@@ -84,6 +88,7 @@ var RemoteSelection = class {
     this.bindings = /* @__PURE__ */ new Map();
     this.generation = 0;
     this.current = void 0;
+    this.targets = /* @__PURE__ */ new Map();
     this.subscribe = (listener) => {
       this.listeners.add(listener);
       return () => this.listeners.delete(listener);
@@ -117,17 +122,23 @@ var RemoteSelection = class {
   }
   setTargets(targets) {
     this.discovered = true;
+    this.targets = new Map(targets.map((target) => [target.agentId, target]));
     for (const target of targets) {
       for (const id of target.sessionIds || (target.sessionId ? [target.sessionId] : [])) this.bindings.set(id, target.agentId);
     }
     if (this.snapshot.agentId && !targets.some((target) => target.agentId === this.snapshot.agentId)) {
       ++this.generation;
       this.patch({ sessionId: null, pending: false, error: "\u6240\u9009\u8FDC\u7A0B Agent \u5DF2\u4E0D\u53EF\u8BBF\u95EE\uFF0C\u8BF7\u91CD\u65B0\u9009\u62E9\u76EE\u6807\u6216\u8FD4\u56DE\u672C\u5730 DSH\u3002" });
-    } else this.reconcile(true);
+    } else {
+      this.reconcile(true);
+      this.patch({});
+    }
   }
   reconcile(discovered = false) {
     const row = this.currentSession(), id = row?.id;
-    if (id === this.current && !discovered) return;
+    const route = row?.projectionValues?.modelSelection?.next;
+    const overridden = this.snapshot.agentId && this.snapshot.sessionId === id && route && (route.provider !== REMOTE_AGENT_PROVIDER || route.model !== REMOTE_AGENT_MODEL);
+    if (id === this.current && !discovered && !overridden) return;
     const changed = id !== this.current;
     if (changed) {
       ++this.generation;
@@ -162,7 +173,7 @@ var RemoteSelection = class {
       this.updateBlock();
       return;
     }
-    if (this.snapshot.sessionId === id && bound === this.snapshot.agentId) {
+    if (this.snapshot.sessionId === id && bound === this.snapshot.agentId && !overridden) {
       this.updateBlock();
       return;
     }
@@ -255,6 +266,14 @@ function RobotIcon() {
     /* @__PURE__ */ import_react.default.createElement("rect", { x: "4", y: "7", width: "16", height: "14", rx: "4" }),
     /* @__PURE__ */ import_react.default.createElement("path", { d: "M9 12v2m6-2v2m-6 3h6" })
   );
+}
+function DirectChatStatus({ sessionId, selection: selection2 }) {
+  const state = (0, import_react.useSyncExternalStore)(selection2.subscribe, selection2.getSnapshot);
+  const active = selection2.current === sessionId ? state.agentId : null;
+  const agentId = active || selection2.bindings.get(sessionId);
+  if (!agentId) return null;
+  const target = selection2.targets.get(agentId);
+  return /* @__PURE__ */ import_react.default.createElement("div", { className: "a2a-direct-status", role: "status" }, /* @__PURE__ */ import_react.default.createElement(RobotIcon, null), /* @__PURE__ */ import_react.default.createElement("span", null, /* @__PURE__ */ import_react.default.createElement("strong", null, active && state.pending ? "\u6B63\u5728\u8FDE\u63A5" : "\u76F4\u804A", " \xB7 ", target?.name || agentId), /* @__PURE__ */ import_react.default.createElement("small", null, "\u6D88\u606F\u76F4\u63A5\u53D1\u9001\u7ED9\u8FDC\u7A0B Agent\uFF0C\u65E0\u9700\u9009\u62E9\u4E3B\u63A7\u6A21\u578B")));
 }
 function RemoteAgents({ remote, selection: selection2, expandSidebar, wide = true }) {
   const [expanded, setExpanded] = (0, import_react.useState)(true), [targets, setTargets] = (0, import_react.useState)(null);
@@ -372,6 +391,12 @@ function apply(ctx) {
         expandSidebar: () => scope.layout.toggleSidebar()
       })
     }, RemoteAgents));
+    scope.slots.inject("conversation.input.dock", () => scope.slots.register({
+      name: "conversation.input.dock",
+      id: "a2a-direct-chat",
+      order: -20,
+      inject: () => ({ selection: selection2 })
+    }, DirectChatStatus));
     scope.effect(() => {
       const style = document.createElement("style");
       style.dataset.plugin = "dsh-a2a-connector";
@@ -390,6 +415,9 @@ var css = `
 .a2a-remote-heading small{margin-left:auto;opacity:.6}.a2a-remote-list{max-height:min(35vh,300px);overflow:auto;display:grid;gap:2px}
 .a2a-remote-list p{font-size:12px;line-height:1.6;padding:8px;margin:0;overflow-wrap:anywhere;opacity:.7}.a2a-remote-list [role=alert]{color:var(--dsw-alias-status-error,#b74b42)}
 .a2a-remote-local{font-size:11px!important;text-align:left;padding:5px 12px 5px 34px;opacity:.65}.a2a-remote-local:hover{opacity:1;text-decoration:underline}
+.a2a-direct-status{display:flex;align-items:center;gap:8px;min-width:0;padding:6px 4px;color:var(--dsw-alias-label-primary,inherit);font:inherit}
+.a2a-direct-status>span{display:grid;gap:2px;min-width:0}.a2a-direct-status strong{font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.a2a-direct-status small{font-size:11px;line-height:1.5;opacity:.65;overflow-wrap:anywhere}
 .a2a-remote-row{display:grid;gap:4px;width:100%;padding:8px 12px 8px 34px;text-align:left;min-width:0}
 .a2a-remote-row:hover,.a2a-remote-heading:hover,.a2a-remote-rail:hover{background:var(--dsw-alias-interactive-bg-hover,#8881)}
 .a2a-remote-row[aria-current=page]{background:var(--dsw-alias-interactive-bg-selected,#52796f22)}

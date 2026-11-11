@@ -3,12 +3,30 @@ import { SessionPersistenceNotFoundError } from '@deepseek-ai/dsh-session-persis
 import { TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol';
 import { ConversationStore } from './store.js';
 import { controlContract } from './control-contract.js';
-import { REMOTE_AGENT_PROVIDER, RemoteSessionAdapter } from './remote-session-adapter.js';
+import { REMOTE_AGENT_PROVIDER, REMOTE_AGENT_MODEL, RemoteSessionAdapter } from './remote-session-adapter.js';
 
 /** Durable native-Session target bindings. Transcript data stays in DSH. */
 export class RemoteAgentSessions {
   constructor(ctx, a2a, path) {
     this.ctx = ctx; this.a2a = a2a; this.index = new ConversationStore(path); this.opening = new Map(); this.tail = Promise.resolve();
+    this.known = new Map();
+    this.ready = this.index.list().then(bindings => { for (const binding of bindings) this.known.set(binding.sessionId, binding); });
+    // Native selectModel can replace a Session's route. Re-pin synchronously
+    // before AgentLoop captures it, then reject any remaining mismatch.
+    ctx.on('agent/inbox/claimed', ({ agent }) => {
+      if (!this.known.has(agent.id)) return;
+      const current = agent.model.current();
+      if (current?.provider !== REMOTE_AGENT_PROVIDER || current.model !== REMOTE_AGENT_MODEL) {
+        agent.model.select({ provider: REMOTE_AGENT_PROVIDER, model: REMOTE_AGENT_MODEL });
+      }
+    });
+    ctx.on('agent/pre-step', async ({ agent, modelSelection }, next) => {
+      await this.ready;
+      if (this.known.has(agent.id) && (modelSelection.provider !== REMOTE_AGENT_PROVIDER || modelSelection.model !== REMOTE_AGENT_MODEL)) {
+        throw new Error('此会话已绑定远程 Agent，请从左侧重新打开；消息不会改发给主控模型。');
+      }
+      return next();
+    });
   }
   async targets() {
     const [targets, bindings] = await Promise.all([this.a2a.syncRelayTargets(), this.index.list()]);
@@ -24,7 +42,12 @@ export class RemoteAgentSessions {
   }
   async binding(sessionId) {
     if (!sessionId) return undefined;
-    return (await this.index.list()).find(item => item.sessionId === sessionId);
+    await this.ready;
+    return this.known.get(sessionId);
+  }
+  async saveBinding(binding) {
+    await this.index.put(binding);
+    this.known.set(binding.sessionId, binding);
   }
   open(input) {
     const key = JSON.stringify([input.agentId, input.sessionId ?? null]);
@@ -48,6 +71,7 @@ export class RemoteAgentSessions {
     return true;
   }
   async openNative({ agentId, sessionId }) {
+    await this.ready;
     const target = await this.authorize(agentId);
     const bindings = await this.index.list();
     const requested = sessionId ? await this.nativeAgent(sessionId) : undefined;
@@ -59,8 +83,8 @@ export class RemoteAgentSessions {
     if (!binding && requested && !currentBinding && this.blank(requested)) {
       return requested.runMaintenance(async () => {
         const adopted = { id: `native:${sessionId}`, agentId, sessionId, cwd, updatedAt: new Date().toISOString() };
-        await this.index.put(adopted);
-        requested.model.select({ provider: REMOTE_AGENT_PROVIDER, model: agentId });
+        await this.saveBinding(adopted);
+        requested.model.select({ provider: REMOTE_AGENT_PROVIDER, model: REMOTE_AGENT_MODEL });
         this.ctx.get('sessionTitle')?.rename(requested.session, target.name || agentId);
         await this.ctx.sessions.flush(requested.session);
         return { agentId, sessionId };
@@ -71,9 +95,9 @@ export class RemoteAgentSessions {
     if (!binding) {
       const id = `session-${randomUUID()}`;
       binding = { id: `native:${id}`, agentId, sessionId: id, cwd: cwd || process.cwd(), updatedAt: new Date().toISOString() };
-      await this.index.put(binding);
+      await this.saveBinding(binding);
     }
-    const selection = { provider: REMOTE_AGENT_PROVIDER, model: agentId };
+    const selection = { provider: REMOTE_AGENT_PROVIDER, model: REMOTE_AGENT_MODEL };
     let agent = this.ctx.agents.get(binding.sessionId);
     if (!agent) {
       const setup = (_agentCtx, value) => { value.model.select(selection); };
@@ -111,8 +135,9 @@ class ControlService extends TypertRemoteService {
 }
 
 export function installRemoteAgents(ctx, a2a, path) {
-  return ctx.inject(['typert'], scope => {
+  return ctx.inject(['typert'], async scope => {
     const sessions = new RemoteAgentSessions(scope, a2a, path);
+    await sessions.ready;
     scope.llm.registerAdapter([REMOTE_AGENT_PROVIDER], new RemoteSessionAdapter(sessions));
     new ControlService(scope, sessions);
     scope.effect(() => scope.typert.register({ package: controlContract.package, face: 'host', schemas: [],

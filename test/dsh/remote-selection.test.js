@@ -34,11 +34,14 @@ function host() {
       rows[sessionId] ||= { id: sessionId, blank: true, cwd: '/workspace/a' };
     }
     bindings.set(sessionId, input.agentId);
+    rows[sessionId].projectionValues = { modelSelection: { next: { provider: 'a2a-remote-agent', model: 'direct' } } };
     return { ok: true, value: { agentId: input.agentId, sessionId } };
   } };
   const memory = { getItem: key => storage.get(key), setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) };
   const targets = () => ['one','two'].map(agentId => ({ agentId, sessionIds: [...bindings].filter(([, agent]) => agent === agentId).map(([id]) => id) }));
-  return { ctx, remote, memory, show, calls, navigations, block, targets, delay(fn) { delay = fn; } };
+  return { ctx, remote, memory, show, calls, navigations, block, targets,
+    overwriteModel(id) { rows[id].projectionValues = { modelSelection: { next: { provider: 'controller-model', model: 'local' } } }; publish(); },
+    delay(fn) { delay = fn; } };
 }
 const settled = () => new Promise(resolve => setImmediate(resolve));
 
@@ -101,4 +104,18 @@ test('binding failures retain the selected target and block local fallback witho
   selection.setTargets([]);
   assert.equal(selection.snapshot.agentId, 'one');
   assert.match(h.block('a').getSnapshot().reason, /不可访问/);
+});
+
+test('a native model picker override rebinds the same remote Session and blocks the composer until confirmed', async t => {
+  const h = host(); h.show('a');
+  const selection = new RemoteSelection(h.ctx, h.remote, h.memory); t.after(selection.start());
+  selection.setTargets(h.targets()); await selection.select('one');
+  h.overwriteModel('a');
+  assert.equal(selection.snapshot.agentId, 'one');
+  assert(h.block('a').getSnapshot(), 'native input stayed enabled with an overridden model');
+  await settled();
+  assert.equal(h.calls.length, 2);
+  assert.deepEqual(h.calls[1], { agentId: 'one', sessionId: 'a' });
+  assert.equal(selection.snapshot.sessionId, 'a');
+  assert.equal(h.block('a').getSnapshot(), undefined);
 });

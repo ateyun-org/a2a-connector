@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { Context } from '../../plugins/dsh/node_modules/@deepseek-ai/cordis/lib/index.js';
 import AgentRegistry from '../../plugins/dsh/node_modules/@deepseek-ai/dsh-agent/lib/index.js';
 import SessionStore from '../../plugins/dsh/node_modules/@deepseek-ai/dsh-session/lib/index.js';
-import LlmRuntime, { createUserMessage, markAgentLoopRequest } from '../../plugins/dsh/node_modules/@deepseek-ai/dsh-llm/lib/index.js';
+import LlmRuntime, { LlmAdapter, createUserMessage, markAgentLoopRequest } from '../../plugins/dsh/node_modules/@deepseek-ai/dsh-llm/lib/index.js';
 import SystemPrompt from '../../plugins/dsh/node_modules/@deepseek-ai/dsh-system-prompt/lib/index.js';
 import ToolRuntime from '../../plugins/dsh/node_modules/@deepseek-ai/dsh-tools/lib/index.js';
 import SessionProjections from '../../plugins/dsh/node_modules/@deepseek-ai/dsh-session-projection/lib/index.js';
@@ -14,7 +14,10 @@ import AgentLoop from '../../plugins/dsh/node_modules/@deepseek-ai/dsh-agent-loo
 import * as nativeExecutor from '../../plugins/dsh/node_modules/@deepseek-ai/dsh-tool-executor-native/lib/index.js';
 import * as persistence from '../../plugins/dsh/node_modules/@deepseek-ai/dsh-session-persistence-jsonl/lib/index.js';
 import { RemoteAgentSessions } from '../../plugins/dsh/remote-sessions.js';
-import { REMOTE_AGENT_PROVIDER, RemoteSessionAdapter } from '../../plugins/dsh/remote-session-adapter.js';
+import { REMOTE_AGENT_PROVIDER, REMOTE_AGENT_MODEL, RemoteSessionAdapter } from '../../plugins/dsh/remote-session-adapter.js';
+import { SessionController } from '../../plugins/dsh/node_modules/@deepseek-ai/dsh-api-session-controller/lib/index.js';
+import { TypertRegistry } from '../../plugins/dsh/node_modules/@deepseek-ai/dsh-typert-registry/lib/index.js';
+import { TypertGatewayService } from '../../plugins/dsh/node_modules/@deepseek-ai/dsh-api-gateway/lib/index.js';
 
 async function nativeHost(root, a2a) {
   const ctx = new Context();
@@ -102,16 +105,20 @@ test('remote Agents use real native DSH loops, transcript persistence and isolat
   assert.equal(transcript(restored).filter(event => event.type === 'turn/end').at(-1).data.reason.kind, 'error');
 });
 
-test('native transport rejects general model calls and does not advertise a model catalog', async t => {
+test('native transport advertises one display route while refusing auxiliary and unbound calls', async t => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-native-route-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const { a2a, sends } = remote();
   const host = await nativeHost(root, a2a); t.after(() => host.close());
-  assert.deepEqual(await host.adapter.listModels(), []);
+  assert.deepEqual(await host.adapter.listModels(), [{ provider: REMOTE_AGENT_PROVIDER, id: REMOTE_AGENT_MODEL, name: '远程 Agent 直聊', inputModalities: ['text'] }]);
   assert.equal(host.adapter.providerRetryPolicy().maxRetries, 0);
   await assert.rejects(async () => {
     for await (const _ of host.adapter.stream({ provider: REMOTE_AGENT_PROVIDER, model: 'one', sessionId: 'unbound', messages: [] })) {}
   }, /原生聊天/);
+  await assert.rejects(async () => {
+    for await (const _ of host.adapter.stream(markAgentLoopRequest({ provider: REMOTE_AGENT_PROVIDER,
+      model: REMOTE_AGENT_MODEL, sessionId: 'unbound', messages: [] }))) {}
+  }, /左侧/);
   assert.equal(sends.length, 0);
 });
 
@@ -226,4 +233,68 @@ test('selecting a remote target preserves existing history and never reassigns a
   assert.equal((await host.sessions.binding(other.sessionId)).agentId, 'two');
   assert.equal((await host.sessions.open({ agentId: 'one', sessionId: other.sessionId })).sessionId, selected.sessionId);
   await assert.rejects(host.sessions.open({ agentId: 'one', sessionId: 'missing-session' }));
+});
+
+test('native SessionController model selection cannot send a bound chat to the controller model', { timeout: 10000 }, async t => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-native-model-picker-'));
+  const { a2a, sends } = remote();
+  const host = await nativeHost(root, a2a);
+  const forks = [];
+  t.after(async () => { for (const fork of forks.reverse()) await fork.dispose(); await host.close(); await rm(root, { recursive: true, force: true }); });
+  let localCalls = 0;
+  class LocalModel extends LlmAdapter {
+    providerInfo(id) { return { id, name: '主控测试模型' }; }
+    async listModels(provider) { return [{ provider, id: 'local', name: '主控测试模型' }]; }
+    async resolveModel(provider, id) { return { provider, id, name: '主控测试模型' }; }
+    async *stream() {
+      localCalls++;
+      yield { type: 'block-start', index: 0, blockType: 'text' };
+      yield { type: 'text-delta', index: 0, text: '不应走到主控模型' };
+      yield { type: 'block-end', index: 0, block: { type: 'text', text: '不应走到主控模型' } };
+      yield { type: 'finish', reason: { kind: 'stop' } };
+    }
+  }
+  const localRegistration = host.ctx.llm.registerAdapter(['controller-model'], new LocalModel());
+  t.after(localRegistration);
+  const ctx = host.ctx;
+  let saved = { provider: 'controller-model', model: 'local' };
+  ctx.provide('agentDefaultModel', { currentSelection: () => saved, async saveSelection(value) { saved = value; } });
+  ctx.provide('remoteAccess', { decide: () => ({ kind: 'allow' }), allows: () => true });
+  ctx.provide('attachments', { admitPromptContent: async content => content, imageLimits: {
+    maxImageBytes: 1024, maxImagesPerMessage: 1, maxMessageImageBytes: 1024, maxImagePixels: 1024, maxImageDimension: 1024, mediaTypes: ['image/png'],
+  } });
+  ctx.provide('fileUploads', { registerAgentResolver: () => () => {}, bindPrompt: () => ({ commit() {}, [Symbol.dispose]() {} }) });
+  ctx.provide('fs', {}); ctx.provide('sessionQuery', {});
+  ctx.provide('workspaceRegistry', { archivedSessionIds: [], list: () => [], resolveByPath: async () => undefined });
+  const registry = ctx.plugin(TypertRegistry); forks.push(registry); await registry;
+  const gateway = ctx.plugin(TypertGatewayService, {}); forks.push(gateway); await gateway;
+  const controller = ctx.plugin(SessionController, { nativeOpen: false }); forks.push(controller); await controller;
+  const { sessionId } = await host.sessions.open({ agentId: 'one' });
+  const agent = ctx.agents.get(sessionId);
+  const catalog = await ctx.sessionController.modelCatalog();
+  const group = catalog.groups.find(group => group.id === REMOTE_AGENT_PROVIDER);
+  assert(group, JSON.stringify(catalog));
+  assert(group.models.some(model => model.id === REMOTE_AGENT_MODEL && model.name === '远程 Agent 直聊'));
+  // Exercise the same real Host methods used by the browser model picker and composer.
+  await ctx.sessionController.selectModel({ sessionId, provider: 'controller-model', model: 'local' });
+  assert.equal(agent.model.current().provider, 'controller-model', 'regression did not exercise an actual override');
+  assert.equal(saved.provider, 'controller-model');
+  await ctx.sessionController.prompt({ sessionId, requestId: 'browser-message-1', mode: 'queue',
+    content: [{ type: 'text', text: '直接发送给远程目标' }] }, new AbortController().signal);
+  await agent.whenIdle();
+  assert.equal(localCalls, 0, 'browser model selection fell back to the controller LLM');
+  assert.equal(sends.length, 1);
+  assert.equal(sends[0].agentId, 'one');
+  assert.deepEqual(sends[0].content, [{ type: 'text', text: '直接发送给远程目标' }]);
+  assert.equal(agent.model.current().provider, REMOTE_AGENT_PROVIDER);
+  assert.equal(agent.model.current().model, REMOTE_AGENT_MODEL);
+  assert.equal(saved.provider, 'controller-model', 'remote route changed the default for local DSH chats');
+  assert.deepEqual(transcript(agent).filter(event => event.type === 'assistant/message').at(-1).data.message.content,
+    [{ type: 'text', text: 'one: 直接发送给远程目标' }]);
+  const local = await ctx.sessionController.create({ cwd: root });
+  await ctx.sessionController.prompt({ sessionId: local.sessionId, requestId: 'browser-local-1', mode: 'queue',
+    content: [{ type: 'text', text: '普通本地聊天' }] }, new AbortController().signal);
+  await ctx.agents.get(local.sessionId).whenIdle();
+  assert.equal(localCalls, 1, 'ordinary unbound DSH chats lost their selected model');
+  assert.equal(sends.length, 1, 'ordinary local chat was redirected to a remote Agent');
 });

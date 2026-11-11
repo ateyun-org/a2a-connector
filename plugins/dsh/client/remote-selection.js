@@ -9,6 +9,7 @@ export class RemoteSelection {
     try { agentId = storage?.getItem(storageKey) || null; } catch {}
     this.snapshot = { agentId: agentId || null, sessionId: null, pending: false, error: '' };
     this.listeners = new Set(); this.bindings = new Map(); this.generation = 0; this.current = undefined;
+    this.targets = new Map();
     this.subscribe = listener => { this.listeners.add(listener); return () => this.listeners.delete(listener); };
     this.getSnapshot = () => this.snapshot;
   }
@@ -30,17 +31,21 @@ export class RemoteSelection {
   }
   setTargets(targets) {
     this.discovered = true;
+    this.targets = new Map(targets.map(target => [target.agentId, target]));
     for (const target of targets) {
       for (const id of target.sessionIds || (target.sessionId ? [target.sessionId] : [])) this.bindings.set(id, target.agentId);
     }
     if (this.snapshot.agentId && !targets.some(target => target.agentId === this.snapshot.agentId)) {
       ++this.generation;
       this.patch({ sessionId: null, pending: false, error: '所选远程 Agent 已不可访问，请重新选择目标或返回本地 DSH。' });
-    } else this.reconcile(true);
+    } else { this.reconcile(true); this.patch({}); }
   }
   reconcile(discovered = false) {
     const row = this.currentSession(), id = row?.id;
-    if (id === this.current && !discovered) return;
+    const route = row?.projectionValues?.modelSelection?.next;
+    const overridden = this.snapshot.agentId && this.snapshot.sessionId === id && route &&
+      (route.provider !== REMOTE_AGENT_PROVIDER || route.model !== REMOTE_AGENT_MODEL);
+    if (id === this.current && !discovered && !overridden) return;
     const changed = id !== this.current;
     if (changed) {
       ++this.generation;
@@ -67,7 +72,7 @@ export class RemoteSelection {
       return;
     }
     if (!this.snapshot.agentId) { this.updateBlock(); return; }
-    if (this.snapshot.sessionId === id && bound === this.snapshot.agentId) { this.updateBlock(); return; }
+    if (this.snapshot.sessionId === id && bound === this.snapshot.agentId && !overridden) { this.updateBlock(); return; }
     void this.select(this.snapshot.agentId);
   }
   async select(agentId) {
@@ -125,3 +130,5 @@ export class RemoteSelection {
     this.blockStore = undefined; this.ownBlock = undefined;
   }
 }
+import { REMOTE_AGENT_PROVIDER, REMOTE_AGENT_MODEL } from '../remote-route.js';
+

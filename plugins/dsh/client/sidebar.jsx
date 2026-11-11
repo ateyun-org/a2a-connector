@@ -17,6 +17,18 @@ function RobotIcon() {
   </svg>;
 }
 
+function DirectChatStatus({ sessionId, selection }) {
+  const state = useSyncExternalStore(selection.subscribe, selection.getSnapshot);
+  const active = selection.current === sessionId ? state.agentId : null;
+  const agentId = active || selection.bindings.get(sessionId);
+  if (!agentId) return null;
+  const target = selection.targets.get(agentId);
+  return <div className="a2a-direct-status" role="status">
+    <RobotIcon /><span><strong>{active && state.pending ? '正在连接' : '直聊'} · {target?.name || agentId}</strong>
+      <small>消息直接发送给远程 Agent，无需选择主控模型</small></span>
+  </div>;
+}
+
 function RemoteAgents({ remote, selection, expandSidebar, wide = true }) {
   const [expanded, setExpanded] = useState(true), [targets, setTargets] = useState(null);
   const [error, setError] = useState('');
@@ -73,6 +85,8 @@ export function apply(ctx) {
     scope.slots.inject('sidebar.footer.action', () => scope.slots.register({ name: 'sidebar.footer.action', id: 'a2a-remote-agents', order: -10,
       inject: () => ({ remote: scope.remote.a2aControl, selection,
         expandSidebar: () => scope.layout.toggleSidebar() }) }, RemoteAgents));
+    scope.slots.inject('conversation.input.dock', () => scope.slots.register({ name: 'conversation.input.dock', id: 'a2a-direct-chat', order: -20,
+      inject: () => ({ selection }) }, DirectChatStatus));
     scope.effect(() => { const style = document.createElement('style'); style.dataset.plugin = 'dsh-a2a-connector'; style.textContent = css; document.head.append(style); return () => style.remove(); });
   });
 }
@@ -86,6 +100,9 @@ const css = `
 .a2a-remote-heading small{margin-left:auto;opacity:.6}.a2a-remote-list{max-height:min(35vh,300px);overflow:auto;display:grid;gap:2px}
 .a2a-remote-list p{font-size:12px;line-height:1.6;padding:8px;margin:0;overflow-wrap:anywhere;opacity:.7}.a2a-remote-list [role=alert]{color:var(--dsw-alias-status-error,#b74b42)}
 .a2a-remote-local{font-size:11px!important;text-align:left;padding:5px 12px 5px 34px;opacity:.65}.a2a-remote-local:hover{opacity:1;text-decoration:underline}
+.a2a-direct-status{display:flex;align-items:center;gap:8px;min-width:0;padding:6px 4px;color:var(--dsw-alias-label-primary,inherit);font:inherit}
+.a2a-direct-status>span{display:grid;gap:2px;min-width:0}.a2a-direct-status strong{font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.a2a-direct-status small{font-size:11px;line-height:1.5;opacity:.65;overflow-wrap:anywhere}
 .a2a-remote-row{display:grid;gap:4px;width:100%;padding:8px 12px 8px 34px;text-align:left;min-width:0}
 .a2a-remote-row:hover,.a2a-remote-heading:hover,.a2a-remote-rail:hover{background:var(--dsw-alias-interactive-bg-hover,#8881)}
 .a2a-remote-row[aria-current=page]{background:var(--dsw-alias-interactive-bg-selected,#52796f22)}

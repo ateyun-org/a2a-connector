@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
 import { LlmAdapter, LlmError, isAgentLoopRequest, resolveRetryPolicy } from '@deepseek-ai/dsh-llm';
+import { REMOTE_AGENT_PROVIDER, REMOTE_AGENT_MODEL } from './remote-route.js';
 
-export const REMOTE_AGENT_PROVIDER = 'a2a-remote-agent';
+export { REMOTE_AGENT_PROVIDER, REMOTE_AGENT_MODEL };
 const noRetry = resolveRetryPolicy({ mode: 'normal', maxRetries: 0 }, 'a2a-remote-agent.retry');
 const invalid = message => new LlmError(message, 'INVALID_REQUEST');
 
@@ -9,18 +10,20 @@ const invalid = message => new LlmError(message, 'INVALID_REQUEST');
  * This route transports one identified user message to its bound A2A Agent. */
 export class RemoteSessionAdapter extends LlmAdapter {
   constructor(sessions) { super(); this.sessions = sessions; }
-  providerInfo(provider) { return { id: provider, name: '远程 Agent' }; }
+  providerInfo(provider) { return { id: provider, name: '远程 Agent · 直聊' }; }
   providerRetryPolicy() { return noRetry; }
-  // This is a session-bound transport, not a general-purpose model choice.
-  async listModels() { return []; }
+  // Native ModelSelect needs a catalog entry to display the pinned route.
+  // The target identity remains in the private Session binding, not this catalog.
+  async listModels(provider = REMOTE_AGENT_PROVIDER) { return [{ provider, id: REMOTE_AGENT_MODEL, name: '远程 Agent 直聊', inputModalities: ['text'] }]; }
   async resolveModel(provider, model) {
-    return { provider, id: model, name: model, inputModalities: ['text'] };
+    return { provider, id: model, name: '远程 Agent 直聊', inputModalities: ['text'] };
   }
 
   async *stream(options) {
     if (!isAgentLoopRequest(options) || options.purpose !== undefined) throw invalid('远程 Agent 会话仅接收原生聊天输入，不执行辅助模型请求。');
     const binding = await this.sessions.binding(options.sessionId);
-    if (!binding || binding.agentId !== options.model) throw invalid('请从左侧「远程 Agents」打开对应的原生会话。');
+    // Keep old saved agent-id routes readable while the guard migrates them.
+    if (!binding || (options.model !== REMOTE_AGENT_MODEL && binding.agentId !== options.model)) throw invalid('请从左侧「远程 Agents」打开对应的原生会话。');
     const target = await this.sessions.authorize(binding.agentId, options.signal);
     if (!target.online) throw invalid('远程 Agent 当前离线，请恢复连接后再发送。');
     const message = [...options.messages].reverse().find(item => item.role === 'user');

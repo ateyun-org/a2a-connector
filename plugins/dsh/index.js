@@ -10,13 +10,16 @@ import { createAdapterServer } from './adapter-server.js';
 import { listenWithNextPort } from './adapter-port.js';
 import { createDSHSessionFactory } from './dsh-session.js';
 import { installOutbound } from './outbound.js';
+import { RelayClient } from './relay-client.js';
+import { installRelayProvider } from './provider.js';
+import { installControlPage } from './control-service.js';
 import { createProcessSupervisor } from './vendor/connector/process-supervisor.js';
 
 export { A2AOrchestrator, a2aTaskState, responseParts } from './orchestrator.js';
 
 const run = promisify(execFile);
 export const name = 'a2a-connector';
-export const inject = ['tools', 'agents', 'agentDefaultModel', 'sessions', 'subagents'];
+export const inject = ['tools', 'agents', 'agentDefaultModel', 'sessions', 'subagents', 'llm'];
 export const Config = z.object({
   relay: z.string().required(), local: z.string().default('auto'),
   port: z.number().default(9900), portAttempts: z.number().default(20),
@@ -28,6 +31,9 @@ export const Config = z.object({
   binary: z.string(), state: z.string(), agentId: z.string(),
   localTokenEnv: z.string(), allowInsecure: z.boolean().default(false),
   storePath: z.string(), connectorState: z.string(),
+  discoverRelayAgents: z.boolean().default(true),
+  relayProvider: z.boolean().default(true),
+  controlPage: z.boolean().default(true),
   pollIntervalMs: z.number().min(100).default(1000),
   requestTimeoutMs: z.number().min(1000).default(600000),
   taskTimeoutMs: z.number().min(1000).default(1800000),
@@ -69,10 +75,15 @@ export async function apply(ctx, config) {
   });
   const { start, stop, remember } = supervisor;
   try {
-    if (config.agents?.length) {
-      outbound = installOutbound(ctx, { ...config, connectorState: config.connectorState || state,
+    const runtime = { ...config, state, connectorState: config.connectorState || state,
+      discoverRelayAgents: config.discoverRelayAgents !== false, agents: config.agents || [] };
+    const relay = new RelayClient(runtime);
+    if (config.relayProvider !== false && ctx.llm) installRelayProvider(ctx, relay);
+    if (config.agents?.length || (runtime.discoverRelayAgents && ctx.subagents)) {
+      outbound = installOutbound(ctx, { ...runtime,
         storePath: config.storePath || `${state}.conversations.json` });
     }
+    if (config.controlPage !== false && ctx.inject && outbound) installControlPage(ctx, outbound, relay, `${state}.chats.json`);
     ctx.tools.register(defineTool({
       name: 'a2a_connector_status', description: 'Inspect this Connector process and inbound WSS tunnel health, plus recent bounded logs. Remote Agent Card availability is outbound only.',
       parameters: {},
@@ -106,7 +117,7 @@ export async function apply(ctx, config) {
     }));
     ctx.effect(() => {
       start();
-      void outbound?.validateTargets().then(values => {
+      void (async () => { await outbound?.syncRelayTargets(); return await outbound?.validateTargets() || []; })().then(values => {
         for (const value of values) if (value.grantDiagnostic) remember(Buffer.from(value.grantDiagnostic + '\n'));
       }).catch(() => remember(Buffer.from('Relay target validation unavailable\n')));
       return async () => { try { await stop(); } finally { await adapter?.close(); } };

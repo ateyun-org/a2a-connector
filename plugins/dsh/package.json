@@ -8,20 +8,45 @@
     "ws": "8.21.3"
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh-tools": "^0.2.2-rc.1",
-    "@deepseek-ai/schemastery": "^3.19.0",
     "@deepseek-ai/dsh-agent": "^0.2.2-rc.1",
     "@deepseek-ai/dsh-llm": "^0.2.2-rc.1",
-    "@deepseek-ai/dsh-subagent": "^0.2.2-rc.1"
+    "@deepseek-ai/dsh-subagent": "^0.2.2-rc.1",
+    "@deepseek-ai/dsh-tools": "^0.2.2-rc.1",
+    "@deepseek-ai/schemastery": "^3.19.0",
+    "@deepseek-ai/dsh-typert-protocol": "^0.2.2-rc.1",
+    "@deepseek-ai/cordis": "~4.1.0",
+    "@deepseek-ai/dsh-anonymous-user-id": "^0.2.2-rc.1",
+    "@deepseek-ai/dsh-llm-deepseek": "^0.2.2-rc.1"
   },
   "devDependencies": {
-    "@deepseek-ai/dsh-tools": "0.2.2-rc.1",
-    "@deepseek-ai/schemastery": "3.19.0",
     "@deepseek-ai/dsh-agent": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-api-gateway": "0.2.2-rc.1",
     "@deepseek-ai/dsh-llm": "0.2.2-rc.1",
-    "@deepseek-ai/dsh-subagent": "0.2.2-rc.1"
+    "@deepseek-ai/dsh-subagent": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-tools": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-typert-registry": "0.2.2-rc.1",
+    "@deepseek-ai/schemastery": "3.19.0",
+    "esbuild": "0.25.12",
+    "@deepseek-ai/dsh-typert-protocol": "0.2.2-rc.1",
+    "@deepseek-ai/cordis": "4.1.0",
+    "@deepseek-ai/dsh-anonymous-user-id": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-llm-deepseek": "0.2.2-rc.1"
   },
   "exports": {
-    ".": "./index.js"
+    ".": "./index.js",
+    "./client": "./client.js"
+  },
+  "scripts": {
+    "build:client": "node build-client.mjs"
+  },
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-api-remotes",
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-sidebar"
+      ]
+    }
   }
 }

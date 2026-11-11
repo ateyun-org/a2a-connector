@@ -21,15 +21,24 @@ function tool(name, description, parameters, execute) {
 /** Register one provider per configured remote agent, plus model-facing A2A controls. */
 export function installOutbound(ctx, config) {
   const a2a = new A2AOrchestrator(config);
-  const catalog = config.agents.map(agent => `${agent.id}: ${agent.purpose || 'inspect Agent Card with a2a_agents'}`).join('; ');
-  for (const agent of a2a.configuredAgents()) {
-    ctx.subagents.registerProvider({
+  const catalog = (config.agents || []).map(agent => `${agent.id}: ${agent.purpose || 'inspect Agent Card with a2a_agents'}`).join('; ');
+  const registrations = new Map();
+  const register = () => {
+    const agents = a2a.configuredAgents(), ids = new Set(agents.map(agent => agent.id));
+    for (const [id, dispose] of registrations) if (!ids.has(id)) { dispose?.(); registrations.delete(id); }
+    for (const agent of agents) {
+      if (registrations.has(agent.id)) continue;
+      const dispose = ctx.subagents.registerProvider({
       name: `a2a:${agent.id}`,
       capabilities: { agentOptions: false, agentPreset: false, outputSchema: false, depthLimit: false },
       inheritsParentContext: false,
       start: request => a2a.startRun(agent.id, request),
-    });
-  }
+      });
+      registrations.set(agent.id, dispose);
+    }
+  };
+  register();
+  a2a.onTargetsChanged = register;
   ctx.tools.register(tool('a2a_agents', `Inspect configured A2A agents before delegation: availability, purpose, when to use, exclusions, and live Agent Card skills. Card availability is not proof of all task permissions. ${relayGuidance} ${catalog}`, {},
     async () => JSON.stringify(await a2a.listAgents())));
   ctx.tools.register(tool('a2a_send', `Send the user's authorized task to an A2A agent; a connection inspection does not itself authorize a real test task. Choose the target using a2a_agents. ${catalog} This tool builds ROLE_USER, messageId and text parts and saves a durable dispatch record; do not hand-write a different protocol. Keep the returned conversation ID and use a2a_task; after uncertainty use a2a_reconcile without another send. Supply conversation_id for an intentional follow-up after completion. ${relayGuidance}`, {

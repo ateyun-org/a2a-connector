@@ -6,7 +6,7 @@ Choose a host from the [installation index](../AGENT_INSTALL.md). Shared pairing
 | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `openclaw`  | JavaScript plugin with `ws`; detects native A2A, and installs/loads CLI-backed compatibility A2A only when absent. No newer plugin SDK import or bundled OpenClaw is required. |
 | `hermes`    | Python hook/tool shim launching Node 22+; detects native A2A and provisions quiet-CLI compatibility only when absent. `ws` is vendored. |
-| `dsh`       | One Cordis plugin starts the native DSH A2A service and Relay Connector together; configured `agents` add outbound A2A delegation. DSH SDKs stay in peer dependencies to share host instances. |
+| `dsh`       | One Cordis plugin starts the native DSH A2A service and Relay Connector together; Relay grants automatically populate outbound A2A delegation and an owner-only Web chat page; `a2a-relay` provides Relay-managed DeepSeek models. DSH SDKs stay in peer dependencies to share host instances. |
 | `workbuddy` | CLI + Skill with Node 22; starts an authenticated desktop or cloud ACP adapter and Connector together, with durable incoming/outgoing tracking. |
 | `workbuddy-mcp` | Remote OAuth MCP + Skill for Buddy application binding; calls authorized Relay targets without a local CLI installation. |
 
@@ -16,7 +16,7 @@ Choose a host from the [installation index](../AGENT_INSTALL.md). Shared pairing
 | --- | --- | --- |
 | Hermes | `skills/relay-calling/SKILL.md` plus HTTP reference | Copied by install/upgrade; registered as `a2a-connector:relay-calling`; explicit skill load |
 | OpenClaw | `skills/a2a-relay-calling/SKILL.md` plus HTTP reference | Declared by plugin manifest; retained in native/compat installations; subject to actual host eligibility |
-| DSH | Native tool descriptions plus `skills/a2a-relay-calling/SKILL.md` and HTTP reference | Tools register when agents are configured; packaged skill is read through host context/file tools, with no invented auto-loader |
+| DSH | Native tool descriptions plus `skills/a2a-relay-calling/SKILL.md` and HTTP reference | Tools register with Relay auto-discovery (default) or explicit agents; packaged skill is read through host context/file tools, with no invented auto-loader |
 | WorkBuddy CLI | `skills/a2a-connector/SKILL.md` | Included by CLI submission packager |
 | WorkBuddy MCP | `skills/a2a-coordination/SKILL.md` | Included by MCP submission packager |
 | Standalone Connector | Common install guide and `docs/relay-http.md` | Does not install a host plugin or load model skills |

@@ -6,6 +6,7 @@ import { ClientFactory, DefaultAgentCardResolver, JsonRpcTransportFactory, RestT
 import { Message, Role, SendMessageResponse, Task, TaskState } from '@a2a-js/sdk';
 import { ConversationStore } from './store.js';
 import { artifactLimit, deliverArtifact, readArtifact, validArtifactId } from './artifacts.js';
+import { RelayClient } from './relay-client.js';
 
 const FINAL = new Set([TaskState.TASK_STATE_COMPLETED, TaskState.TASK_STATE_FAILED,
   TaskState.TASK_STATE_CANCELED, TaskState.TASK_STATE_REJECTED]);
@@ -143,7 +144,7 @@ function knownTaskIds(record) {
 /** DSH's remote A2A registry and durable conversation control surface. */
 export class A2AOrchestrator {
   constructor(config, { fetchImpl = fetch, store } = {}) {
-    if (!Array.isArray(config.agents) || config.agents.length === 0) throw new Error('configure at least one A2A agent');
+    if ((!Array.isArray(config.agents) || config.agents.length === 0) && !config.discoverRelayAgents) throw new Error('configure at least one A2A agent');
     this.agents = new Map();
     this.clients = new Map();
     this.store = store ?? new ConversationStore(config.storePath);
@@ -154,7 +155,17 @@ export class A2AOrchestrator {
     this.inflight = new Set();
     this.dispatches = new Map();
     this.rateLimits = new Map();
-    for (const agent of config.agents) {
+    this.config = config;
+    this.fetchImpl = fetchImpl;
+    this.staticIDs = new Set((config.agents || []).map(agent => agent.id));
+    this.relay = config.discoverRelayAgents ? new RelayClient(config, { fetchImpl }) : undefined;
+    this.targetGeneration = 0; this.appliedTargetGeneration = 0; this.currentTargets = [];
+    this.registerAgents(config.agents || []);
+  }
+
+  registerAgents(agents) {
+    const config = this.config, fetchImpl = this.fetchImpl;
+    for (const agent of agents) {
       if (!agent.id || this.agents.has(agent.id)) throw new Error(`duplicate or empty A2A agent id: ${agent.id}`);
       if (Boolean(agent.url) === Boolean(agent.card)) {
         throw new Error(`agent ${agent.id} requires exactly one of url or card`);
@@ -265,6 +276,24 @@ export class A2AOrchestrator {
     return [...this.agents.values()].map(agent => ({ id: agent.id, url: agent.url }));
   }
 
+  async syncRelayTargets({ signal } = {}) {
+    if (!this.relay) return [];
+    const version = ++this.targetGeneration;
+    const targets = await this.relay.targets({ signal });
+    if (version < this.appliedTargetGeneration) return this.currentTargets;
+    this.appliedTargetGeneration = version; this.currentTargets = targets;
+    const authorized = new Set(targets.map(target => target.agentId));
+    for (const [id] of this.agents) {
+      if (!this.staticIDs.has(id) && !authorized.has(id)) { this.agents.delete(id); this.clients.delete(id); }
+    }
+    for (const target of targets) {
+      if (!this.agents.has(target.agentId)) this.registerAgents([{ id: target.agentId, card: target.card,
+        allowHttp: this.config.allowInsecure, purpose: target.name }]);
+    }
+    this.onTargetsChanged?.();
+    return targets;
+  }
+
   async discover(id, { refresh = false, signal } = {}) {
     const agent = this.agents.get(id);
     if (!agent) throw new Error(`unknown A2A agent: ${id}`);
@@ -316,6 +345,7 @@ export class A2AOrchestrator {
   }
 
   async listAgents({ refresh = true } = {}) {
+    await this.syncRelayTargets();
     const grants = new Map((await this.validateTargets()).map(value => [value.id, value]));
     return Promise.all(this.configuredAgents().map(async ({ id }) => {
       const configured = this.agents.get(id);
@@ -337,6 +367,7 @@ export class A2AOrchestrator {
   }
 
   async send({ agentId, parentId, content, conversationId, messageId, workbuddyMode, signal }) {
+    if (this.relay) await this.syncRelayTargets({ signal });
     if (!parentId) throw new Error('A2A conversation requires a parent session id');
     if (workbuddyMode !== undefined && !['cloud', 'desktop'].includes(workbuddyMode)) throw new Error('Invalid workbuddy_mode; use cloud or desktop');
     const parts = fromContent(content);

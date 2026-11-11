@@ -26,11 +26,11 @@ a2a_artifact({
 
 ## DSH 主控页面与模型 Provider
 
-Relay 控制台的独立「DSH 主控」Tab 提供接入说明。DSH 身份须启用调用能力；管理员在每个目标 Agent 的「谁能访问」中授予机器调用权限，个人主控还需成员权限交集。默认无需手工枚举 Relay Agent，插件读取 `/pairing/targets` 的全部分页，撤权后更新列表与动态 Subagent Provider。
+在 Relay 控制台通过「Agent 管理 → 接入 Agent → DSH 主控」创建或配对身份。DSH 仍是 Connector，在 Agent 列表显示「DSH 主控」标记；已有身份可通过「编辑 → 接入用途」设置标记。DSH 身份须启用调用能力；管理员在每个目标 Agent 的「谁能访问」中授予机器调用权限，个人主控还需成员权限交集。默认无需手工枚举 Relay Agent，插件读取 `/pairing/targets` 的全部分页，撤权后更新列表与动态 Subagent Provider。
 
 Web profile 左侧新增「远程 Agents」入口。页面左侧按当前主控授权列出远程 Agent，展示在线/离线、忙闲、执行数/并发上限与排队数；点击后可独立聊天。直接聊天由宿主 owner 使用，每个 Agent 保存自己的远端 context 和私有会话记录（`<state>.chats.json`），与模型工具 session 分开。刷新页面查询原请求，不自动重发；目标离线时仍可看本地会话。
 
-管理员在 Relay 的同一 DSH 页配置 DeepSeek API Key 和模型目录。DSH 的模型选择器选择 Provider `a2a-relay`（显示「Relay · DeepSeek」）及后台启用的模型。请求复用当前配对凭据，API Key 保存在 Relay；模型变更和凭据轮换在后续请求生效。Relay 统计每个主控/模型的输入、输出、缓存命中和总 Token，并单列未确认请求。其他直连 Provider 的用量不在此范围内。
+企业所有者或管理员在 Relay 的「企业设置 → Provider」配置 DeepSeek API Key 和模型目录，在「企业设置 → Token 用量」查看各主控/模型的输入、输出、缓存命中和总 Token，并单列未确认请求。DSH 的模型选择器选择 Provider `a2a-relay`（显示「Relay · DeepSeek」）及后台启用的模型。请求复用当前配对凭据，API Key 保存在 Relay；模型变更和凭据轮换在后续请求生效。其他直连 Provider 的用量不在此范围内。
 
 Relay 在 Agent 创建/编辑中设置 `maxConcurrency`（1～64，默认 1），所有主控共用目标名额，超出按 FIFO 排队。异步任务、等待输入/授权的任务保留执行名额，续聊复用原任务名额；终态才释放。超时后用原会话查询，不能按超时新建消息。Relay 重启会恢复 Redis 中已派发任务的占用并查询原任务；不会自动重放未发出的请求。
 

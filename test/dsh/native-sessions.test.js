@@ -371,3 +371,28 @@ test('archived remote chats are not reopened or recreated by target selection, a
   await prompt(firstAgent, '恢复后继续');
   assert.equal(sends.at(-1).conversationId, 'conversation-0');
 });
+
+test('a fresh chat after archiving the last record keeps its workspace and sends through the remote native loop', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-after-last-archive-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const { a2a, sends } = remote();
+  const host = await nativeHost(root, a2a); t.after(() => host.close());
+  const registry = { archivedSessionIds: [], resolveByPath: async () => undefined };
+  host.ctx.provide('workspaceRegistry', registry);
+  const blank = (await host.ctx.agents.create({ sessionId: 'workspace-before-delete', meta: { cwd: root },
+    agentOptions: { provider: 'local', model: 'default' } })).agent;
+  const old = await host.sessions.open({ agentId: 'one', sessionId: blank.id });
+  await prompt(blank, '将被归档的聊天');
+  const oldSeq = blank.session.seq;
+  registry.archivedSessionIds.push(old.sessionId);
+  const opened = await host.sessions.open({ agentId: 'one', sessionId: old.sessionId, newSession: true });
+  assert.notEqual(opened.sessionId, old.sessionId);
+  const fresh = host.ctx.agents.get(opened.sessionId);
+  assert.equal(fresh.session.header.cwd, root);
+  assert.equal(host.sessions.blank(fresh), true);
+  assert.deepEqual(await prompt(fresh, '删光后继续聊天'), [{ type: 'text', text: 'one: 删光后继续聊天' }]);
+  assert.equal(sends.length, 2);
+  assert.equal(sends.at(-1).conversationId, undefined, 'fresh chat reused the archived remote context');
+  assert.notEqual(sends.at(-1).parentId, sends[0].parentId);
+  assert.equal(blank.session.seq, oldSeq, 'sending in the fresh chat changed the archived history');
+});

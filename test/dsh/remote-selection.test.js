@@ -9,9 +9,10 @@ function store(initial) {
     set(next) { if (next === value) return; value = next; for (const listener of listeners) listener(); } };
 }
 function host() {
-  const rows = {}, bindings = new Map(), calls = [], navigations = [], blocks = new Map(), storage = new Map();
-  let active, navigation, opened = 0, delay;
+  const rows = {}, bindings = new Map(), calls = [], navigations = [], blocks = new Map(), storage = new Map(), archives = [];
+  let active, navigation, opened = 0, delay, archiveDelay, archiveError, retainArchived = false;
   const list = store({ byId: {} });
+  const workspaceList = store({ archivedSessionIds: [] });
   function publish() { list.set({ byId: Object.fromEntries(Object.entries(rows).map(([id, row]) => [id, { ...row, retainedBy: id === active ? { mainView: 1 } : {} }])) }); }
   function show(id, { blank = true, cwd = '/workspace/a' } = {}) {
     if (!rows[id]) rows[id] = { id, blank, cwd };
@@ -20,8 +21,15 @@ function host() {
   const block = id => { if (!blocks.has(id)) blocks.set(id, store(undefined)); return blocks.get(id); };
   const ctx = {
     sessions: { list, async refresh() { publish(); }, async create({ cwd } = {}) { const id = `local-${++opened}`; rows[id] = { id, cwd, blank: true }; publish(); return id; } },
-    layout: { beginNavigation() { navigation?.abort(); navigation = new AbortController(); return navigation.signal; } },
-    uiWorkspace: { openSession(id) { navigations.push(id); show(id); } },
+    workspaces: { list: workspaceList },
+    layout: { beginNavigation() { navigation?.abort(); navigation = new AbortController(); return navigation.signal; }, selectPanel() { navigation?.abort(); } },
+    uiWorkspace: { openSession(id) { navigations.push(id); show(id); }, async archiveSession(id) {
+      archives.push(id);
+      if (archiveError) throw archiveError;
+      await archiveDelay?.(id);
+      workspaceList.set({ archivedSessionIds: [...workspaceList.getSnapshot().archivedSessionIds, id] });
+      if (active === id && !retainArchived) { active = undefined; publish(); ctx.layout.selectPanel(null); }
+    } },
     conversation: { blocks: { storeFor: block, set(id, value) { block(id).set(value); } } },
   };
   const remote = { async open(input) {
@@ -29,6 +37,9 @@ function host() {
     const wait = delay?.(input);
     if (wait) await wait;
     let sessionId = input.sessionId;
+    if (!input.newSession && workspaceList.getSnapshot().archivedSessionIds.includes(sessionId)) {
+      return { ok: false, error: { message: '此聊天已移至归档' } };
+    }
     if (input.newSession) {
       sessionId = `new-${++opened}`;
       rows[sessionId] = { id: sessionId, blank: true, cwd: rows[input.sessionId]?.cwd || '/workspace/a' };
@@ -42,9 +53,12 @@ function host() {
   } };
   const memory = { getItem: key => storage.get(key), setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) };
   const targets = () => ['one','two'].map(agentId => ({ agentId, sessionIds: [...bindings].filter(([, agent]) => agent === agentId).map(([id]) => id) }));
-  return { ctx, remote, memory, show, calls, navigations, block, targets,
+  return { ctx, remote, memory, show, calls, navigations, block, targets, archives,
     overwriteModel(id) { rows[id].projectionValues = { modelSelection: { next: { provider: 'controller-model', model: 'local' } } }; publish(); },
-    delay(fn) { delay = fn; } };
+    delay(fn) { delay = fn; },
+    delayArchive(fn) { archiveDelay = fn; },
+    failArchive(error) { archiveError = error; },
+    retainArchived(value) { retainArchived = value; } };
 }
 const settled = () => new Promise(resolve => setImmediate(resolve));
 
@@ -137,4 +151,70 @@ test('New Chat retains the selected target and opens a different native Session,
   await selection.select('one', { sessionId: 'a' });
   assert.equal(selection.snapshot.sessionId, 'a');
   assert.deepEqual(h.calls.at(-1), { agentId: 'one', sessionId: 'a' });
+});
+
+test('removing the current last chat opens a fresh remote chat in the same workspace after native navigation clears', async t => {
+  const h = host(); h.show('a', { cwd: '/workspace/last-chat' });
+  const selection = new RemoteSelection(h.ctx, h.remote, h.memory); t.after(selection.start());
+  selection.setTargets(h.targets()); await selection.select('one');
+  assert.equal(await selection.archive('a'), true);
+  assert.deepEqual(h.archives, ['a']);
+  assert.deepEqual(h.calls.at(-1), { agentId: 'one', sessionId: 'a', newSession: true });
+  assert.equal(selection.snapshot.sessionId, 'new-1');
+  assert.equal(selection.snapshot.agentId, 'one');
+  assert.equal(selection.snapshot.pending, false);
+  const fresh = selection.currentSession();
+  assert.equal(fresh.id, 'new-1');
+  assert.equal(fresh.cwd, '/workspace/last-chat');
+  assert.equal(fresh.blank, true);
+  assert.equal(fresh.projectionValues.modelSelection.next.provider, 'a2a-remote-agent');
+  assert.equal(h.block(fresh.id).getSnapshot(), undefined);
+});
+
+test('removing an inactive chat or refusing archival preserves the current conversation', async t => {
+  const h = host(); h.show('a');
+  const selection = new RemoteSelection(h.ctx, h.remote, h.memory); t.after(selection.start());
+  selection.setTargets(h.targets()); await selection.select('one'); await selection.newChat();
+  const count = h.calls.length;
+  assert.equal(await selection.archive('a'), false);
+  assert.equal(selection.currentSession().id, 'new-1');
+  assert.equal(h.calls.length, count);
+  h.failArchive(new Error('archive refused'));
+  await assert.rejects(selection.archive('new-1'), /archive refused/);
+  assert.equal(selection.currentSession().id, 'new-1');
+  assert.equal(h.calls.length, count);
+  assert(!h.ctx.workspaces.list.getSnapshot().archivedSessionIds.includes('new-1'));
+});
+
+test('archival completion cannot replace a newer native workspace, local history or remote Agent selection', async t => {
+  for (const route of ['workspace', 'local', 'agent']) await t.test(route, async t => {
+    const h = host(); h.show('a');
+    const selection = new RemoteSelection(h.ctx, h.remote, h.memory); t.after(selection.start());
+    selection.setTargets(h.targets()); await selection.select('one');
+    let release;
+    h.delayArchive(() => new Promise(resolve => { release = resolve; }));
+    const removal = selection.archive('a');
+    if (route === 'agent') await selection.select('two');
+    else { h.show('new-navigation', { blank: route !== 'local', cwd: '/workspace/new' }); await settled(); }
+    const current = selection.currentSession().id, count = h.calls.length;
+    release();
+    assert.equal(await removal, false);
+    assert.equal(selection.currentSession().id, current);
+    assert.equal(h.calls.length, count);
+  });
+});
+
+test('target selection and New Chat work while native retention still lists an archived mainView', async t => {
+  const h = host(); h.show('a');
+  const selection = new RemoteSelection(h.ctx, h.remote, h.memory); t.after(selection.start());
+  selection.setTargets(h.targets()); await selection.select('one');
+  h.retainArchived(true);
+  await h.ctx.uiWorkspace.archiveSession('a');
+  await selection.select('one');
+  assert.equal(selection.snapshot.sessionId, 'new-1');
+  assert.deepEqual(h.calls.at(-1), { agentId: 'one', sessionId: 'a', newSession: true });
+  await h.ctx.uiWorkspace.archiveSession('new-1');
+  await selection.newChat('one');
+  assert.equal(selection.snapshot.sessionId, 'new-2');
+  assert.equal(selection.currentSession().projectionValues.modelSelection.next.provider, 'a2a-remote-agent');
 });

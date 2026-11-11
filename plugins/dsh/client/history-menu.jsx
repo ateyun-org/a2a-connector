@@ -51,7 +51,7 @@ export function HistoryMenu({ agentId, name, rows, currentId, pending, onSelect,
     const index = rows.findIndex(item => item.id === row.id);
     const nextId = (rows[index + 1] || rows[index - 1])?.id;
     try {
-      await onDelete(row.id);
+      if (await onDelete(row.id)) { close(); return; }
       if (panel.current?.matches(':popover-open')) focusAfterDelete.current = { id: nextId };
     } catch (error) {
       setError(error.rpcError?.code === 'workspace/session-active'

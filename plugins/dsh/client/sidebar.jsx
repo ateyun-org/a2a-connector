@@ -41,7 +41,7 @@ function RemoteAgents({ remote, selection, workspaces, archiveSession, expandSid
   }), [workspaces]);
   const workspaceState = useSyncExternalStore(workspaceList.subscribe, workspaceList.getSnapshot);
   const archived = new Set(workspaceState.archivedSessionIds);
-  const history = Object.values(sessions).filter(row => selection.bindings.get(row.id) === selected.agentId && !archived.has(row.id))
+  const history = Object.values(sessions).filter(row => row.blank !== true && selection.bindings.get(row.id) === selected.agentId && !archived.has(row.id))
     .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
   useEffect(() => {
     let gone = false, loading = false;
@@ -113,7 +113,7 @@ export function apply(ctx) {
     scope.effect(() => selection.start());
     scope.slots.inject('sidebar.footer.action', () => scope.slots.register({ name: 'sidebar.footer.action', id: 'a2a-remote-agents', order: -10,
       inject: () => ({ remote: scope.remote.a2aControl, selection, workspaces: scope.workspaces,
-        archiveSession: sessionId => scope.uiWorkspace.archiveSession(sessionId),
+        archiveSession: sessionId => selection.archive(sessionId),
         expandSidebar: () => scope.layout.toggleSidebar() }) }, RemoteAgents));
     scope.slots.inject('conversation.input.dock', () => scope.slots.register({ name: 'conversation.input.dock', id: 'a2a-direct-chat', order: -20,
       inject: () => ({ selection }) }, DirectChatStatus));

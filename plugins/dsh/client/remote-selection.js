@@ -81,13 +81,29 @@ export class RemoteSelection {
     if (!agentId) return;
     return this.select(agentId, { newSession: true, sessionId });
   }
+  async archive(sessionId) {
+    const agentId = this.bindings.get(sessionId), version = this.generation;
+    const active = this.currentSession()?.id === sessionId && this.snapshot.agentId === agentId;
+    await this.ctx.uiWorkspace.archiveSession(sessionId);
+    if (!active || !agentId || this.snapshot.agentId !== agentId || this.snapshot.pending) return false;
+    const current = this.currentSession()?.id;
+    // Native archival clears mainView once. Any other navigation or selection
+    // supersedes this continuation, including another pending New Chat.
+    if ((current && current !== sessionId) || this.generation !== version + (current === sessionId ? 0 : 1)) return false;
+    await this.newChat(agentId, sessionId);
+    return true;
+  }
   async select(agentId, options = {}) {
     const version = ++this.generation, current = options.sessionId || this.currentSession()?.id;
+    // Native retention can briefly still expose an archived mainView. Use it
+    // only for a fresh chat's cwd, never request that archived transcript again.
+    const newSession = options.newSession || (!options.sessionId &&
+      this.ctx.workspaces.list.getSnapshot().archivedSessionIds.includes(current));
     const signal = this.ctx.layout.beginNavigation();
     this.remember(agentId);
     this.patch({ agentId, sessionId: null, pending: true, error: '' });
     try {
-      const result = await this.remote.open({ agentId, ...(current ? { sessionId: current } : {}), ...(options.newSession ? { newSession: true } : {}) });
+      const result = await this.remote.open({ agentId, ...(current ? { sessionId: current } : {}), ...(newSession ? { newSession: true } : {}) });
       if (!result.ok) throw new Error(result.error?.message || '远程会话连接失败，请重试。');
       if (version !== this.generation || signal.aborted) return;
       const opened = result.value;

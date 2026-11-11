@@ -184,13 +184,24 @@ var RemoteSelection = class {
     if (!agentId) return;
     return this.select(agentId, { newSession: true, sessionId });
   }
+  async archive(sessionId) {
+    const agentId = this.bindings.get(sessionId), version = this.generation;
+    const active = this.currentSession()?.id === sessionId && this.snapshot.agentId === agentId;
+    await this.ctx.uiWorkspace.archiveSession(sessionId);
+    if (!active || !agentId || this.snapshot.agentId !== agentId || this.snapshot.pending) return false;
+    const current = this.currentSession()?.id;
+    if (current && current !== sessionId || this.generation !== version + (current === sessionId ? 0 : 1)) return false;
+    await this.newChat(agentId, sessionId);
+    return true;
+  }
   async select(agentId, options = {}) {
     const version = ++this.generation, current = options.sessionId || this.currentSession()?.id;
+    const newSession = options.newSession || !options.sessionId && this.ctx.workspaces.list.getSnapshot().archivedSessionIds.includes(current);
     const signal = this.ctx.layout.beginNavigation();
     this.remember(agentId);
     this.patch({ agentId, sessionId: null, pending: true, error: "" });
     try {
-      const result = await this.remote.open({ agentId, ...current ? { sessionId: current } : {}, ...options.newSession ? { newSession: true } : {} });
+      const result = await this.remote.open({ agentId, ...current ? { sessionId: current } : {}, ...newSession ? { newSession: true } : {} });
       if (!result.ok) throw new Error(result.error?.message || "\u8FDC\u7A0B\u4F1A\u8BDD\u8FDE\u63A5\u5931\u8D25\uFF0C\u8BF7\u91CD\u8BD5\u3002");
       if (version !== this.generation || signal.aborted) return;
       const opened = result.value;
@@ -283,7 +294,10 @@ function HistoryMenu({ agentId, name, rows, currentId, pending, onSelect, onDele
     const index = rows.findIndex((item) => item.id === row.id);
     const nextId = (rows[index + 1] || rows[index - 1])?.id;
     try {
-      await onDelete(row.id);
+      if (await onDelete(row.id)) {
+        close();
+        return;
+      }
       if (panel.current?.matches(":popover-open")) focusAfterDelete.current = { id: nextId };
     } catch (error2) {
       setError(error2.rpcError?.code === "workspace/session-active" ? "\u6B64\u4F1A\u8BDD\u4ECD\u6709\u8FD0\u884C\u4E2D\u7684\u4EFB\u52A1\uFF0C\u8BF7\u5148\u505C\u6B62\u540E\u518D\u5220\u9664\u3002" : "\u5220\u9664\u5931\u8D25\uFF0C\u8BF7\u68C0\u67E5 DSH \u8FDE\u63A5\u548C\u4F1A\u8BDD\u6743\u9650\u540E\u91CD\u8BD5\u3002");
@@ -467,7 +481,7 @@ function RemoteAgents({ remote, selection: selection2, workspaces, archiveSessio
   }), [workspaces]);
   const workspaceState = (0, import_react2.useSyncExternalStore)(workspaceList.subscribe, workspaceList.getSnapshot);
   const archived = new Set(workspaceState.archivedSessionIds);
-  const history = Object.values(sessions).filter((row) => selection2.bindings.get(row.id) === selected.agentId && !archived.has(row.id)).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  const history = Object.values(sessions).filter((row) => row.blank !== true && selection2.bindings.get(row.id) === selected.agentId && !archived.has(row.id)).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
   (0, import_react2.useEffect)(() => {
     let gone = false, loading = false;
     const refresh = async () => {
@@ -617,7 +631,7 @@ function apply(ctx) {
         remote: scope.remote.a2aControl,
         selection: selection2,
         workspaces: scope.workspaces,
-        archiveSession: (sessionId) => scope.uiWorkspace.archiveSession(sessionId),
+        archiveSession: (sessionId) => selection2.archive(sessionId),
         expandSidebar: () => scope.layout.toggleSidebar()
       })
     }, RemoteAgents));

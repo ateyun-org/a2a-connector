@@ -24,17 +24,19 @@ a2a_artifact({
 
 省略 `output_path` 时最多读取 512 KiB，返回 UTF-8 文本或二进制 Base64；指定绝对路径时最多保存 8 MiB，文件权限为私有且不覆盖已有文件，只返回路径和校验元数据。可用 `max_bytes` 降低上限。`task_id` 默认取该会话当前远端任务；补传指令产生新任务后，显式指定已记录的原业务 `task_id`。会话索引的 `taskIds` 保留新版派单/对账观察到的任务，不接受任意外部 task ID；旧索引没有历史任务列表时，仍支持其当前任务。工具要求当前 DSH session 拥有该会话，并沿用原目标和配置的调用方身份，Relay 继续检查 task_read 及原调用方任务归属。下载不会重发业务、取消任务或延长临时文件保留期。
 
-## DSH 主控页面与模型 Provider
+## DSH 侧栏与模型 Provider
 
 在 Relay 控制台通过「Agent 管理 → 接入 Agent → DSH 主控」创建或配对身份。DSH 仍是 Connector，在 Agent 列表显示「DSH 主控」标记；已有身份可通过「编辑 → 接入用途」设置标记。DSH 身份须启用调用能力；管理员在每个目标 Agent 的「谁能访问」中授予机器调用权限，个人主控还需成员权限交集。默认无需手工枚举 Relay Agent，插件读取 `/pairing/targets` 的全部分页，撤权后更新列表与动态 Subagent Provider。
 
-Web profile 左侧新增「远程 Agents」入口。页面左侧按当前主控授权列出远程 Agent，展示在线/离线、忙闲、执行数/并发上限与排队数；点击后可独立聊天。直接聊天由宿主 owner 使用，每个 Agent 保存自己的远端 context 和私有会话记录（`<state>.chats.json`），与模型工具 session 分开。刷新页面查询原请求，不自动重发；目标离线时仍可看本地会话。
+Web profile 的原生左侧栏显示可折叠的「远程 Agents」列表，按当前主控授权展示目标及在线/离线、忙闲与排队状态。点击 Agent 后打开绑定的 **DSH 原生聊天窗口**，输入、回复、历史和停止操作均复用 DSH，不另建聊天页面。每个远程 Agent 对应一个独立原生 Session，后续追问复用该 Agent 的远端 context；刷新或重启后可恢复原生历史，离线时仍能打开历史。
+
+此入口仅供宿主 owner 使用。Host 通过 `a2a-remote-agent` 专用适配器将原生用户消息转发给绑定目标，不调用本地模型生成中转回复，也不将这一路由加入通用模型目录。每次发送重新验证授权，结果不明时查询原请求，避免重复派发。`<state>.native-sessions.json` 只保存 Agent 与原生 Session 的绑定，聊天记录由 DSH 自己持久化；旧版 `.chats.json` 不会被删除或导入新会话。
 
 企业所有者或管理员在 Relay 的「企业设置 → Provider」配置 DeepSeek API Key 和模型目录，在「企业设置 → Token 用量」查看各主控/模型的输入、输出、缓存命中和总 Token，并单列未确认请求。DSH 的模型选择器选择 Provider `a2a-relay`（显示「Relay · DeepSeek」）及后台启用的模型。请求复用当前配对凭据，API Key 保存在 Relay；模型变更和凭据轮换在后续请求生效。其他直连 Provider 的用量不在此范围内。
 
 Relay 在 Agent 创建/编辑中设置 `maxConcurrency`（1～64，默认 1），所有主控共用目标名额，超出按 FIFO 排队。异步任务、等待输入/授权的任务保留执行名额，续聊复用原任务名额；终态才释放。超时后用原会话查询，不能按超时新建消息。Relay 重启会恢复 Redis 中已派发任务的占用并查询原任务；不会自动重放未发出的请求。
 
-`relayProvider: false` 可关闭模型 Provider，`controlPage: false` 可不注册 Host 主控 RPC；Web 页面会显示不可用。只需手工直连时使用 `discoverRelayAgents: false` 配合原 `agents`。新增浏览器半包声明了 `dsh.client` 和 `./client`，以官方 slot 和 Typert Gateway 接入；分发包已包含 `client.js`，修改浏览器源码后需执行：
+`relayProvider: false` 可关闭模型 Provider；为兼容已有配置，保留 `controlPage` 名称，设置为 `false` 时不注册远程 Agent 的 Host 服务，侧栏列表不加载。只需手工直连时使用 `discoverRelayAgents: false` 配合原 `agents`。浏览器半包声明了 `dsh.client` 和 `./client`，在官方 `sidebar.footer.action` slot 注册列表，通过 Typert Gateway 创建或恢复原生 Session，再用 `uiWorkspace.openSession` 切换到原生聊天。分发包已包含 `client.js`，修改浏览器源码后需执行：
 
 ```bash
 rtk npm ci --prefix plugins/dsh
@@ -49,7 +51,7 @@ rtk npm run build:client --prefix plugins/dsh
 
 若 DSH 已有可访问的 A2A origin（例如 adapter 已配置），且不需要宿主内的配对工具，可改用[独立 Connector 安装脚本](../../scripts/install-connector.sh)：从仓库根目录执行 `sh scripts/install-connector.sh install --host dsh --instance reviewer --expect-name 'DSH Code Reviewer' --relay wss://dsh-relay.chuanbota.com/connect --local auto --port-start 9900`。脚本会在已启动的本机服务中按 Agent Card `name` 找到实际端口；此路径不会配置 DSH adapter 或下方插件，不要同时运行两种路径连接同一个 Agent。
 
-1. 在目标 DSH Agent 主机安装 `plugins/dsh`。这个包只需注册**一个** `dsh-a2a-connector` 条目：未配置已有本机 A2A origin 时，插件自动启动内置服务，再启动 Relay Connector；同一条目默认注册出站工具、Relay 模型 Provider 和 Web 主控页，并按当前 Relay 授权动态注册 Subagent Provider；`agents` 用于补充明确配置的直连目标。Relay 主控认证使用 Connector 身份，企业管理员在 `/console` 的目标 Agent「谁能访问」中授予「DSH 调用方 → 目标」权限。
+1. 在目标 DSH Agent 主机安装 `plugins/dsh`。这个包只需注册**一个** `dsh-a2a-connector` 条目：未配置已有本机 A2A origin 时，插件自动启动内置服务，再启动 Relay Connector；同一条目默认注册出站工具、Relay 模型 Provider 和远程 Agent 侧栏，并按当前 Relay 授权动态注册 Subagent Provider；`agents` 用于补充明确配置的直连目标。Relay 主控认证使用 Connector 身份，企业管理员在 `/console` 的目标 Agent「谁能访问」中授予「DSH 调用方 → 目标」权限。
 2. 用 DSH CLI 将本地插件目录作为目标 profile 的依赖安装：
 
    ```bash

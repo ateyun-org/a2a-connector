@@ -12,7 +12,7 @@ import { createDSHSessionFactory } from './dsh-session.js';
 import { installOutbound } from './outbound.js';
 import { RelayClient } from './relay-client.js';
 import { installRelayProvider } from './provider.js';
-import { installControlPage } from './control-service.js';
+import { installRemoteAgents } from './remote-sessions.js';
 import { createProcessSupervisor } from './vendor/connector/process-supervisor.js';
 
 export { A2AOrchestrator, a2aTaskState, responseParts } from './orchestrator.js';
@@ -83,7 +83,7 @@ export async function apply(ctx, config) {
       outbound = installOutbound(ctx, { ...runtime,
         storePath: config.storePath || `${state}.conversations.json` });
     }
-    if (config.controlPage !== false && ctx.inject && outbound) installControlPage(ctx, outbound, relay, `${state}.chats.json`);
+    if (config.controlPage !== false && ctx.inject && outbound) installRemoteAgents(ctx, outbound, `${state}.native-sessions.json`);
     ctx.tools.register(defineTool({
       name: 'a2a_connector_status', description: 'Inspect this Connector process and inbound WSS tunnel health, plus recent bounded logs. Remote Agent Card availability is outbound only.',
       parameters: {},

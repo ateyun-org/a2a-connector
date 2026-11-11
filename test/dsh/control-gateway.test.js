@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { Context } from '../../plugins/dsh/node_modules/@deepseek-ai/cordis/lib/index.js';
 import { TypertRegistry } from '../../plugins/dsh/node_modules/@deepseek-ai/dsh-typert-registry/lib/index.js';
 import { TypertGatewayService } from '../../plugins/dsh/node_modules/@deepseek-ai/dsh-api-gateway/lib/index.js';
-import { installControlPage } from '../../plugins/dsh/control-service.js';
+import { installRemoteAgents } from '../../plugins/dsh/remote-sessions.js';
 
 test('native DSH Gateway admits owner-only control RPCs with strict arguments and lifecycle cleanup', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-gateway-'));
@@ -14,9 +14,10 @@ test('native DSH Gateway admits owner-only control RPCs with strict arguments an
   const ctx = new Context();
   const registry = ctx.plugin(TypertRegistry); await registry;
   ctx.provide('remoteAccess', { decide: () => ({ kind: 'allow' }) });
+  ctx.provide('llm', { registerAdapter() {} });
   const gateway = ctx.plugin(TypertGatewayService, {}); await gateway;
   let calls = 0;
-  const control = installControlPage(ctx, { syncRelayTargets: async () => { calls++; return [{ agentId: 'remote', online: true }]; } }, {}, join(directory, 'chats.json'));
+  const control = installRemoteAgents(ctx, { syncRelayTargets: async () => { calls++; return [{ agentId: 'remote', online: true }]; } }, join(directory, 'native-sessions.json'));
   await control;
   assert(ctx.typert.local.get('a2aControl/targets'));
   const lifetime = new AbortController();
@@ -26,7 +27,8 @@ test('native DSH Gateway admits owner-only control RPCs with strict arguments an
   assert.equal(calls, 1);
   await assert.rejects(invoke('targets', {}, { kind: 'guest' }), /所有者/);
   assert.equal(calls, 1);
-  await assert.rejects(invoke('chat', { input: { agentId: '../foreign' } }), /boundary validation/i);
+  await assert.rejects(invoke('open', { input: { agentId: '../foreign' } }), /boundary validation/i);
+  await assert.rejects(invoke('send', { input: { agentId: 'remote', text: 'no custom chat' } }), /no active Remote method/i);
   assert.equal(calls, 1);
   await control.dispose();
   await assert.rejects(invoke('targets', {}), /withdrawn|unavailable/i);

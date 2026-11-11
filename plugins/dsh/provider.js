@@ -18,8 +18,9 @@ export function installRelayProvider(ctx, relay, { resolveUserId = getOrCreateAn
   let current = resolveAdapterOptions({ baseURL, models: [] });
   const connect = async signal => {
     const [catalog, token] = await Promise.all([relay.models({ signal }), relay.credential()]);
-    if (!catalog.enabled || !catalog.apiKeyConfigured) throw new LlmError('请由管理员在 Relay 的 DSH 主控页启用 DeepSeek 模型。', 'AUTH');
-    const connection = { ...resolveAdapterOptions({ baseURL, models: catalog.models }), relayToken: token };
+    if (!catalog.enabled || !catalog.apiKeyConfigured) throw new LlmError('请由管理员在 Relay 的「企业设置 → Provider」启用 DeepSeek 模型。', 'AUTH');
+    const models = catalog.models.map(({ id, name }) => ({ id, ...(name ? { name } : {}) }));
+    const connection = { ...resolveAdapterOptions({ baseURL, models }), relayToken: token };
     current = connection;
     return connection;
   };

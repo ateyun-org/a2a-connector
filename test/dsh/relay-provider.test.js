@@ -12,6 +12,7 @@ test('native DSH model adapter uses Relay catalog, rotates paired credentials an
   const directory = await mkdtemp(join(tmpdir(), 'relay-provider-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   let enabled = true, adapter, base;
+  let models = [{ id: 'deepseek-chat', name: 'DeepSeek Chat', contextWindow: 128000, maxTokens: 8192 }];
   const requests = [];
   const server = createServer(async (request, response) => {
     const chunks = []; for await (const chunk of request) chunks.push(chunk);
@@ -19,7 +20,7 @@ test('native DSH model adapter uses Relay catalog, rotates paired credentials an
     requests.push({ path: request.url, auth: request.headers.authorization, body });
     if (request.url === '/relay/provider/models') {
       response.setHeader('Content-Type', 'application/json');
-      response.end(JSON.stringify({ enabled, apiKeyConfigured: true, models: [{ id: 'deepseek-chat', name: 'DeepSeek Chat', contextWindow: 128000, maxTokens: 8192 }] })); return;
+      response.end(JSON.stringify({ enabled, apiKeyConfigured: true, models })); return;
     }
     assert.equal(request.url, '/relay/provider/anthropic/v1/messages');
     response.setHeader('Content-Type', 'text/event-stream');
@@ -41,7 +42,11 @@ test('native DSH model adapter uses Relay catalog, rotates paired credentials an
   await paired('agt_controller.first');
   const relay = new RelayClient({ relay: base, state, allowInsecure: true });
   installRelayProvider({ llm: { registerAdapter(routes, value) { assert.deepEqual(routes, ['a2a-relay']); adapter = value; } } }, relay, { resolveUserId: () => '00000000-0000-4000-8000-000000000001' });
-  assert.equal((await adapter.listModels('a2a-relay'))[0].id, 'deepseek-chat');
+  const listed = (await adapter.listModels('a2a-relay'))[0];
+  assert.equal(listed.id, 'deepseek-chat');
+  assert.equal(listed.name, 'DeepSeek Chat');
+  assert.equal(listed.contextWindow, undefined);
+  assert.equal(listed.maxTokens, undefined);
   const run = async model => {
     const chunks = [];
     for await (const chunk of adapter.stream({ provider: 'a2a-relay', model, messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }] })) chunks.push(chunk);
@@ -59,9 +64,15 @@ test('native DSH model adapter uses Relay catalog, rotates paired credentials an
   await paired('agt_controller.rotated');
   await run('deepseek-chat');
   assert.equal(sends().at(-1).auth, 'Bearer agt_controller.rotated');
+  models = [{ id: 'deepseek-chat', name: 'DeepSeek Chat' }];
+  const defaulted = (await adapter.listModels('a2a-relay'))[0];
+  assert.equal(defaulted.contextWindow, undefined);
+  assert.equal(defaulted.maxTokens, undefined);
+  assert.equal((await run('deepseek-chat')).find(chunk => chunk.type === 'text-delta')?.text, 'hello');
+  assert.equal(JSON.parse(sends().at(-1).body).max_tokens, JSON.parse(sends()[0].body).max_tokens, 'legacy Relay metadata changed the native adapter output default');
   enabled = false;
   await assert.rejects(run('deepseek-chat'), /启用/);
-  assert.equal(sends().length, 2);
+  assert.equal(sends().length, 3);
 });
 
 test('Relay inventory follows pagination and withdraws dynamically revoked targets', async t => {

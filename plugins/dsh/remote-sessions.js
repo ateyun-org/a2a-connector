@@ -86,6 +86,8 @@ export class RemoteAgentSessions {
     await this.ready;
     const target = await this.authorize(agentId);
     const bindings = await this.index.list();
+    const archived = new Set(this.ctx.get('workspaceRegistry')?.archivedSessionIds || []);
+    if (!newSession && sessionId && archived.has(sessionId)) throw new Error('此聊天已移至归档，请先在 DSH 中恢复。');
     const requested = sessionId ? await this.nativeAgent(sessionId) : undefined;
     const currentBinding = bindings.find(item => item.sessionId === sessionId);
     const cwd = requested?.session.header.cwd;
@@ -102,7 +104,7 @@ export class RemoteAgentSessions {
         return { agentId, sessionId };
       });
     }
-    if (!newSession) binding ??= bindings.filter(item => item.agentId === agentId && (!requested || item.cwd === cwd))
+    if (!newSession) binding ??= bindings.filter(item => item.agentId === agentId && !archived.has(item.sessionId) && (!requested || item.cwd === cwd))
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
     if (!binding) {
       const id = `session-${randomUUID()}`;

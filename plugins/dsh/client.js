@@ -236,9 +236,11 @@ function shortDate(value) {
   const date = new Date(value), today = date.toDateString() === (/* @__PURE__ */ new Date()).toDateString();
   return date.toLocaleString(void 0, today ? { hour: "2-digit", minute: "2-digit", hour12: false } : { month: "2-digit", day: "2-digit" });
 }
-function HistoryMenu({ agentId, name, rows, currentId, pending, onSelect }) {
+function HistoryMenu({ agentId, name, rows, currentId, pending, onSelect, onDelete }) {
   const id = (0, import_react.useId)(), trigger = (0, import_react.useRef)(null), panel = (0, import_react.useRef)(null), focusOnOpen = (0, import_react.useRef)(false);
   const [open, setOpen] = (0, import_react.useState)(false);
+  const [deleting, setDeleting] = (0, import_react.useState)(null), [error, setError] = (0, import_react.useState)("");
+  const deletion = (0, import_react.useRef)(null), focusAfterDelete = (0, import_react.useRef)(null);
   function close(restoreFocus = false) {
     if (panel.current?.matches(":popover-open")) panel.current.hidePopover();
     setOpen(false);
@@ -263,11 +265,34 @@ function HistoryMenu({ agentId, name, rows, currentId, pending, onSelect }) {
     const height = node.getBoundingClientRect().height;
     node.style.left = `${Math.max(12, Math.min(anchor.right - width, window.innerWidth - width - 12))}px`;
     node.style.top = `${anchor.bottom + 8 + height <= window.innerHeight - 12 ? anchor.bottom + 8 : Math.max(12, anchor.top - height - 8)}px`;
-    if (focusOnOpen.current) {
+    if (focusAfterDelete.current && !deleting) {
+      const target = focusAfterDelete.current;
+      focusAfterDelete.current = null;
+      const attribute = target.retry ? "data-delete-session-id" : "data-session-id";
+      ([...node.querySelectorAll(`[${attribute}]:not([disabled])`)].find((item) => item.getAttribute(attribute) === target.id) || node.querySelector("[data-session-id]:not([disabled])") || node).focus();
+    } else if (focusOnOpen.current) {
       focusOnOpen.current = false;
       (node.querySelector("[data-session-id][aria-current=page]") || node.querySelector("[data-session-id]") || node).focus();
     }
-  }, [open, rows]);
+  }, [open, rows, deleting]);
+  async function remove(row) {
+    if (deletion.current || pending || row.running) return;
+    deletion.current = row.id;
+    setDeleting(row.id);
+    setError("");
+    const index = rows.findIndex((item) => item.id === row.id);
+    const nextId = (rows[index + 1] || rows[index - 1])?.id;
+    try {
+      await onDelete(row.id);
+      if (panel.current?.matches(":popover-open")) focusAfterDelete.current = { id: nextId };
+    } catch (error2) {
+      setError(error2.rpcError?.code === "workspace/session-active" ? "\u6B64\u4F1A\u8BDD\u4ECD\u6709\u8FD0\u884C\u4E2D\u7684\u4EFB\u52A1\uFF0C\u8BF7\u5148\u505C\u6B62\u540E\u518D\u5220\u9664\u3002" : "\u5220\u9664\u5931\u8D25\uFF0C\u8BF7\u68C0\u67E5 DSH \u8FDE\u63A5\u548C\u4F1A\u8BDD\u6743\u9650\u540E\u91CD\u8BD5\u3002");
+      if (panel.current?.matches(":popover-open")) focusAfterDelete.current = { id: row.id, retry: true };
+    } finally {
+      deletion.current = null;
+      setDeleting(null);
+    }
+  }
   function keyDown(event) {
     if (event.key === "Escape") {
       event.preventDefault();
@@ -278,7 +303,7 @@ function HistoryMenu({ agentId, name, rows, currentId, pending, onSelect }) {
     const items = [...panel.current.querySelectorAll("[data-session-id]:not([disabled])")];
     if (!items.length) return;
     event.preventDefault();
-    const at = items.indexOf(document.activeElement);
+    const at = items.findIndex((item) => item === document.activeElement || item.parentElement.contains(document.activeElement));
     const next = event.key === "Home" ? 0 : event.key === "End" ? items.length - 1 : event.key === "ArrowDown" ? (at + 1) % items.length : at < 0 ? items.length - 1 : (at + items.length - 1) % items.length;
     items[next].focus();
   }
@@ -328,32 +353,70 @@ function HistoryMenu({ agentId, name, rows, currentId, pending, onSelect }) {
       className: "a2a-remote-history-menu",
       role: "dialog",
       "aria-label": `${name} \u7684\u804A\u5929\u8BB0\u5F55`,
+      "aria-busy": Boolean(deleting),
       tabIndex: -1,
       onKeyDown: keyDown,
       onBlur: (event) => {
         if (event.relatedTarget && event.relatedTarget !== trigger.current && !event.currentTarget.contains(event.relatedTarget)) close();
       }
     },
-    /* @__PURE__ */ import_react.default.createElement("div", { className: "a2a-remote-history-header" }, /* @__PURE__ */ import_react.default.createElement("strong", { title: name }, name, " \xB7 \u804A\u5929\u8BB0\u5F55"), /* @__PURE__ */ import_react.default.createElement("small", null, rows.length), /* @__PURE__ */ import_react.default.createElement("button", { type: "button", "aria-label": "\u5173\u95ED\u804A\u5929\u8BB0\u5F55", onClick: () => close(true) }, /* @__PURE__ */ import_react.default.createElement("svg", { width: "14", height: "14", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "1.7", strokeLinecap: "round", "aria-hidden": "true" }, /* @__PURE__ */ import_react.default.createElement("path", { d: "m6 6 12 12M18 6 6 18" })))),
+    /* @__PURE__ */ import_react.default.createElement("div", { className: "a2a-remote-history-header" }, /* @__PURE__ */ import_react.default.createElement("strong", { title: name }, name, " \xB7 \u804A\u5929\u8BB0\u5F55"), /* @__PURE__ */ import_react.default.createElement("small", { "aria-live": "polite" }, deleting ? "\u5220\u9664\u4E2D\u2026" : rows.length), /* @__PURE__ */ import_react.default.createElement("button", { type: "button", "aria-label": "\u5173\u95ED\u804A\u5929\u8BB0\u5F55", onClick: () => close(true) }, /* @__PURE__ */ import_react.default.createElement("svg", { width: "14", height: "14", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "1.7", strokeLinecap: "round", "aria-hidden": "true" }, /* @__PURE__ */ import_react.default.createElement("path", { d: "m6 6 12 12M18 6 6 18" })))),
+    open && error && /* @__PURE__ */ import_react.default.createElement("p", { className: "a2a-remote-history-error", role: "alert" }, error),
     /* @__PURE__ */ import_react.default.createElement("div", { className: "a2a-remote-history-entries" }, open && rows.map((row) => /* @__PURE__ */ import_react.default.createElement(
-      "button",
+      "div",
       {
-        type: "button",
         key: row.id,
-        className: "a2a-remote-history-row",
-        "data-session-id": row.id,
-        "aria-current": currentId === row.id ? "page" : void 0,
-        disabled: pending,
-        title: `${row.title || row.displayTitle || "\u804A\u5929\u8BB0\u5F55"}${row.updatedAt ? ` \xB7 ${new Date(row.updatedAt).toLocaleString()}` : ""}`,
-        onClick: () => {
-          close(true);
-          void onSelect(row.id);
-        }
+        className: "a2a-remote-history-item",
+        "data-history-session-id": row.id,
+        "data-current": currentId === row.id ? "" : void 0
       },
-      /* @__PURE__ */ import_react.default.createElement("span", { className: "a2a-remote-history-check", "aria-hidden": "true" }, currentId === row.id && /* @__PURE__ */ import_react.default.createElement("svg", { width: "12", height: "12", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round" }, /* @__PURE__ */ import_react.default.createElement("path", { d: "m5 12 4 4 10-10" }))),
-      /* @__PURE__ */ import_react.default.createElement("span", { className: "a2a-remote-history-title" }, row.title || row.displayTitle || "\u804A\u5929\u8BB0\u5F55"),
-      row.running && /* @__PURE__ */ import_react.default.createElement("i", { className: "a2a-remote-history-running", "aria-label": "\u8FD0\u884C\u4E2D", title: "\u8FD0\u884C\u4E2D" }),
-      /* @__PURE__ */ import_react.default.createElement("time", null, shortDate(row.updatedAt))
+      /* @__PURE__ */ import_react.default.createElement(
+        "button",
+        {
+          type: "button",
+          className: "a2a-remote-history-row",
+          "data-session-id": row.id,
+          "aria-current": currentId === row.id ? "page" : void 0,
+          disabled: pending || Boolean(deleting),
+          title: `${row.title || row.displayTitle || "\u804A\u5929\u8BB0\u5F55"}${row.updatedAt ? ` \xB7 ${new Date(row.updatedAt).toLocaleString()}` : ""}`,
+          onClick: () => {
+            close(true);
+            void onSelect(row.id);
+          }
+        },
+        /* @__PURE__ */ import_react.default.createElement("span", { className: "a2a-remote-history-check", "aria-hidden": "true" }, currentId === row.id && /* @__PURE__ */ import_react.default.createElement("svg", { width: "12", height: "12", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round" }, /* @__PURE__ */ import_react.default.createElement("path", { d: "m5 12 4 4 10-10" }))),
+        /* @__PURE__ */ import_react.default.createElement("span", { className: "a2a-remote-history-title" }, row.title || row.displayTitle || "\u804A\u5929\u8BB0\u5F55"),
+        row.running && /* @__PURE__ */ import_react.default.createElement("i", { className: "a2a-remote-history-running", "aria-label": "\u8FD0\u884C\u4E2D", title: "\u8FD0\u884C\u4E2D" }),
+        /* @__PURE__ */ import_react.default.createElement("time", null, shortDate(row.updatedAt))
+      ),
+      /* @__PURE__ */ import_react.default.createElement(
+        "button",
+        {
+          type: "button",
+          className: "a2a-remote-history-delete",
+          "data-delete-session-id": row.id,
+          "aria-label": `\u5220\u9664\u804A\u5929\u8BB0\u5F55\uFF1A${row.title || row.displayTitle || "\u804A\u5929\u8BB0\u5F55"}`,
+          title: row.running ? "\u8FD0\u884C\u4E2D\uFF0C\u8BF7\u5148\u505C\u6B62\u540E\u518D\u5220\u9664" : "\u4ECE\u5217\u8868\u79FB\u9664\uFF0C\u53EF\u5728 DSH \u5F52\u6863\u4E2D\u6062\u590D",
+          disabled: pending || Boolean(deleting) || row.running,
+          onClick: () => void remove(row)
+        },
+        /* @__PURE__ */ import_react.default.createElement(
+          "svg",
+          {
+            width: "14",
+            height: "14",
+            viewBox: "0 0 24 24",
+            fill: "none",
+            stroke: "currentColor",
+            strokeWidth: "1.7",
+            strokeLinecap: "round",
+            strokeLinejoin: "round",
+            "aria-hidden": "true",
+            focusable: "false"
+          },
+          /* @__PURE__ */ import_react.default.createElement("path", { d: "M3 6h18M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M5 6l1 14a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1l1-14M10 10v7m4-7v7" })
+        )
+      )
     )), open && rows.length === 0 && /* @__PURE__ */ import_react.default.createElement("p", null, "\u6682\u65E0\u804A\u5929\u8BB0\u5F55"))
   ));
 }
@@ -393,12 +456,18 @@ function DirectChatStatus({ sessionId, selection: selection2 }) {
   const target = selection2.targets.get(agentId);
   return /* @__PURE__ */ import_react2.default.createElement("div", { className: "a2a-direct-status", role: "status" }, /* @__PURE__ */ import_react2.default.createElement("div", { className: "a2a-direct-info" }, /* @__PURE__ */ import_react2.default.createElement(RobotIcon, null), /* @__PURE__ */ import_react2.default.createElement("span", null, /* @__PURE__ */ import_react2.default.createElement("strong", null, active && state.pending ? "\u6B63\u5728\u8FDE\u63A5" : "\u76F4\u804A", " \xB7 ", target?.name || agentId), /* @__PURE__ */ import_react2.default.createElement("small", { title: "\u6D88\u606F\u76F4\u63A5\u53D1\u9001\u7ED9\u8FDC\u7A0B Agent\uFF0C\u65E0\u9700\u9009\u62E9\u4E3B\u63A7\u6A21\u578B" }, "\u6D88\u606F\u76F4\u63A5\u53D1\u9001\u7ED9\u8FDC\u7A0B Agent\uFF0C\u65E0\u9700\u9009\u62E9\u4E3B\u63A7\u6A21\u578B"))));
 }
-function RemoteAgents({ remote, selection: selection2, expandSidebar, wide = true, useSessions }) {
+function RemoteAgents({ remote, selection: selection2, workspaces, archiveSession, expandSidebar, wide = true, useSessions }) {
   const [expanded, setExpanded] = (0, import_react2.useState)(true), [targets, setTargets] = (0, import_react2.useState)(null);
   const [error, setError] = (0, import_react2.useState)("");
   const selected = (0, import_react2.useSyncExternalStore)(selection2.subscribe, selection2.getSnapshot);
   const sessions = useSessions((state) => state.byId);
-  const history = Object.values(sessions).filter((row) => selection2.bindings.get(row.id) === selected.agentId).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  const workspaceList = (0, import_react2.useMemo)(() => ({
+    subscribe: (listener) => workspaces.list.subscribe(listener),
+    getSnapshot: () => workspaces.list.getSnapshot()
+  }), [workspaces]);
+  const workspaceState = (0, import_react2.useSyncExternalStore)(workspaceList.subscribe, workspaceList.getSnapshot);
+  const archived = new Set(workspaceState.archivedSessionIds);
+  const history = Object.values(sessions).filter((row) => selection2.bindings.get(row.id) === selected.agentId && !archived.has(row.id)).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
   (0, import_react2.useEffect)(() => {
     let gone = false, loading = false;
     const refresh = async () => {
@@ -476,7 +545,8 @@ function RemoteAgents({ remote, selection: selection2, expandSidebar, wide = tru
       rows: history,
       currentId: selected.sessionId,
       pending: selected.pending,
-      onSelect: (sessionId) => selection2.select(selected.agentId, { sessionId })
+      onSelect: (sessionId) => selection2.select(selected.agentId, { sessionId }),
+      onDelete: archiveSession
     }
   )), expanded && /* @__PURE__ */ import_react2.default.createElement("div", { id: "a2a-remote-list", className: "a2a-remote-list" }, (error || selected.error) && /* @__PURE__ */ import_react2.default.createElement("p", { role: "alert" }, error || selected.error), targets === null && !error && /* @__PURE__ */ import_react2.default.createElement("p", { role: "status" }, "\u6B63\u5728\u8BFB\u53D6\u6388\u6743\u5217\u8868\u2026"), targets?.length === 0 && /* @__PURE__ */ import_react2.default.createElement("p", null, "\u6682\u65E0\u53EF\u63A7\u5236\u7684 Agent\uFF0C\u8BF7\u7531\u7BA1\u7406\u5458\u914D\u7F6E\u8C03\u7528\u6388\u6743\u3002"), targets?.map((target) => /* @__PURE__ */ import_react2.default.createElement(import_react2.default.Fragment, { key: target.agentId }, /* @__PURE__ */ import_react2.default.createElement(
     "div",
@@ -528,7 +598,7 @@ function RemoteAgents({ remote, selection: selection2, expandSidebar, wide = tru
     )
   )))));
 }
-var inject = ["slots", "remote", "sessions", "uiWorkspace", "layout", "conversation"];
+var inject = ["slots", "remote", "sessions", "workspaces", "uiWorkspace", "layout", "conversation"];
 function apply(ctx) {
   ctx.effect(() => ctx.remote.$mount(controlContract));
   ctx.inject(["remote.a2aControl"], (scope) => {
@@ -546,6 +616,8 @@ function apply(ctx) {
       inject: () => ({
         remote: scope.remote.a2aControl,
         selection: selection2,
+        workspaces: scope.workspaces,
+        archiveSession: (sessionId) => scope.uiWorkspace.archiveSession(sessionId),
         expandSidebar: () => scope.layout.toggleSidebar()
       })
     }, RemoteAgents));
@@ -585,9 +657,15 @@ var css = `
 .a2a-remote-history-menu:popover-open{display:flex;flex-direction:column}.a2a-remote-history-menu button{font:inherit;color:inherit;background:transparent;border:0;border-radius:6px;cursor:pointer}
 .a2a-remote-history-header{display:flex;align-items:center;gap:8px;padding:3px 6px 7px;border-bottom:1px solid var(--dsw-alias-border-l1,#8882)}.a2a-remote-history-header strong{font-size:12px;font-weight:500;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.a2a-remote-history-header small{font-size:11px;opacity:.6}.a2a-remote-history-header button{display:flex;align-items:center;justify-content:center;height:24px;width:24px;padding:0;flex:none}
 .a2a-remote-history-entries{overflow:auto;min-height:0;overscroll-behavior:contain;padding-top:4px}.a2a-remote-history-entries p{font-size:12px;padding:12px;opacity:.6}
-.a2a-remote-history-row{display:flex;align-items:center;gap:8px;width:100%;min-height:32px;text-align:left;padding:6px 8px;margin-top:1px;font-size:12px!important}
+.a2a-remote-history-item{display:flex;align-items:center;min-width:0;margin-top:1px;border-radius:6px}
+.a2a-remote-history-row{display:flex;align-items:center;gap:8px;flex:1;min-width:0;width:0;min-height:32px;text-align:left;padding:6px 8px;font-size:12px!important}
+.a2a-remote-history-delete{display:flex;align-items:center;justify-content:center;flex:none;width:28px;height:28px;padding:0;margin-right:2px;opacity:.55}
+.a2a-remote-history-item:hover>.a2a-remote-history-delete,.a2a-remote-history-delete:focus-visible{opacity:1}
+.a2a-remote-history-delete:hover:not(:disabled){color:var(--dsw-alias-status-error,#b74b42);background:var(--dsw-alias-interactive-bg-hover,#8881)}
+.a2a-remote-history-menu button:disabled{opacity:.4;cursor:default}.a2a-remote-history-menu[aria-busy=true] .a2a-remote-history-delete:disabled{cursor:wait}
+.a2a-remote-history-error{font-size:12px;line-height:1.5;color:var(--dsw-alias-status-error,#b74b42);padding:8px 6px 0;margin:0;overflow-wrap:anywhere}
 .a2a-remote-history-check{display:flex;width:12px;flex:none}.a2a-remote-history-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.a2a-remote-history-row time{font-size:10px;opacity:.6;white-space:nowrap}.a2a-remote-history-running{height:6px;width:6px;border-radius:50%;background:#bd8826;flex:none}
-.a2a-remote-history-row:hover{background:var(--dsw-alias-interactive-bg-hover,#8881)}.a2a-remote-history-row[aria-current=page]{background:var(--dsw-alias-interactive-bg-selected,#52796f22)}
+.a2a-remote-history-item:hover{background:var(--dsw-alias-interactive-bg-hover,#8881)}.a2a-remote-history-item[data-current]{background:var(--dsw-alias-interactive-bg-selected,#52796f22)}
 .a2a-remote-history-menu button:focus-visible{outline:2px solid var(--dsw-focus-ring-color,#52796f);outline-offset:-2px}
 .a2a-remote-row{display:grid;gap:4px;width:100%;padding:8px 12px 8px 34px;text-align:left;min-width:0}
 .a2a-remote-item:hover,.a2a-remote-heading:hover,.a2a-remote-rail:hover{background:var(--dsw-alias-interactive-bg-hover,#8881)}

@@ -344,3 +344,30 @@ test('New Chat creates a fresh native Session and remote context, while history 
   assert.equal(sends.at(-1).conversationId, 'conversation-0');
   assert.equal((await host.sessions.targets())[0].sessionIds.length, 4);
 });
+
+test('archived remote chats are not reopened or recreated by target selection, and restoring preserves the original context', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-archived-remote-chat-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const { a2a, sends } = remote();
+  const host = await nativeHost(root, a2a); t.after(() => host.close());
+  const registry = { archivedSessionIds: [], resolveByPath: async () => undefined };
+  host.ctx.provide('workspaceRegistry', registry);
+  const first = await host.sessions.open({ agentId: 'one' });
+  const firstAgent = host.ctx.agents.get(first.sessionId);
+  await prompt(firstAgent, '保留待恢复的记录');
+  const seq = firstAgent.session.seq;
+  registry.archivedSessionIds.push(first.sessionId);
+  await assert.rejects(host.sessions.open({ agentId: 'one', sessionId: first.sessionId }), /归档/);
+  const second = await host.sessions.open({ agentId: 'one' });
+  assert.notEqual(second.sessionId, first.sessionId);
+  assert.equal(firstAgent.session.seq, seq, 'archiving changed the original transcript');
+  registry.archivedSessionIds.push(second.sessionId);
+  const third = await host.sessions.open({ agentId: 'one' });
+  assert(!registry.archivedSessionIds.includes(third.sessionId), 'target selection reopened an archived chat');
+  assert.equal(sends.length, 1, 'archive/open dispatched a remote message');
+  registry.archivedSessionIds = [second.sessionId];
+  const restored = await host.sessions.open({ agentId: 'one', sessionId: first.sessionId });
+  assert.equal(restored.sessionId, first.sessionId);
+  await prompt(firstAgent, '恢复后继续');
+  assert.equal(sends.at(-1).conversationId, 'conversation-0');
+});

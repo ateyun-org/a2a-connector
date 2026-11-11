@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useSyncExternalStore } from 'react';
+import React, { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { controlContract } from '../control-contract.js';
 import { RemoteSelection } from './remote-selection.js';
 import { HistoryMenu } from './history-menu.jsx';
@@ -30,12 +30,18 @@ function DirectChatStatus({ sessionId, selection }) {
   </div>;
 }
 
-function RemoteAgents({ remote, selection, expandSidebar, wide = true, useSessions }) {
+function RemoteAgents({ remote, selection, workspaces, archiveSession, expandSidebar, wide = true, useSessions }) {
   const [expanded, setExpanded] = useState(true), [targets, setTargets] = useState(null);
   const [error, setError] = useState('');
   const selected = useSyncExternalStore(selection.subscribe, selection.getSnapshot);
   const sessions = useSessions(state => state.byId);
-  const history = Object.values(sessions).filter(row => selection.bindings.get(row.id) === selected.agentId)
+  const workspaceList = useMemo(() => ({
+    subscribe: listener => workspaces.list.subscribe(listener),
+    getSnapshot: () => workspaces.list.getSnapshot(),
+  }), [workspaces]);
+  const workspaceState = useSyncExternalStore(workspaceList.subscribe, workspaceList.getSnapshot);
+  const archived = new Set(workspaceState.archivedSessionIds);
+  const history = Object.values(sessions).filter(row => selection.bindings.get(row.id) === selected.agentId && !archived.has(row.id))
     .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
   useEffect(() => {
     let gone = false, loading = false;
@@ -63,7 +69,7 @@ function RemoteAgents({ remote, selection, expandSidebar, wide = true, useSessio
       <HistoryMenu key={selected.agentId || 'none'} agentId={selected.agentId}
         name={targets?.find(target => target.agentId === selected.agentId)?.name || selected.agentId || '远程 Agent'}
         rows={history} currentId={selected.sessionId} pending={selected.pending}
-        onSelect={sessionId => selection.select(selected.agentId, { sessionId })} />
+        onSelect={sessionId => selection.select(selected.agentId, { sessionId })} onDelete={archiveSession} />
     </div>
     {expanded && <div id="a2a-remote-list" className="a2a-remote-list">
       {(error || selected.error) && <p role="alert">{error || selected.error}</p>}
@@ -97,7 +103,7 @@ function RemoteAgents({ remote, selection, expandSidebar, wide = true, useSessio
   </section>;
 }
 
-export const inject = ['slots', 'remote', 'sessions', 'uiWorkspace', 'layout', 'conversation'];
+export const inject = ['slots', 'remote', 'sessions', 'workspaces', 'uiWorkspace', 'layout', 'conversation'];
 export function apply(ctx) {
   ctx.effect(() => ctx.remote.$mount(controlContract));
   ctx.inject(['remote.a2aControl'], scope => {
@@ -106,7 +112,8 @@ export function apply(ctx) {
     const selection = new RemoteSelection(scope, scope.remote.a2aControl, storage);
     scope.effect(() => selection.start());
     scope.slots.inject('sidebar.footer.action', () => scope.slots.register({ name: 'sidebar.footer.action', id: 'a2a-remote-agents', order: -10,
-      inject: () => ({ remote: scope.remote.a2aControl, selection,
+      inject: () => ({ remote: scope.remote.a2aControl, selection, workspaces: scope.workspaces,
+        archiveSession: sessionId => scope.uiWorkspace.archiveSession(sessionId),
         expandSidebar: () => scope.layout.toggleSidebar() }) }, RemoteAgents));
     scope.slots.inject('conversation.input.dock', () => scope.slots.register({ name: 'conversation.input.dock', id: 'a2a-direct-chat', order: -20,
       inject: () => ({ selection }) }, DirectChatStatus));
@@ -135,9 +142,15 @@ const css = `
 .a2a-remote-history-menu:popover-open{display:flex;flex-direction:column}.a2a-remote-history-menu button{font:inherit;color:inherit;background:transparent;border:0;border-radius:6px;cursor:pointer}
 .a2a-remote-history-header{display:flex;align-items:center;gap:8px;padding:3px 6px 7px;border-bottom:1px solid var(--dsw-alias-border-l1,#8882)}.a2a-remote-history-header strong{font-size:12px;font-weight:500;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.a2a-remote-history-header small{font-size:11px;opacity:.6}.a2a-remote-history-header button{display:flex;align-items:center;justify-content:center;height:24px;width:24px;padding:0;flex:none}
 .a2a-remote-history-entries{overflow:auto;min-height:0;overscroll-behavior:contain;padding-top:4px}.a2a-remote-history-entries p{font-size:12px;padding:12px;opacity:.6}
-.a2a-remote-history-row{display:flex;align-items:center;gap:8px;width:100%;min-height:32px;text-align:left;padding:6px 8px;margin-top:1px;font-size:12px!important}
+.a2a-remote-history-item{display:flex;align-items:center;min-width:0;margin-top:1px;border-radius:6px}
+.a2a-remote-history-row{display:flex;align-items:center;gap:8px;flex:1;min-width:0;width:0;min-height:32px;text-align:left;padding:6px 8px;font-size:12px!important}
+.a2a-remote-history-delete{display:flex;align-items:center;justify-content:center;flex:none;width:28px;height:28px;padding:0;margin-right:2px;opacity:.55}
+.a2a-remote-history-item:hover>.a2a-remote-history-delete,.a2a-remote-history-delete:focus-visible{opacity:1}
+.a2a-remote-history-delete:hover:not(:disabled){color:var(--dsw-alias-status-error,#b74b42);background:var(--dsw-alias-interactive-bg-hover,#8881)}
+.a2a-remote-history-menu button:disabled{opacity:.4;cursor:default}.a2a-remote-history-menu[aria-busy=true] .a2a-remote-history-delete:disabled{cursor:wait}
+.a2a-remote-history-error{font-size:12px;line-height:1.5;color:var(--dsw-alias-status-error,#b74b42);padding:8px 6px 0;margin:0;overflow-wrap:anywhere}
 .a2a-remote-history-check{display:flex;width:12px;flex:none}.a2a-remote-history-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.a2a-remote-history-row time{font-size:10px;opacity:.6;white-space:nowrap}.a2a-remote-history-running{height:6px;width:6px;border-radius:50%;background:#bd8826;flex:none}
-.a2a-remote-history-row:hover{background:var(--dsw-alias-interactive-bg-hover,#8881)}.a2a-remote-history-row[aria-current=page]{background:var(--dsw-alias-interactive-bg-selected,#52796f22)}
+.a2a-remote-history-item:hover{background:var(--dsw-alias-interactive-bg-hover,#8881)}.a2a-remote-history-item[data-current]{background:var(--dsw-alias-interactive-bg-selected,#52796f22)}
 .a2a-remote-history-menu button:focus-visible{outline:2px solid var(--dsw-focus-ring-color,#52796f);outline-offset:-2px}
 .a2a-remote-row{display:grid;gap:4px;width:100%;padding:8px 12px 8px 34px;text-align:left;min-width:0}
 .a2a-remote-item:hover,.a2a-remote-heading:hover,.a2a-remote-rail:hover{background:var(--dsw-alias-interactive-bg-hover,#8881)}

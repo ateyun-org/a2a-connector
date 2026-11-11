@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { LlmAdapter, LlmError, isAgentLoopRequest, resolveRetryPolicy } from '@deepseek-ai/dsh-llm';
+import { LlmAdapter, LlmError, resolveRetryPolicy } from '@deepseek-ai/dsh-llm';
 import { REMOTE_AGENT_PROVIDER, REMOTE_AGENT_MODEL } from './remote-route.js';
 
 export { REMOTE_AGENT_PROVIDER, REMOTE_AGENT_MODEL };
@@ -20,17 +20,25 @@ export class RemoteSessionAdapter extends LlmAdapter {
   }
 
   async *stream(options) {
-    if (!isAgentLoopRequest(options) || options.purpose !== undefined) throw invalid('远程 Agent 会话仅接收原生聊天输入，不执行辅助模型请求。');
+    if (options.purpose !== undefined) throw invalid('远程 Agent 直聊不执行辅助模型请求。');
     const binding = await this.sessions.binding(options.sessionId);
     // Keep old saved agent-id routes readable while the guard migrates them.
     if (!binding || (options.model !== REMOTE_AGENT_MODEL && binding.agentId !== options.model)) throw invalid('请从左侧「远程 Agents」打开对应的原生会话。');
     const target = await this.sessions.authorize(binding.agentId, options.signal);
     if (!target.online) throw invalid('远程 Agent 当前离线，请恢复连接后再发送。');
-    const message = [...options.messages].reverse().find(item => item.role === 'user');
-    if (!message?.id || !Array.isArray(message.content) || message.content.some(part => part.type !== 'text')) {
+    // SDK projection and other middleware may copy the request object, losing
+    // isAgentLoopRequest's WeakSet identity. The durable Session owns user intent.
+    let message;
+    for (let index = options.messages.length - 1; index >= 0; index--) {
+      const item = options.messages[index];
+      if (item.role !== 'user') continue;
+      message = this.sessions.userInput(options.sessionId, item);
+      if (message) break;
+    }
+    if (!message) throw invalid('此请求没有对应的原生用户消息，请在聊天输入框中发送。');
+    if (!Array.isArray(message.content) || message.content.some(part => part.type !== 'text')) {
       throw invalid('远程 Agent 会话目前只接收原生聊天窗口中的文本消息。');
     }
-    if (message.source?.kind !== 'user') throw invalid('远程 Agent 仅接受用户直接发送的消息。');
     const content = message.content.map(part => ({ type: 'text', text: part.text }));
     if (!content.some(part => part.text.trim())) throw invalid('请输入消息内容。');
     const parentId = options.sessionId;

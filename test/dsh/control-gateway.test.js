@@ -28,6 +28,7 @@ test('native DSH Gateway admits owner-only control RPCs with strict arguments an
   await assert.rejects(invoke('targets', {}, { kind: 'guest' }), /所有者/);
   assert.equal(calls, 1);
   await assert.rejects(invoke('open', { input: { agentId: '../foreign' } }), /boundary validation/i);
+  await assert.rejects(invoke('open', { input: { agentId: 'remote', newSession: 'yes' } }), /boundary validation/i);
   await assert.rejects(invoke('send', { input: { agentId: 'remote', text: 'no custom chat' } }), /no active Remote method/i);
   assert.equal(calls, 1);
   await control.dispose();

@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { Context } from '../../plugins/dsh/node_modules/@deepseek-ai/cordis/lib/index.js';
 import AgentRegistry from '../../plugins/dsh/node_modules/@deepseek-ai/dsh-agent/lib/index.js';
 import SessionStore from '../../plugins/dsh/node_modules/@deepseek-ai/dsh-session/lib/index.js';
-import LlmRuntime, { LlmAdapter, createUserMessage, markAgentLoopRequest } from '../../plugins/dsh/node_modules/@deepseek-ai/dsh-llm/lib/index.js';
+import LlmRuntime, { LlmAdapter, createUserMessage, markAgentLoopRequest, isAgentLoopRequest } from '../../plugins/dsh/node_modules/@deepseek-ai/dsh-llm/lib/index.js';
 import SystemPrompt from '../../plugins/dsh/node_modules/@deepseek-ai/dsh-system-prompt/lib/index.js';
 import ToolRuntime from '../../plugins/dsh/node_modules/@deepseek-ai/dsh-tools/lib/index.js';
 import SessionProjections from '../../plugins/dsh/node_modules/@deepseek-ai/dsh-session-projection/lib/index.js';
@@ -113,12 +113,17 @@ test('native transport advertises one display route while refusing auxiliary and
   assert.deepEqual(await host.adapter.listModels(), [{ provider: REMOTE_AGENT_PROVIDER, id: REMOTE_AGENT_MODEL, name: '远程 Agent 直聊', inputModalities: ['text'] }]);
   assert.equal(host.adapter.providerRetryPolicy().maxRetries, 0);
   await assert.rejects(async () => {
-    for await (const _ of host.adapter.stream({ provider: REMOTE_AGENT_PROVIDER, model: 'one', sessionId: 'unbound', messages: [] })) {}
-  }, /原生聊天/);
+    for await (const _ of host.adapter.stream({ provider: REMOTE_AGENT_PROVIDER, model: 'one', sessionId: 'unbound', purpose: 'session-title', messages: [] })) {}
+  }, /辅助模型/);
   await assert.rejects(async () => {
     for await (const _ of host.adapter.stream(markAgentLoopRequest({ provider: REMOTE_AGENT_PROVIDER,
       model: REMOTE_AGENT_MODEL, sessionId: 'unbound', messages: [] }))) {}
   }, /左侧/);
+  const { sessionId } = await host.sessions.open({ agentId: 'one' });
+  await assert.rejects(async () => {
+    for await (const _ of host.adapter.stream({ provider: REMOTE_AGENT_PROVIDER, model: REMOTE_AGENT_MODEL, sessionId,
+      messages: [{ ...createUserMessage({ content: [{ type: 'text', text: '未记录的输入' }], source: { kind: 'user' } }), role: 'user' }] })) {}
+  }, /原生用户消息/);
   assert.equal(sends.length, 0);
 });
 
@@ -136,11 +141,12 @@ test('native transport queries ambiguous messages instead of dispatching them ag
   const { sessionId } = await host.sessions.open({ agentId: 'one' });
   const options = markAgentLoopRequest({ provider: REMOTE_AGENT_PROVIDER, model: 'one', sessionId,
     messages: [{ ...createUserMessage({ content: [{ type: 'text', text: '原请求' }], source: { kind: 'user' } }), role: 'user' }] });
-  const collect = async options => { const chunks = []; for await (const chunk of host.adapter.stream(options)) chunks.push(chunk); return chunks; };
-  await assert.rejects(collect(options), /待确认/);
+  const agent = host.ctx.agents.get(sessionId);
+  agent.followup(options.messages[0]); await agent.whenIdle();
   assert.equal(sends.length, 1);
-  const next = markAgentLoopRequest({ ...options, messages: [{ ...options.messages[0], id: 'another-message' }] });
-  await assert.rejects(collect(next), /上一条请求/);
+  const collect = async options => { const chunks = []; for await (const chunk of host.adapter.stream(options)) chunks.push(chunk); return chunks; };
+  const next = createUserMessage({ content: [{ type: 'text', text: '新的消息' }], source: { kind: 'user' } });
+  agent.followup(next); await agent.whenIdle();
   assert.equal(sends.length, 1);
   const recovered = await collect(options);
   assert.equal(sends.length, 1);
@@ -239,6 +245,15 @@ test('native SessionController model selection cannot send a bound chat to the c
   const root = await mkdtemp(join(tmpdir(), 'dsh-native-model-picker-'));
   const { a2a, sends } = remote();
   const host = await nativeHost(root, a2a);
+  // Real hosts may copy options in middleware or SDK message projection. This
+  // deliberately drops the process-local WeakSet marker at the adapter boundary.
+  const stream = host.adapter.stream.bind(host.adapter);
+  let copies = 0;
+  host.adapter.stream = options => {
+    const copied = { ...options, messages: options.messages.map(({ source, id, ...message }) => ({ ...message })) };
+    assert.equal(isAgentLoopRequest(copied), false); copies++;
+    return stream(copied);
+  };
   const forks = [];
   t.after(async () => { for (const fork of forks.reverse()) await fork.dispose(); await host.close(); await rm(root, { recursive: true, force: true }); });
   let localCalls = 0;
@@ -283,6 +298,7 @@ test('native SessionController model selection cannot send a bound chat to the c
     content: [{ type: 'text', text: '直接发送给远程目标' }] }, new AbortController().signal);
   await agent.whenIdle();
   assert.equal(localCalls, 0, 'browser model selection fell back to the controller LLM');
+  assert.equal(copies, 1, 'request-copy regression was not exercised');
   assert.equal(sends.length, 1);
   assert.equal(sends[0].agentId, 'one');
   assert.deepEqual(sends[0].content, [{ type: 'text', text: '直接发送给远程目标' }]);
@@ -297,4 +313,34 @@ test('native SessionController model selection cannot send a bound chat to the c
   await ctx.agents.get(local.sessionId).whenIdle();
   assert.equal(localCalls, 1, 'ordinary unbound DSH chats lost their selected model');
   assert.equal(sends.length, 1, 'ordinary local chat was redirected to a remote Agent');
+});
+
+test('New Chat creates a fresh native Session and remote context, while history reopens the exact earlier chat', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-new-remote-chat-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const { a2a, sends } = remote();
+  const host = await nativeHost(root, a2a); t.after(() => host.close());
+  const first = await host.sessions.open({ agentId: 'one' });
+  const firstAgent = host.ctx.agents.get(first.sessionId);
+  await prompt(firstAgent, '第一段聊天');
+  const seq = firstAgent.session.seq;
+  const second = await host.sessions.open({ agentId: 'one', sessionId: first.sessionId, newSession: true });
+  assert.notEqual(second.sessionId, first.sessionId);
+  const secondAgent = host.ctx.agents.get(second.sessionId);
+  assert.equal(secondAgent.session.header.cwd, firstAgent.session.header.cwd);
+  assert.equal(transcript(secondAgent).filter(event => event.type === 'user/message').length, 0);
+  await prompt(secondAgent, '新的一段聊天');
+  assert.equal(sends[1].conversationId, undefined);
+  assert.notEqual(sends[1].parentId, sends[0].parentId);
+  assert.equal(firstAgent.session.seq, seq);
+  const [third,fourth] = await Promise.all([
+    host.sessions.open({ agentId: 'one', sessionId: second.sessionId, newSession: true }),
+    host.sessions.open({ agentId: 'one', sessionId: second.sessionId, newSession: true }),
+  ]);
+  assert.notEqual(third.sessionId, fourth.sessionId, 'two explicit New Chat requests shared a Session');
+  const reopened = await host.sessions.open({ agentId: 'one', sessionId: first.sessionId });
+  assert.equal(reopened.sessionId, first.sessionId);
+  await prompt(host.ctx.agents.get(reopened.sessionId), '继续第一段');
+  assert.equal(sends.at(-1).conversationId, 'conversation-0');
+  assert.equal((await host.sessions.targets())[0].sessionIds.length, 4);
 });

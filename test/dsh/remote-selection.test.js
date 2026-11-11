@@ -29,7 +29,10 @@ function host() {
     const wait = delay?.(input);
     if (wait) await wait;
     let sessionId = input.sessionId;
-    if (!sessionId || (bindings.has(sessionId) && bindings.get(sessionId) !== input.agentId)) {
+    if (input.newSession) {
+      sessionId = `new-${++opened}`;
+      rows[sessionId] = { id: sessionId, blank: true, cwd: rows[input.sessionId]?.cwd || '/workspace/a' };
+    } else if (!sessionId || (bindings.has(sessionId) && bindings.get(sessionId) !== input.agentId)) {
       sessionId = [...bindings].find(([, agent]) => agent === input.agentId)?.[0] || `remote-${input.agentId}`;
       rows[sessionId] ||= { id: sessionId, blank: true, cwd: '/workspace/a' };
     }
@@ -118,4 +121,18 @@ test('a native model picker override rebinds the same remote Session and blocks 
   assert.deepEqual(h.calls[1], { agentId: 'one', sessionId: 'a' });
   assert.equal(selection.snapshot.sessionId, 'a');
   assert.equal(h.block('a').getSnapshot(), undefined);
+});
+
+test('New Chat retains the selected target and opens a different native Session, and history returns to the old one', async t => {
+  const h = host(); h.show('a');
+  const selection = new RemoteSelection(h.ctx, h.remote, h.memory); t.after(selection.start());
+  selection.setTargets(h.targets()); await selection.select('one');
+  await selection.newChat();
+  assert.equal(selection.snapshot.agentId, 'one');
+  assert.equal(selection.snapshot.sessionId, 'new-1');
+  assert.deepEqual(h.calls.at(-1), { agentId: 'one', sessionId: 'a', newSession: true });
+  assert.equal(selection.bindings.get('a'), 'one');
+  await selection.select('one', { sessionId: 'a' });
+  assert.equal(selection.snapshot.sessionId, 'a');
+  assert.deepEqual(h.calls.at(-1), { agentId: 'one', sessionId: 'a' });
 });

@@ -1,3 +1,5 @@
+import { REMOTE_AGENT_PROVIDER, REMOTE_AGENT_MODEL } from '../remote-route.js';
+
 const storageKey = 'dsh.a2a.remote-agent';
 
 /** The default target survives native workspace/blank-Session navigation.
@@ -75,13 +77,17 @@ export class RemoteSelection {
     if (this.snapshot.sessionId === id && bound === this.snapshot.agentId && !overridden) { this.updateBlock(); return; }
     void this.select(this.snapshot.agentId);
   }
-  async select(agentId) {
-    const version = ++this.generation, current = this.currentSession()?.id;
+  newChat(agentId = this.snapshot.agentId, sessionId) {
+    if (!agentId) return;
+    return this.select(agentId, { newSession: true, sessionId });
+  }
+  async select(agentId, options = {}) {
+    const version = ++this.generation, current = options.sessionId || this.currentSession()?.id;
     const signal = this.ctx.layout.beginNavigation();
     this.remember(agentId);
     this.patch({ agentId, sessionId: null, pending: true, error: '' });
     try {
-      const result = await this.remote.open({ agentId, ...(current ? { sessionId: current } : {}) });
+      const result = await this.remote.open({ agentId, ...(current ? { sessionId: current } : {}), ...(options.newSession ? { newSession: true } : {}) });
       if (!result.ok) throw new Error(result.error?.message || '远程会话连接失败，请重试。');
       if (version !== this.generation || signal.aborted) return;
       const opened = result.value;
@@ -130,5 +136,3 @@ export class RemoteSelection {
     this.blockStore = undefined; this.ownBlock = undefined;
   }
 }
-import { REMOTE_AGENT_PROVIDER, REMOTE_AGENT_MODEL } from '../remote-route.js';
-

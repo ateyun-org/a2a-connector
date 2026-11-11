@@ -24,15 +24,20 @@ function DirectChatStatus({ sessionId, selection }) {
   if (!agentId) return null;
   const target = selection.targets.get(agentId);
   return <div className="a2a-direct-status" role="status">
-    <RobotIcon /><span><strong>{active && state.pending ? '正在连接' : '直聊'} · {target?.name || agentId}</strong>
-      <small>消息直接发送给远程 Agent，无需选择主控模型</small></span>
+    <div className="a2a-direct-info"><RobotIcon /><span><strong>{active && state.pending ? '正在连接' : '直聊'} · {target?.name || agentId}</strong>
+      <small title="消息直接发送给远程 Agent，无需选择主控模型">消息直接发送给远程 Agent，无需选择主控模型</small></span></div>
+    <button type="button" className="a2a-remote-new" disabled={state.pending}
+      onClick={() => void selection.newChat(agentId, sessionId)}>新建聊天</button>
   </div>;
 }
 
-function RemoteAgents({ remote, selection, expandSidebar, wide = true }) {
+function RemoteAgents({ remote, selection, expandSidebar, wide = true, useSessions }) {
   const [expanded, setExpanded] = useState(true), [targets, setTargets] = useState(null);
   const [error, setError] = useState('');
   const selected = useSyncExternalStore(selection.subscribe, selection.getSnapshot);
+  const sessions = useSessions(state => state.byId);
+  const history = Object.values(sessions).filter(row => selection.bindings.get(row.id) === selected.agentId)
+    .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
   useEffect(() => {
     let gone = false, loading = false;
     const refresh = async () => {
@@ -61,7 +66,7 @@ function RemoteAgents({ remote, selection, expandSidebar, wide = true }) {
         onClick={() => void selection.local()}>返回本地 DSH</button>}
       {targets === null && !error && <p role="status">正在读取授权列表…</p>}
       {targets?.length === 0 && <p>暂无可控制的 Agent，请由管理员配置调用授权。</p>}
-      {targets?.map(target => <button type="button" key={target.agentId} className="a2a-remote-row"
+      {targets?.map(target => <React.Fragment key={target.agentId}><button type="button" className="a2a-remote-row"
         aria-current={selected.agentId === target.agentId ? 'page' : undefined} disabled={selected.pending && selected.agentId === target.agentId}
         onClick={() => void selection.select(target.agentId)}>
         <span className="a2a-remote-name">{target.name || target.agentId}</span>
@@ -69,7 +74,24 @@ function RemoteAgents({ remote, selection, expandSidebar, wide = true }) {
           {selected.pending && selected.agentId === target.agentId ? '正在打开…' : !target.online ? '离线' : target.connectionStatus === 'hosted_ready'
             ? (target.busy ? '接收端就绪 · 忙碌' : '接收端就绪 · 空闲') : target.busy ? '在线 · 忙碌' : '在线 · 空闲'}
           {target.queuedTasks > 0 && ` · 排队 ${target.queuedTasks}`}</span>
-      </button>)}
+      </button>
+        {selected.agentId === target.agentId && <div className="a2a-remote-chats">
+          <button type="button" className="a2a-remote-new" disabled={selected.pending}
+            onClick={() => void selection.newChat(target.agentId)}>新建聊天</button>
+          <details className="a2a-remote-history">
+            <summary>聊天记录（{history.length}）</summary>
+            {history.map(row => <button type="button" key={row.id} className="a2a-remote-history-row"
+              data-session-id={row.id}
+              aria-current={selected.sessionId === row.id ? 'page' : undefined} disabled={selected.pending}
+              onClick={() => void selection.select(target.agentId, { sessionId: row.id })}>
+              <span>{row.title || row.displayTitle || '聊天记录'}</span>
+              <small>{row.updatedAt ? new Date(row.updatedAt).toLocaleString(undefined, {
+                month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+              }) : '新聊天'}{row.running ? ' · 运行中' : ''}</small>
+            </button>)}
+          </details>
+        </div>}
+      </React.Fragment>)}
     </div>}
   </section>;
 }
@@ -101,8 +123,14 @@ const css = `
 .a2a-remote-list p{font-size:12px;line-height:1.6;padding:8px;margin:0;overflow-wrap:anywhere;opacity:.7}.a2a-remote-list [role=alert]{color:var(--dsw-alias-status-error,#b74b42)}
 .a2a-remote-local{font-size:11px!important;text-align:left;padding:5px 12px 5px 34px;opacity:.65}.a2a-remote-local:hover{opacity:1;text-decoration:underline}
 .a2a-direct-status{display:flex;align-items:center;gap:8px;min-width:0;padding:6px 4px;color:var(--dsw-alias-label-primary,inherit);font:inherit}
-.a2a-direct-status>span{display:grid;gap:2px;min-width:0}.a2a-direct-status strong{font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.a2a-direct-status small{font-size:11px;line-height:1.5;opacity:.65;overflow-wrap:anywhere}
+.a2a-direct-status{flex-wrap:wrap}.a2a-direct-info{display:flex;align-items:center;gap:8px;min-width:0;flex:1 1 180px}.a2a-direct-info>span{display:grid;gap:2px;min-width:0;flex:1}.a2a-direct-status strong{font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.a2a-direct-status small{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;font-size:11px;line-height:1.5;opacity:.65;overflow-wrap:anywhere}
+.a2a-remote-new{font:inherit;font-size:12px!important;color:inherit;background:transparent;border:1px solid var(--dsw-alias-outline-default,#8884);border-radius:6px;padding:5px 9px;cursor:pointer;white-space:nowrap;flex:none}
+.a2a-direct-status>.a2a-remote-new{max-width:100%;white-space:normal;overflow-wrap:anywhere}
+.a2a-remote-new:disabled{opacity:.5;cursor:wait}.a2a-remote-new:hover{background:var(--dsw-alias-interactive-bg-hover,#8881)}.a2a-remote-new:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#52796f);outline-offset:1px}
+.a2a-remote-chats{margin:0 8px 6px 34px;min-width:0}.a2a-remote-history{font-size:11px;margin-top:8px}.a2a-remote-history summary{cursor:pointer;opacity:.65;padding:4px 0}
+.a2a-remote-history-row{display:grid;gap:3px;width:100%;text-align:left;padding:7px 8px;margin-top:2px}.a2a-remote-history-row span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}.a2a-remote-history-row small{opacity:.6;font-size:10px}
+.a2a-remote-history-row:hover{background:var(--dsw-alias-interactive-bg-hover,#8881)}.a2a-remote-history-row[aria-current=page]{background:var(--dsw-alias-interactive-bg-selected,#52796f22)}
 .a2a-remote-row{display:grid;gap:4px;width:100%;padding:8px 12px 8px 34px;text-align:left;min-width:0}
 .a2a-remote-row:hover,.a2a-remote-heading:hover,.a2a-remote-rail:hover{background:var(--dsw-alias-interactive-bg-hover,#8881)}
 .a2a-remote-row[aria-current=page]{background:var(--dsw-alias-interactive-bg-selected,#52796f22)}

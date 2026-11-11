@@ -49,8 +49,20 @@ export class RemoteAgentSessions {
     await this.index.put(binding);
     this.known.set(binding.sessionId, binding);
   }
+  userInput(sessionId, input) {
+    const session = this.ctx.sessions.get(sessionId);
+    if (!session) return undefined;
+    for (let seq = session.seq - 1; seq >= 0; seq--) {
+      const event = session.eventAt(seq);
+      if (event.type !== 'user/message' || event.data.source?.kind !== 'user') continue;
+      if (input.id) { if (event.data.id === input.id) return event.data; }
+      // Some provider projections retain role/content only. Such a request must
+      // exactly match the latest real user input; historical text is not enough.
+      else return JSON.stringify(event.data.content) === JSON.stringify(input.content) ? event.data : undefined;
+    }
+  }
   open(input) {
-    const key = JSON.stringify([input.agentId, input.sessionId ?? null]);
+    const key = input.newSession ? randomUUID() : JSON.stringify([input.agentId, input.sessionId ?? null]);
     if (this.opening.has(key)) return this.opening.get(key);
     const operation = this.tail.then(() => this.openNative(input)).finally(() => this.opening.delete(key));
     this.tail = operation.catch(() => {});
@@ -70,17 +82,17 @@ export class RemoteAgentSessions {
     }
     return true;
   }
-  async openNative({ agentId, sessionId }) {
+  async openNative({ agentId, sessionId, newSession = false }) {
     await this.ready;
     const target = await this.authorize(agentId);
     const bindings = await this.index.list();
     const requested = sessionId ? await this.nativeAgent(sessionId) : undefined;
     const currentBinding = bindings.find(item => item.sessionId === sessionId);
     const cwd = requested?.session.header.cwd;
-    let binding = currentBinding?.agentId === agentId ? currentBinding : undefined;
+    let binding = !newSession && currentBinding?.agentId === agentId ? currentBinding : undefined;
     // A workspace's unsent native Session can adopt the selected target. Never
     // reassign a Session that already belongs to another target or has history.
-    if (!binding && requested && !currentBinding && this.blank(requested)) {
+    if (!newSession && !binding && requested && !currentBinding && this.blank(requested)) {
       return requested.runMaintenance(async () => {
         const adopted = { id: `native:${sessionId}`, agentId, sessionId, cwd, updatedAt: new Date().toISOString() };
         await this.saveBinding(adopted);
@@ -90,7 +102,7 @@ export class RemoteAgentSessions {
         return { agentId, sessionId };
       });
     }
-    binding ??= bindings.filter(item => item.agentId === agentId && (!requested || item.cwd === cwd))
+    if (!newSession) binding ??= bindings.filter(item => item.agentId === agentId && (!requested || item.cwd === cwd))
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
     if (!binding) {
       const id = `session-${randomUUID()}`;

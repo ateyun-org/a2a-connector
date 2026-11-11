@@ -46,6 +46,7 @@ function input(value) {
   if (value.sessionId !== void 0 && (typeof value.sessionId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(value.sessionId))) {
     throw new Error("\u8BF7\u9009\u62E9\u6709\u6548\u7684 DSH \u4F1A\u8BDD\u3002");
   }
+  if (value.newSession !== void 0 && typeof value.newSession !== "boolean") throw new Error("\u65B0\u5EFA\u804A\u5929\u53C2\u6570\u65E0\u6548\u3002");
   return value;
 }
 var json = codec((value) => {
@@ -53,7 +54,7 @@ var json = codec((value) => {
   if (serialized === void 0) throw new Error("Invalid control response");
   return JSON.parse(serialized);
 }, "a2aControl.Json", {});
-var selection = codec(input, "a2aControl.Selection", { type: "object", properties: { agentId: { type: "string" }, sessionId: { type: "string" } }, required: ["agentId"] });
+var selection = codec(input, "a2aControl.Selection", { type: "object", properties: { agentId: { type: "string" }, sessionId: { type: "string" }, newSession: { type: "boolean" } }, required: ["agentId"] });
 var controlContract = {
   package: "dsh-a2a-connector",
   descriptors: Object.entries({ targets: null, open: selection }).map(([method, boundary]) => ({
@@ -179,13 +180,17 @@ var RemoteSelection = class {
     }
     void this.select(this.snapshot.agentId);
   }
-  async select(agentId) {
-    const version = ++this.generation, current = this.currentSession()?.id;
+  newChat(agentId = this.snapshot.agentId, sessionId) {
+    if (!agentId) return;
+    return this.select(agentId, { newSession: true, sessionId });
+  }
+  async select(agentId, options = {}) {
+    const version = ++this.generation, current = options.sessionId || this.currentSession()?.id;
     const signal = this.ctx.layout.beginNavigation();
     this.remember(agentId);
     this.patch({ agentId, sessionId: null, pending: true, error: "" });
     try {
-      const result = await this.remote.open({ agentId, ...current ? { sessionId: current } : {} });
+      const result = await this.remote.open({ agentId, ...current ? { sessionId: current } : {}, ...options.newSession ? { newSession: true } : {} });
       if (!result.ok) throw new Error(result.error?.message || "\u8FDC\u7A0B\u4F1A\u8BDD\u8FDE\u63A5\u5931\u8D25\uFF0C\u8BF7\u91CD\u8BD5\u3002");
       if (version !== this.generation || signal.aborted) return;
       const opened = result.value;
@@ -273,12 +278,23 @@ function DirectChatStatus({ sessionId, selection: selection2 }) {
   const agentId = active || selection2.bindings.get(sessionId);
   if (!agentId) return null;
   const target = selection2.targets.get(agentId);
-  return /* @__PURE__ */ import_react.default.createElement("div", { className: "a2a-direct-status", role: "status" }, /* @__PURE__ */ import_react.default.createElement(RobotIcon, null), /* @__PURE__ */ import_react.default.createElement("span", null, /* @__PURE__ */ import_react.default.createElement("strong", null, active && state.pending ? "\u6B63\u5728\u8FDE\u63A5" : "\u76F4\u804A", " \xB7 ", target?.name || agentId), /* @__PURE__ */ import_react.default.createElement("small", null, "\u6D88\u606F\u76F4\u63A5\u53D1\u9001\u7ED9\u8FDC\u7A0B Agent\uFF0C\u65E0\u9700\u9009\u62E9\u4E3B\u63A7\u6A21\u578B")));
+  return /* @__PURE__ */ import_react.default.createElement("div", { className: "a2a-direct-status", role: "status" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "a2a-direct-info" }, /* @__PURE__ */ import_react.default.createElement(RobotIcon, null), /* @__PURE__ */ import_react.default.createElement("span", null, /* @__PURE__ */ import_react.default.createElement("strong", null, active && state.pending ? "\u6B63\u5728\u8FDE\u63A5" : "\u76F4\u804A", " \xB7 ", target?.name || agentId), /* @__PURE__ */ import_react.default.createElement("small", { title: "\u6D88\u606F\u76F4\u63A5\u53D1\u9001\u7ED9\u8FDC\u7A0B Agent\uFF0C\u65E0\u9700\u9009\u62E9\u4E3B\u63A7\u6A21\u578B" }, "\u6D88\u606F\u76F4\u63A5\u53D1\u9001\u7ED9\u8FDC\u7A0B Agent\uFF0C\u65E0\u9700\u9009\u62E9\u4E3B\u63A7\u6A21\u578B"))), /* @__PURE__ */ import_react.default.createElement(
+    "button",
+    {
+      type: "button",
+      className: "a2a-remote-new",
+      disabled: state.pending,
+      onClick: () => void selection2.newChat(agentId, sessionId)
+    },
+    "\u65B0\u5EFA\u804A\u5929"
+  ));
 }
-function RemoteAgents({ remote, selection: selection2, expandSidebar, wide = true }) {
+function RemoteAgents({ remote, selection: selection2, expandSidebar, wide = true, useSessions }) {
   const [expanded, setExpanded] = (0, import_react.useState)(true), [targets, setTargets] = (0, import_react.useState)(null);
   const [error, setError] = (0, import_react.useState)("");
   const selected = (0, import_react.useSyncExternalStore)(selection2.subscribe, selection2.getSnapshot);
+  const sessions = useSessions((state) => state.byId);
+  const history = Object.values(sessions).filter((row) => selection2.bindings.get(row.id) === selected.agentId).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
   (0, import_react.useEffect)(() => {
     let gone = false, loading = false;
     const refresh = async () => {
@@ -356,11 +372,10 @@ function RemoteAgents({ remote, selection: selection2, expandSidebar, wide = tru
       onClick: () => void selection2.local()
     },
     "\u8FD4\u56DE\u672C\u5730 DSH"
-  ), targets === null && !error && /* @__PURE__ */ import_react.default.createElement("p", { role: "status" }, "\u6B63\u5728\u8BFB\u53D6\u6388\u6743\u5217\u8868\u2026"), targets?.length === 0 && /* @__PURE__ */ import_react.default.createElement("p", null, "\u6682\u65E0\u53EF\u63A7\u5236\u7684 Agent\uFF0C\u8BF7\u7531\u7BA1\u7406\u5458\u914D\u7F6E\u8C03\u7528\u6388\u6743\u3002"), targets?.map((target) => /* @__PURE__ */ import_react.default.createElement(
+  ), targets === null && !error && /* @__PURE__ */ import_react.default.createElement("p", { role: "status" }, "\u6B63\u5728\u8BFB\u53D6\u6388\u6743\u5217\u8868\u2026"), targets?.length === 0 && /* @__PURE__ */ import_react.default.createElement("p", null, "\u6682\u65E0\u53EF\u63A7\u5236\u7684 Agent\uFF0C\u8BF7\u7531\u7BA1\u7406\u5458\u914D\u7F6E\u8C03\u7528\u6388\u6743\u3002"), targets?.map((target) => /* @__PURE__ */ import_react.default.createElement(import_react.default.Fragment, { key: target.agentId }, /* @__PURE__ */ import_react.default.createElement(
     "button",
     {
       type: "button",
-      key: target.agentId,
       className: "a2a-remote-row",
       "aria-current": selected.agentId === target.agentId ? "page" : void 0,
       disabled: selected.pending && selected.agentId === target.agentId,
@@ -368,7 +383,36 @@ function RemoteAgents({ remote, selection: selection2, expandSidebar, wide = tru
     },
     /* @__PURE__ */ import_react.default.createElement("span", { className: "a2a-remote-name" }, target.name || target.agentId),
     /* @__PURE__ */ import_react.default.createElement("span", { className: "a2a-remote-status" }, /* @__PURE__ */ import_react.default.createElement("i", { className: !target.online ? "offline" : target.busy ? "busy" : "online" }), selected.pending && selected.agentId === target.agentId ? "\u6B63\u5728\u6253\u5F00\u2026" : !target.online ? "\u79BB\u7EBF" : target.connectionStatus === "hosted_ready" ? target.busy ? "\u63A5\u6536\u7AEF\u5C31\u7EEA \xB7 \u5FD9\u788C" : "\u63A5\u6536\u7AEF\u5C31\u7EEA \xB7 \u7A7A\u95F2" : target.busy ? "\u5728\u7EBF \xB7 \u5FD9\u788C" : "\u5728\u7EBF \xB7 \u7A7A\u95F2", target.queuedTasks > 0 && ` \xB7 \u6392\u961F ${target.queuedTasks}`)
-  ))));
+  ), selected.agentId === target.agentId && /* @__PURE__ */ import_react.default.createElement("div", { className: "a2a-remote-chats" }, /* @__PURE__ */ import_react.default.createElement(
+    "button",
+    {
+      type: "button",
+      className: "a2a-remote-new",
+      disabled: selected.pending,
+      onClick: () => void selection2.newChat(target.agentId)
+    },
+    "\u65B0\u5EFA\u804A\u5929"
+  ), /* @__PURE__ */ import_react.default.createElement("details", { className: "a2a-remote-history" }, /* @__PURE__ */ import_react.default.createElement("summary", null, "\u804A\u5929\u8BB0\u5F55\uFF08", history.length, "\uFF09"), history.map((row) => /* @__PURE__ */ import_react.default.createElement(
+    "button",
+    {
+      type: "button",
+      key: row.id,
+      className: "a2a-remote-history-row",
+      "data-session-id": row.id,
+      "aria-current": selected.sessionId === row.id ? "page" : void 0,
+      disabled: selected.pending,
+      onClick: () => void selection2.select(target.agentId, { sessionId: row.id })
+    },
+    /* @__PURE__ */ import_react.default.createElement("span", null, row.title || row.displayTitle || "\u804A\u5929\u8BB0\u5F55"),
+    /* @__PURE__ */ import_react.default.createElement("small", null, row.updatedAt ? new Date(row.updatedAt).toLocaleString(void 0, {
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false
+    }) : "\u65B0\u804A\u5929", row.running ? " \xB7 \u8FD0\u884C\u4E2D" : "")
+  ))))))));
 }
 var inject = ["slots", "remote", "sessions", "uiWorkspace", "layout", "conversation"];
 function apply(ctx) {
@@ -416,8 +460,14 @@ var css = `
 .a2a-remote-list p{font-size:12px;line-height:1.6;padding:8px;margin:0;overflow-wrap:anywhere;opacity:.7}.a2a-remote-list [role=alert]{color:var(--dsw-alias-status-error,#b74b42)}
 .a2a-remote-local{font-size:11px!important;text-align:left;padding:5px 12px 5px 34px;opacity:.65}.a2a-remote-local:hover{opacity:1;text-decoration:underline}
 .a2a-direct-status{display:flex;align-items:center;gap:8px;min-width:0;padding:6px 4px;color:var(--dsw-alias-label-primary,inherit);font:inherit}
-.a2a-direct-status>span{display:grid;gap:2px;min-width:0}.a2a-direct-status strong{font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.a2a-direct-status small{font-size:11px;line-height:1.5;opacity:.65;overflow-wrap:anywhere}
+.a2a-direct-status{flex-wrap:wrap}.a2a-direct-info{display:flex;align-items:center;gap:8px;min-width:0;flex:1 1 180px}.a2a-direct-info>span{display:grid;gap:2px;min-width:0;flex:1}.a2a-direct-status strong{font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.a2a-direct-status small{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;font-size:11px;line-height:1.5;opacity:.65;overflow-wrap:anywhere}
+.a2a-remote-new{font:inherit;font-size:12px!important;color:inherit;background:transparent;border:1px solid var(--dsw-alias-outline-default,#8884);border-radius:6px;padding:5px 9px;cursor:pointer;white-space:nowrap;flex:none}
+.a2a-direct-status>.a2a-remote-new{max-width:100%;white-space:normal;overflow-wrap:anywhere}
+.a2a-remote-new:disabled{opacity:.5;cursor:wait}.a2a-remote-new:hover{background:var(--dsw-alias-interactive-bg-hover,#8881)}.a2a-remote-new:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#52796f);outline-offset:1px}
+.a2a-remote-chats{margin:0 8px 6px 34px;min-width:0}.a2a-remote-history{font-size:11px;margin-top:8px}.a2a-remote-history summary{cursor:pointer;opacity:.65;padding:4px 0}
+.a2a-remote-history-row{display:grid;gap:3px;width:100%;text-align:left;padding:7px 8px;margin-top:2px}.a2a-remote-history-row span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}.a2a-remote-history-row small{opacity:.6;font-size:10px}
+.a2a-remote-history-row:hover{background:var(--dsw-alias-interactive-bg-hover,#8881)}.a2a-remote-history-row[aria-current=page]{background:var(--dsw-alias-interactive-bg-selected,#52796f22)}
 .a2a-remote-row{display:grid;gap:4px;width:100%;padding:8px 12px 8px 34px;text-align:left;min-width:0}
 .a2a-remote-row:hover,.a2a-remote-heading:hover,.a2a-remote-rail:hover{background:var(--dsw-alias-interactive-bg-hover,#8881)}
 .a2a-remote-row[aria-current=page]{background:var(--dsw-alias-interactive-bg-selected,#52796f22)}

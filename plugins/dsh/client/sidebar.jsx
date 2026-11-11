@@ -67,8 +67,6 @@ function RemoteAgents({ remote, selection, expandSidebar, wide = true, useSessio
     </div>
     {expanded && <div id="a2a-remote-list" className="a2a-remote-list">
       {(error || selected.error) && <p role="alert">{error || selected.error}</p>}
-      {selected.agentId && <button type="button" className="a2a-remote-local" disabled={selected.pending}
-        onClick={() => void selection.local()}>返回本地 DSH</button>}
       {targets === null && !error && <p role="status">正在读取授权列表…</p>}
       {targets?.length === 0 && <p>暂无可控制的 Agent，请由管理员配置调用授权。</p>}
       {targets?.map(target => <React.Fragment key={target.agentId}>
@@ -85,10 +83,12 @@ function RemoteAgents({ remote, selection, expandSidebar, wide = true, useSessio
         </button>
         <button type="button" className="a2a-remote-new" aria-label="新建聊天" title={`与 ${target.name || target.agentId} 新建聊天`}
           disabled={selected.pending && selected.agentId === target.agentId} onClick={() => void selection.newChat(target.agentId)}>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
-            strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
-            <path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
-            <path d="M16 3a2.12 2.12 0 0 1 3 3l-9 9-4 1 1-4Z" />
+          {/* DSH IconNewChatOutlineRegular from @deepseek-ai/dsh-client-ui-primitives. */}
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1"
+            aria-hidden="true" focusable="false">
+            <path d="M2.37091 11.2501C1.58745 9.89288 1.32067 8.29835 1.61969 6.76006C1.91872 5.22177 2.76342 3.8433 3.99826 2.87846C5.2331 1.91362 6.77494 1.42737 8.33988 1.50925C9.90482 1.59113 11.3875 2.23562 12.5149 3.32406C13.6425 4.41269 14.3387 5.87206 14.4754 7.4334C14.612 8.99474 14.18 10.5529 13.2587 11.8209C12.3375 13.0888 10.9891 13.9813 9.46194 14.3337C8.18691 14.628 6.85895 14.5294 5.64989 14.0605C5.1712 13.8748 4.76962 13.4932 4.26534 13.3967C3.67413 13.2835 2.95257 13.5598 2.03794 14.3337" />
+            <path d="M8 5V11" />
+            <path d="M5 8H11" />
           </svg>
         </button>
         </div>
@@ -123,7 +123,6 @@ const css = `
 .a2a-remote-chevron{opacity:.5;transition:transform 140ms ease}.a2a-remote-heading[aria-expanded=true] .a2a-remote-chevron{transform:rotate(90deg)}
 .a2a-remote-heading small{margin-left:auto;opacity:.6}.a2a-remote-list{max-height:min(35vh,300px);overflow:auto;display:grid;gap:2px}
 .a2a-remote-list p{font-size:12px;line-height:1.6;padding:8px;margin:0;overflow-wrap:anywhere;opacity:.7}.a2a-remote-list [role=alert]{color:var(--dsw-alias-status-error,#b74b42)}
-.a2a-remote-local{font-size:11px!important;text-align:left;padding:5px 12px 5px 34px;opacity:.65}.a2a-remote-local:hover{opacity:1;text-decoration:underline}
 .a2a-direct-status{display:flex;align-items:center;gap:8px;min-width:0;padding:6px 4px;color:var(--dsw-alias-label-primary,inherit);font:inherit}
 .a2a-direct-info{display:flex;align-items:center;gap:8px;min-width:0;flex:1}.a2a-direct-info>span{display:grid;gap:2px;min-width:0;flex:1}.a2a-direct-status strong{font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .a2a-direct-status small{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;font-size:11px;line-height:1.5;opacity:.65;overflow-wrap:anywhere}

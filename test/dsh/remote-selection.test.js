@@ -67,11 +67,13 @@ test('remote default survives workspace changes, New Session and reload, while n
   selection = new RemoteSelection(h.ctx, h.remote, h.memory); stop = selection.start();
   selection.setTargets(h.targets()); await settled();
   assert.equal(selection.snapshot.agentId, 'one'); assert.equal(selection.snapshot.sessionId, 'b-new');
-  await selection.local();
-  assert.equal(selection.snapshot.agentId, null); assert.match(h.navigations.at(-1), /^local-/);
+  h.show('local-history', { blank: false });
+  assert.equal(selection.snapshot.agentId, null);
+  assert.equal(selection.snapshot.sessionId, null);
+  assert.equal(h.memory.getItem('dsh.a2a.remote-agent'), undefined);
   const count = h.calls.length;
   h.show('local-workspace', { cwd: '/workspace/c' }); await settled();
-  assert.equal(h.calls.length, count, 'explicit local mode retained the remote default');
+  assert.equal(h.calls.length, count, 'opening local history retained the remote default');
 });
 
 test('a slower workspace binding cannot steal newer navigation or Agent selection', async t => {

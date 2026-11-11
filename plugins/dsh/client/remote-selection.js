@@ -39,7 +39,7 @@ export class RemoteSelection {
     }
     if (this.snapshot.agentId && !targets.some(target => target.agentId === this.snapshot.agentId)) {
       ++this.generation;
-      this.patch({ sessionId: null, pending: false, error: '所选远程 Agent 已不可访问，请重新选择目标或返回本地 DSH。' });
+      this.patch({ sessionId: null, pending: false, error: '所选远程 Agent 已不可访问，请重新选择目标，或从 DSH 历史记录打开本地聊天。' });
     } else { this.reconcile(true); this.patch({}); }
   }
   reconcile(discovered = false) {
@@ -101,19 +101,6 @@ export class RemoteSelection {
     } finally {
       if (version === this.generation && this.snapshot.pending) this.patch({ pending: false });
     }
-  }
-  async local() {
-    const version = ++this.generation, previous = this.snapshot;
-    const signal = this.ctx.layout.beginNavigation(), cwd = this.currentSession()?.cwd;
-    this.patch({ pending: true, error: '' });
-    try {
-      const id = await this.ctx.sessions.create(cwd ? { cwd } : {});
-      if (version !== this.generation || signal.aborted) return;
-      this.remember(null);
-      this.patch({ agentId: null, sessionId: null, pending: false });
-      this.ctx.uiWorkspace.openSession(id);
-    } catch (error) { if (version === this.generation) this.patch({ ...previous, pending: false, error: error.message }); }
-    finally { if (version === this.generation && this.snapshot.pending) this.patch({ pending: false }); }
   }
   updateBlock() {
     if (!this.blockStore || !this.current) return;

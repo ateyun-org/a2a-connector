@@ -162,3 +162,68 @@ test('native Stop aborts the remote wait without starting another request', asyn
   assert.equal(sends.length, 1);
   assert.equal(transcript(agent).filter(event => event.type === 'assistant/message').length, 0);
 });
+
+test('workspace blanks inherit the remote target in their own native Sessions and keep isolated history after restart', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-workspace-target-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const { a2a, sends } = remote();
+  let host = await nativeHost(root, a2a); t.after(() => host.close());
+  const createBlank = async (id, cwd) => (await host.ctx.agents.create({ sessionId: id,
+    meta: { cwd }, agentOptions: { provider: 'local', model: 'default' } })).agent;
+  const first = await createBlank('workspace-a', root);
+  const a = await host.sessions.open({ agentId: 'one', sessionId: first.id });
+  assert.equal(a.sessionId, first.id);
+  assert.equal(first.session.header.cwd, root);
+  assert.equal(first.model.current().provider, REMOTE_AGENT_PROVIDER);
+  assert.deepEqual(await prompt(first, '项目 A'), [{ type: 'text', text: 'one: 项目 A' }]);
+  const second = await createBlank('workspace-b', tmpdir());
+  const b = await host.sessions.open({ agentId: 'one', sessionId: second.id });
+  assert.equal(b.sessionId, second.id);
+  assert.equal(second.session.header.cwd, tmpdir());
+  assert.deepEqual(await prompt(second, '项目 B'), [{ type: 'text', text: 'one: 项目 B' }]);
+  const third = await createBlank('workspace-b-new', tmpdir());
+  const c = await host.sessions.open({ agentId: 'one', sessionId: third.id });
+  assert.equal(c.sessionId, third.id, 'New Session reused a previous remote transcript');
+  assert.deepEqual(await prompt(third, 'B 的新聊天'), [{ type: 'text', text: 'one: B 的新聊天' }]);
+  assert.equal(sends[1].conversationId, undefined);
+  assert.equal(sends[2].conversationId, undefined);
+  assert.equal(new Set(sends.map(send => send.parentId)).size, 3);
+  await host.close(); host = await nativeHost(root, a2a);
+  const restored = await host.sessions.open({ agentId: 'one', sessionId: a.sessionId });
+  assert.equal(restored.sessionId, first.id);
+  assert.equal(transcript(host.ctx.agents.get(first.id)).filter(event => event.type === 'assistant/message').length, 1);
+  assert.deepEqual(await prompt(host.ctx.agents.get(first.id), '继续项目 A'), [{ type: 'text', text: 'one: 继续项目 A' }]);
+  assert.equal(sends.at(-1).conversationId, 'conversation-0');
+  assert.deepEqual(new Set((await host.sessions.targets())[0].sessionIds), new Set([a.sessionId, b.sessionId, c.sessionId]));
+});
+
+test('selecting a remote target preserves existing history and never reassigns another target Session', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-target-history-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const { a2a } = remote();
+  const host = await nativeHost(root, a2a); t.after(() => host.close());
+  const attached = [];
+  host.ctx.provide('workspaceRegistry', { async resolveByPath(cwd) {
+    assert.equal(cwd, root);
+    return { async attachSession(id) { attached.push(id); } };
+  } });
+  const local = (await host.ctx.agents.create({ sessionId: 'local-history', meta: { cwd: root },
+    agentOptions: { provider: 'local', model: 'default' } })).agent;
+  // A real native turn makes this a used Session even though the fixture has no local provider.
+  local.followup(createUserMessage({ content: [{ type: 'text', text: '已有的本地记录' }], source: { kind: 'user' } }));
+  await local.whenIdle();
+  const seq = local.session.seq;
+  const selected = await host.sessions.open({ agentId: 'one', sessionId: local.id });
+  assert.notEqual(selected.sessionId, local.id);
+  assert.equal(local.session.seq, seq);
+  assert.equal(local.model.current().provider, 'local');
+  assert.equal(await host.sessions.binding(local.id), undefined);
+  assert.equal(host.ctx.agents.get(selected.sessionId).session.header.cwd, root);
+  assert.deepEqual(attached, [selected.sessionId]);
+  const other = await host.sessions.open({ agentId: 'two', sessionId: selected.sessionId });
+  assert.notEqual(other.sessionId, selected.sessionId);
+  assert.equal((await host.sessions.binding(selected.sessionId)).agentId, 'one');
+  assert.equal((await host.sessions.binding(other.sessionId)).agentId, 'two');
+  assert.equal((await host.sessions.open({ agentId: 'one', sessionId: other.sessionId })).sessionId, selected.sessionId);
+  await assert.rejects(host.sessions.open({ agentId: 'one', sessionId: 'missing-session' }));
+});

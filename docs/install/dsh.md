@@ -28,7 +28,9 @@ a2a_artifact({
 
 在 Relay 控制台通过「Agent 管理 → 接入 Agent → DSH 主控」创建或配对身份。DSH 仍是 Connector，在 Agent 列表显示「DSH 主控」标记；已有身份可通过「编辑 → 接入用途」设置标记。DSH 身份须启用调用能力；管理员在每个目标 Agent 的「谁能访问」中授予机器调用权限，个人主控还需成员权限交集。默认无需手工枚举 Relay Agent，插件读取 `/pairing/targets` 的全部分页，撤权后更新列表与动态 Subagent Provider。
 
-Web profile 的原生左侧栏显示可折叠的「远程 Agents」列表，按当前主控授权展示目标及在线/离线、忙闲与排队状态。点击 Agent 后打开绑定的 **DSH 原生聊天窗口**，输入、回复、历史和停止操作均复用 DSH，不另建聊天页面。每个远程 Agent 对应一个独立原生 Session，后续追问复用该 Agent 的远端 context；刷新或重启后可恢复原生历史，离线时仍能打开历史。
+Web profile 的原生左侧栏显示可折叠的「远程 Agents」列表，按当前主控授权展示目标及在线/离线、忙闲与排队状态。点击 Agent 后打开绑定的 **DSH 原生聊天窗口**，输入、回复、历史和停止操作均复用 DSH，不另建聊天页面。所选 Agent 作为当前浏览器标签页的默认聊天目标，选择工作区、新建聊天及刷新页面后继续保留。工作区中的空白原生 Session 绑定到所选目标，保留自身工作目录；各个聊天使用独立远端 context，后续追问复用本会话的 context，历史由 DSH 恢复。
+
+切换目标时可以打开同工作目录中该 Agent 已有的聊天；已开始的本地历史和其他 Agent 的聊天不会改绑。主动打开一段历史时按该会话自身归属显示目标，打开本地历史会退出远程模式；也可通过列表中的「返回本地 DSH」新建本地会话。连接目标期间及连接失败后，通过 DSH 原生 Composer Block 暂停输入，保留目标选择与错误说明，避免消息落到本地模型。离线时仍能打开已绑定的原生历史。
 
 此入口仅供宿主 owner 使用。Host 通过 `a2a-remote-agent` 专用适配器将原生用户消息转发给绑定目标，不调用本地模型生成中转回复，也不将这一路由加入通用模型目录。每次发送重新验证授权，结果不明时查询原请求，避免重复派发。`<state>.native-sessions.json` 只保存 Agent 与原生 Session 的绑定，聊天记录由 DSH 自己持久化；旧版 `.chats.json` 不会被删除或导入新会话。
 
@@ -36,7 +38,7 @@ Web profile 的原生左侧栏显示可折叠的「远程 Agents」列表，按�
 
 Relay 在 Agent 创建/编辑中设置 `maxConcurrency`（1～64，默认 1），所有主控共用目标名额，超出按 FIFO 排队。异步任务、等待输入/授权的任务保留执行名额，续聊复用原任务名额；终态才释放。超时后用原会话查询，不能按超时新建消息。Relay 重启会恢复 Redis 中已派发任务的占用并查询原任务；不会自动重放未发出的请求。
 
-`relayProvider: false` 可关闭模型 Provider；为兼容已有配置，保留 `controlPage` 名称，设置为 `false` 时不注册远程 Agent 的 Host 服务，侧栏列表不加载。只需手工直连时使用 `discoverRelayAgents: false` 配合原 `agents`。浏览器半包声明了 `dsh.client` 和 `./client`，在官方 `sidebar.footer.action` slot 注册列表，通过 Typert Gateway 创建或恢复原生 Session，再用 `uiWorkspace.openSession` 切换到原生聊天。分发包已包含 `client.js`，修改浏览器源码后需执行：
+`relayProvider: false` 可关闭模型 Provider；为兼容已有配置，保留 `controlPage` 名称，设置为 `false` 时不注册远程 Agent 的 Host 服务，侧栏列表不加载。只需手工直连时使用 `discoverRelayAgents: false` 配合原 `agents`。浏览器半包声明了 `dsh.client` 和 `./client`，在官方 `sidebar.footer.action` slot 注册列表，通过 Typert Gateway 绑定、创建或恢复原生 Session，再用 `uiWorkspace.openSession` 切换到原生聊天；使用 `conversation.blocks` 管理绑定期间的原生输入状态。分发包已包含 `client.js`，修改浏览器源码后需执行：
 
 ```bash
 rtk npm ci --prefix plugins/dsh

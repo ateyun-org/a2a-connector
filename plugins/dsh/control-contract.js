@@ -7,6 +7,9 @@ function codec(parse, typeSymbol, jsonSchema) {
 function input(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value) ||
       typeof value.agentId !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(value.agentId)) throw new Error('请选择有效的远程 Agent。');
+  if (value.sessionId !== undefined && (typeof value.sessionId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(value.sessionId))) {
+    throw new Error('请选择有效的 DSH 会话。');
+  }
   return value;
 }
 
@@ -16,7 +19,7 @@ const json = codec(value => {
   return JSON.parse(serialized);
 }, 'a2aControl.Json', {});
 
-const selection = codec(input, 'a2aControl.Selection', { type: 'object', properties: { agentId: { type: 'string' } }, required: ['agentId'] });
+const selection = codec(input, 'a2aControl.Selection', { type: 'object', properties: { agentId: { type: 'string' }, sessionId: { type: 'string' } }, required: ['agentId'] });
 export const controlContract = {
   package: 'dsh-a2a-connector',
   descriptors: Object.entries({ targets: null, open: selection }).map(([method, boundary]) => ({

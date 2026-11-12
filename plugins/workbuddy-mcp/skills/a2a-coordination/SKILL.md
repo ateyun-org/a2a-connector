@@ -1,20 +1,17 @@
 ---
 name: a2a-coordination
-description: Use Chuanbota's OAuth-protected MCP tools to delegate authorized A2A tasks, recover durable requests and retrieve results or file deliverables using native delivery and Relay fallback.
+description: Use the current Chuanbota MCP connection to discover authorized Agents, delegate A2A tasks, recover durable requests and retrieve results or delivered files.
 ---
 
-Relay uses organization authorization as its only runtime. Manage identities and grants in `/console`; there is no global pairing approval or shared administrator/client token authentication.
-
-
-The connector supplies actual remote MCP tools. Buddy application modes and capsules are task presets; they do not establish connections or grant access.
+Use the tools registered by the current MCP connection. Manage Controller identity and target permissions in `/console`. Buddy application modes and capsules are task presets; they do not establish connections or grant access.
 
 ## Connection
 
-Use WorkBuddy's connector connection flow. OAuth discovers the Relay's metadata, registers a public client and uses PKCE. the user logs into Relay, selects an enterprise they belong to, and confirms consent; Relay creates/reuses the personal MCP Controller for that member. This Controller can differ from an existing Connector identity with the same display name. Inspect exact IDs before diagnosing grants.
+Connect through WorkBuddy's MCP connection flow. The user logs into Relay, selects an enterprise they belong to, and confirms OAuth consent; Relay creates/reuses the personal MCP Controller for that member. Identify the current Controller by its exact Agent ID when checking permissions; a display name alone does not identify the caller.
 
-Enterprise grants are configured at `/console` → Agent 管理 → the **target's** 谁能访问 (older UI: 授权) → 机器调用方 → this exact MCP Controller. The direction is caller → target. `discover` reads the card, `invoke` sends, `task_read` reads owned tasks; cancel/permission/release have separate actions. A personal MCP Controller needs explicit machine grants intersected with its bound member's effective direct/group grants. Service Controllers use machine grants. Administrator status does not bypass task permissions. Do not automatically approve pairing, grant targets, select wildcard access or handle administrator credentials with model tools. No administrator tool is exposed.
+Enterprise grants are configured at `/console` → Agent 管理 → the **target's** 谁能访问 (older UI: 授权) → 机器调用方 → this exact MCP Controller. The direction is caller → target. `discover` reads the card, `invoke` sends, `task_read` reads owned tasks; cancel/permission/release have separate actions. A personal MCP Controller needs explicit machine grants intersected with its bound member's effective direct/group grants. Service Controllers use machine grants. Administrator status does not bypass task permissions. Permission changes belong to the administrator in the console; no administrator tool is exposed.
 
-The connector uses its own OAuth tokens. They are distinct from the Buddy application's Client Secret and from upstream WorkBuddy Open API/ACP tokens. Never ask for or include those secrets in prompts, tool arguments or output. User pairing approvals and target grants remain mandatory even after installing the connector.
+The MCP connection handles its OAuth credentials. Use its registered tools for discovery, dispatch and task reads. Never request private tokens or secrets in prompts, tool arguments or output. Completing OAuth still requires explicit target permissions before tasks can be called.
 
 ## Tools
 
@@ -29,15 +26,15 @@ The connector uses its own OAuth tokens. They are distinct from the Buddy applic
 
 ## Retrieve delivered files
 
-Prefer native file bytes or a verified caller-accessible URL. If a Connector-backed target (including Hermes/OpenClaw) returned only a local path, the user-authorized file delivery can require a separate transfer-only follow-up to that same receiving Agent: supply the original task ID and exact existing deliverable path, use the supported context and a new stable message ID, and ask it to upload that file with its own paired Connector helper. Recover an uncertain original send first; never repeat the business work or supply this Controller's credentials. Relay health `artifactTransferVersion: relay-temp-v1` or card `relayArtifactTransferVersion` advertises this generic fallback. After registration, read the original task and use its exact artifact ID with this same Controller. If the receiver cannot upload or the file is gone, report it.
+Prefer native file bytes or a verified caller-accessible URL. If a target returned only a local path and advertises file delivery through Relay health `artifactTransferVersion: relay-temp-v1` or card `relayArtifactTransferVersion`, the user-authorized delivery can require a separate transfer-only follow-up to that same Agent. Supply the original task ID and exact existing deliverable path, use the supported context and a new stable message ID, and ask the receiving Agent to deliver that existing file through its advertised capability. The receiving Agent handles the transfer with its own authorization. Recover an uncertain original send first; never repeat the business work or supply this Controller's credentials. After registration, read the original task and use its exact artifact ID with this same Controller. If the receiver cannot deliver the file or the file is gone, report it.
 
-When the target card advertises `artifactTransferVersion: relay-temp-v1`, new hosted cloud turns receive private sandbox-to-Relay upload instructions automatically. Request the user's required deliverable files in the task text; do not invent an upload token or ask for connector/ACP/envd credentials.
+When the target card advertises `artifactTransferVersion: relay-temp-v1`, new hosted cloud turns receive file-delivery instructions automatically. Request the user's required deliverable files in the task text; the receiving Agent handles delivery. Never invent an upload token or ask for the target's private credentials.
 
 Inspect the original task with `a2a_task`. For each file in `artifacts`, retain its exact `artifactId`. `metadata.downloadSource: relay_temp`, `transferStatus: ready` and `expiresAt` identify temporary file delivery, normally retained for one hour after upload. Download promptly even before task completion or when the final answer is absent. An `agent:///` identifier is not a public URL.
 
-If registered in this session, call `a2a_artifact({targetAgentId, taskId, artifactId})` with the original target and task ID. It uses this MCP Controller's original task ownership and `task_read`, returns UTF-8 text or Base64 raw bytes with size/SHA-256, and is limited to 512 KiB. Verify against the task's recorded file metadata and inspect the requested deliverable before reporting successful file delivery. This does not prove business completion. If the file exceeds the tool limit or the tool is unavailable, report the concrete limitation; a different Connector/CLI identity cannot read this Controller's task merely because it has `task_read`. Do not guess an HTTP URL or request private OAuth tokens.
+If registered in this session, call `a2a_artifact({targetAgentId, taskId, artifactId})` with the original target and task ID. It uses this MCP Controller's original task ownership and `task_read`, returns UTF-8 text or Base64 raw bytes with size/SHA-256, and is limited to 512 KiB. Verify against the task's recorded file metadata and inspect the requested deliverable before reporting successful file delivery. This does not prove business completion. If the file exceeds the tool limit or the tool is unavailable, report the concrete limitation and keep the original Controller identity; another caller's `task_read` does not transfer task ownership. Do not guess an HTTP URL or request private OAuth tokens.
 
-On `relay_artifact_expired_or_missing`, `relay_artifact_integrity_failed` or `retryable:false`, report the blocker without resending the business task, releasing tracking or repeatedly polling unchanged reads. Download retries do not extend retention. Older/provider-only files retain the existing advertised download behavior; automatic WorkBuddy sandbox instructions do not add hosted desktop file upload; Connector-backed receivers use their explicit generic helper.
+On `relay_artifact_expired_or_missing`, `relay_artifact_integrity_failed` or `retryable:false`, report the blocker without resending the business task, releasing tracking or repeatedly polling unchanged reads. Download retries do not extend retention. File-delivery capabilities vary by target and execution mode; use only what the target advertises.
 
 ## Results and recovery
 
@@ -49,10 +46,8 @@ Relay supports durable receipts. A receipt 404 can mean wrong caller, expired/no
 
 Respect task states: submitted/working continue tracking; input-required needs user input or inspection; completed requires the target's actual completion signal; failed/rejected/canceled are not success. Return verified output and available artifact locations. `agent:///` locations belong to the cloud sandbox and are not automatically public download URLs.
 
-For WorkBuddy receiving tasks, a separate managed desktop/cloud adapter must be online and authorized through the Buddy application's Open API permissions. Installing this MCP connector provides the controller tools; it does not itself deploy that receiving adapter or create an upstream account grant. A cloud target uses Open API + ACP; PC uses localassistant. Use their advertised capabilities and preserve their result correlation rules.
+## Target availability
 
-## First-use guidance for WorkBuddy targets
+The target owner manages its account authorization and execution readiness in the Relay console. Use the target's live capabilities and returned task state to explain any blocker.
 
-Before first desktop use, explain the receiving-side prerequisites once: the execution PC must have WorkBuddy logged in, its receiving adapter must complete account authorization, and the user must enable 连接移动端 → 小程序 → 允许移动端连接此设备 on that PC. The receiving adapter's `platform login` opens the guided authorization flow; `doctor` returns the next required actions. PC online status alone does not verify remote-control permission. Never enable remote access, approve a permission or change private WorkBuddy settings automatically. A cloud target does not need that desktop switch.
-
-If a task reports `workbuddy_not_authorized`, tell the user to authorize the receiving adapter's WorkBuddy account, not to redo this controller's MCP OAuth. If it reports `blockedReason=workbuddy_channel_not_configured`, show the exact desktop switch instructions and the target's rejection state. Do not keep polling a terminal rejection as if it were working and do not automatically resend. General instructions are at https://dsh-relay.chuanbota.com/oauth/workbuddy/setup (add mode=desktop or mode=cloud when known); that public guide carries no account credentials and cannot replace the receiving adapter's own authorization link. Once setup is confirmed, avoid repeating first-use instructions unless a prerequisite actually fails.
+If a task reports `workbuddy_not_authorized`, ask the target owner to complete that target's WorkBuddy account authorization in the console. The current Controller's MCP OAuth only authorizes the caller. If it reports `blockedReason=workbuddy_channel_not_configured`, show the target's rejection state and ask its owner to enable 连接移动端 → 小程序 → 允许移动端连接此设备 on the execution PC. PC online status alone does not verify this permission. A cloud target does not require that desktop switch. Do not automatically change remote-access settings, keep polling a terminal rejection or resend the task.

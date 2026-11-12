@@ -1,115 +1,88 @@
-# 传播塔应用与远程 MCP 接入
+# MCP 主控与 Buddy 应用接入
 
-这份指南覆盖原来缺少的应用接入层。`workbuddy-mcp` 是用户在 WorkBuddy 中安装/绑定的远程工具连接器；`workbuddy` CLI 包用于接收任务的常驻适配器和本地诊断。两者访问同一个 Relay，分别持有自己的身份和授权，不共享长期凭据。
-
-## 完整关系
+云端 WorkBuddy 或 Buddy 应用通过远程 MCP 工具发现已授权的 Agent、派发任务、查询进度并读取结果。主控使用当前 MCP 连接提供的工具完成协作。
 
 ```mermaid
 flowchart LR
-  W[传播塔 Buddy 应用] --> M[远程 MCP 连接器]
+  W[云端 WorkBuddy / Buddy 应用] --> M[远程 MCP 工具]
   M --> R[Relay：OAuth、权限、任务记录]
-  R --> A[已授权的其他 Agent]
-  A --> R
-  R --> B[WorkBuddy 受控适配器]
-  B --> P[WorkBuddy Open API：PC 或云端 ACP]
+  R --> A[已授权的执行 Agent]
 ```
 
-主控连接器 OAuth 只授权 Relay 工具；应用 Client ID/Secret 用于受控侧的 WorkBuddy Open API OAuth。这是两个授权流程。模式和胶囊是行为预设，不创建连接、安装工具或发放调用权限。
+## 连接 MCP
 
-## 现有部署直接升级
+在 WorkBuddy 的 MCP 连接入口使用服务地址：
 
-新版 Relay 命令行服务默认启用 MCP。继续使用服务器已经加载的 `manifest/config/config.json`，不需要额外配置 `RELAY_MCP_ENABLED=true`，也不需要更换已有管理员凭据。只有明确设置 `relay.mcpEnabled=false` 或 `RELAY_MCP_ENABLED=false` 才关闭；已有非空环境变量仍优先。
+[https://dsh-relay.chuanbota.com/mcp](https://dsh-relay.chuanbota.com/mcp)
 
-程序读取 `workbuddy.clientId` 和 `workbuddy.clientSecret`，接收身份统一从 MySQL 企业数据库加载，在控制台创建/选择并发送账号邀请。授权范围默认 PC 与云端的四个完整权限。票据交付密钥默认由 Relay 自动生成并持久保存在现有 Redis，`RELAY_AGENT_TICKET_KEY` 仅为可选覆盖；共享管理员令牌不用于认证或派生密钥。
+支持 `mcpServers` 配置的客户端可使用：
 
-令牌加密密钥优先沿用 `workbuddy.tokenKey` 或 `WORKBUDDY_TOKEN_KEY`。未提供时，程序从应用 Secret 派生用途隔离、重启稳定的32字节密钥，无需额外挂载密钥文件。使用派生密钥时，应用 Secret 轮换后需要重新完成上游授权。已经使用显式密钥的部署必须保留原密钥。
-
-JSON 中的应用凭据属于服务端私有数据，不能进入公开文件、静态包或连接器包。无需把原有 JSON 凭据迁移到环境变量才能运行。`scripts/workbuddy-config.py` 和私有 EnvironmentFile 是可选运维工具，不再是启用 MCP 的前提。
-
-## 自动发布静态发现文件
-
-每次启动会使用实际 `relay.publicUrl` 自动更新：
-
-```text
-程序工作目录/.well-known/oauth-protected-resource/mcp
-程序工作目录/.well-known/oauth-authorization-server
-程序工作目录/manifest/public/.well-known/oauth-protected-resource/mcp
-程序工作目录/manifest/public/.well-known/oauth-authorization-server
+```json
+{
+  "mcpServers": {
+    "chuanbota-a2a": {
+      "type": "streamableHttp",
+      "url": "https://dsh-relay.chuanbota.com/mcp",
+      "timeout": 30000
+    }
+  }
+}
 ```
 
-它们仅含公开地址和协议能力，和 HTTP 动态发现接口共用同一份定义。更新时仅写这两个文件，保留已有 `.well-known/acme-challenge/`。文件系统只读时记录提示，服务仍正常提供动态接口。
+其他客户端使用其原生 MCP 配置格式，服务地址保持一致。企业控制台的「Agent 管理 → 接入 Agent → MCP 主控」提供完整配置指令、JSON 和地址复制，也可直接打开 `/console#mcp-setup`。
 
-发布流程也可以在打包前调用程序导出到发布根目录，此命令不连接 Redis，也不要求应用密钥或管理员凭据：
+从客户端的连接或登录入口发起 OAuth。用户登录 Relay，选择所属企业并确认授权；Relay 创建或复用该成员的个人 MCP Controller。确认当前 Controller 的准确 Agent ID，显示名称不能代替身份标识。认证使用客户端原生 OAuth 与 PKCE，由 MCP 连接管理凭据；不要在提示词或共享配置中填写令牌、密码或密钥。
 
-```bash
-rtk proxy ./a2a-relay -config deploy/relay.example.json -export-static /path/to/release-webroot
-```
+## 授予目标权限
 
-自动生成发生在程序能访问的文件系统内。若现有发布把工作目录或 `manifest/public` 作为站点目录，发现文件会随之更新；Go 进程不能写入未挂载的宿主机 Nginx 目录。是否已对公网可见需用公开检查确认，不能把容器内生成成功等同于 Nginx 已读取。
+管理员在 `/console` 的**目标 Agent**行打开「谁能访问」，选择当前 MCP Controller 为机器调用方并授予所需动作。个人 Controller 的机器授权还需与绑定成员的有效成员/用户组权限取交集。管理员身份本身不代替任务使用权限。
 
-静态内容应以 `application/json` 返回。`a2a-relay/deploy/workbuddy-static/` 和 `dist/workbuddy-discovery-static.zip` 保留为独立发布材料，内含可与证书规则共存的静态路由示例。所有 Nginx 文件都是可选参考，不会由程序擅自改写服务器配置。
+- `discover`：发现目标并读取能力卡。
+- `invoke`：向目标派发任务。
+- `task_read`：读取该 Controller 自己创建的任务和交付物。
+- 取消、审批回复和放弃跟踪分别需要相应动作权限。
 
-新客户端优先使用 `/mcp` 的401响应中指定的 `/oauth/mcp/resource-metadata`，由 Relay 动态返回 JSON。该文档指向带路径的授权服务 issuer `https://dsh-relay.chuanbota.com/oauth`；按 MCP 标准依次尝试发现地址，可回退到 `/oauth/.well-known/openid-configuration`。这两处动态文档复用现有 `/oauth/` 转发，避开根目录静态文件被服务器标记为 `text/plain` 的问题。原有根级发现接口和两个静态文件继续保留，不更改原来的授权、令牌受众或权限。[MCP 标准规定的发现顺序](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#authorization-server-metadata-discovery)
+OAuth 连接成功后仍需检查目标权限。`a2a_targets` 为空时，核对企业、Controller 身份、目标状态及权限交集。工具已注册或能够读取能力卡，均不代表拥有全部任务操作权限。权限变更由管理员在控制台完成。
 
-## 发布后诊断与接收端
+## 任务、结果与交付物
 
-用户接入引导页位于 `/oauth/workbuddy/setup`，复用现有 `/oauth/` 路由。新的 CLI/Skill 提交包会主动显示账号授权与桌面连接许可的步骤；授权回调也继续显示后续设置，不再仅提示“授权完成，可以关闭”。桌面和云端分别引导，开关确认仍由用户完成。此次引导需升级 Relay 和 CLI/Skill 包，不要求新增服务器配置。
+1. 用 `a2a_targets` 获取准确目标 ID，按 `nextPage` 翻页直到 0；用 `a2a_agent` 查看目标的实际能力。
+2. 获得业务指令后，用 `a2a_send` 派发一次，保留该指令的稳定 `messageId` 及返回的任务、上下文和收据 ID。连接检查本身不授权真实业务测试。
+3. 用 `a2a_task` 查询原任务；超时或断线后用原 `relayRequestId` 调用 `a2a_request` 恢复收据。未知结果不代表未执行，不更换 ID 重发同一指令。
+4. 用 `a2a_tasks` 分页查询当前 Controller 的任务。保留原调用身份与过滤条件；空列表不证明先前的未知派发未执行。
+5. 用当前连接已提供的 `a2a_artifact` 读取任务登记的交付物，核对原目标、任务、产物 ID、大小和 SHA-256。文件交付成功与业务任务完成分别判断。
 
-`GET /oauth/workbuddy/health` 或已存在的回调地址加 `?relay_health=1` 可检查新程序，只返回 `mcpEnabled`、`workbuddyConfigured` 等公开状态，不返回应用 Secret、令牌、管理员凭据或 Agent 清单。
+`input-required` 需要用户输入或检查，不能当作完成。审批回复、取消或放弃跟踪按用户明确决定执行。目标的账号或执行环境不可用时，报告返回的原因，并由目标负责人在控制台处理。
 
-在 Relay 仓库运行：
-
-```bash
-rtk proxy python3 scripts/check-workbuddy-deployment.py --base https://dsh-relay.chuanbota.com
-```
-
-新版默认配置中，无令牌 `/mcp` 应返回401及发现 challenge。若新 health 已显示 MCP 开启而公网 `/mcp` 仍404，应定位外层转发或不同 upstream；只有旧接口响应时，需要核对实际运行的程序版本。这类网络问题无法由客户端凭空确定服务器文件路径。
-
-优先在企业控制台接入 WorkBuddy 原生接收端并生成邀请，无需在用户电脑安装 Connector。独立 CLI 接收端先使用身份绑定票据接入，再执行 desktop/cloud setup、platform login 和 doctor；ID 由控制台确定。账号授权与目标机器调用动作授权分别配置。
-
-## 主控 OAuth 与权限
-
-MCP 地址：`https://dsh-relay.chuanbota.com/mcp`。
-
-服务提供标准 protected-resource/authorization-server discovery、公开客户端动态注册、PKCE S256、一次性授权码、受众绑定的短期 access token、轮换 refresh token、重放撤销和主动撤销。OAuth token 只用于 MCP，不会作为原始配对凭据接受。Redis 只存令牌哈希；刷新和兑换在 Redis 中原子完成，服务重启不丢授权记录。删除、暂停或轮换对应 Relay 身份会阻止其 MCP 访问。每个工具请求继续检查目标 ACL，撤销目标权限也会禁止读取其历史任务。
-
-用户在 WorkBuddy 点击连接后：
-
-1. MCP 客户端发现服务并注册，打开 Relay 授权页。
-2. Relay 要求用户登录 Relay、选择其所属企业并确认 OAuth，Relay 创建或复用该成员的个人 MCP Controller。它和已有 Connector 的身份可能不同，授权时核对准确 Agent ID。
-3. 企业管理员在 `/console` 的**目标 Agent** 行点击「谁能访问」，选择这个 MCP Controller 为机器调用方并授予所需动作；个人 Controller 的机器授权还需与绑定成员的有效成员/用户组权限取交集。这个主控身份不需要运行入站隧道，显示按需连接不代表主控不可用；目标接收端的连接状态另行检查。
-4. 用户在原授权页确认，客户端得到 MCP OAuth token。可以认证但没有可发现目标时 `a2a_targets` 为空；能够读取卡片也不表示拥有所有任务动作。`a2a_send` 需要调用权限，`a2a_task` 需要读取权限及本身份的任务归属。`a2a_tasks` 提供按调用方隔离的 ListTasks，支持过滤和分页；`a2a_request` 用于原收据恢复。工具中不提供管理员操作，也不自动增加权限。
-
-支持 WorkBuddy 私有协议回调 `workbuddy://workbuddy/mcp/connector:chuanbota-a2a/oauth/callback`、平台分配的 `oc_...` 连接器 ID 回调和精确注册的 HTTP loopback 回调。回调必须先精确注册，不能在授权时更换。拒绝 plain PKCE、重定向不匹配和其他资源的 token。允许反向代理将 Host 改为内部上游地址，不要求新增代理配置。默认允许同源请求与无 Origin 的原生客户端；浏览器客户端来源须在 `mcpAllowedOrigins` 中明确配置，重复 Origin 也拒绝。所有请求仍需有效的 MCP 令牌和目标权限；Host 与转发请求头不参与 OAuth 地址或令牌受众生成。
+文件交付能力以目标能力卡为准。只有本地路径时，可在用户授权的交付范围内向同一目标发送仅交付现有文件的后续指令，由目标使用自己的能力完成交付；保留原任务关联，不重新执行原业务。读取交付物继续使用原 MCP Controller 身份。超过工具大小限制、文件过期或校验失败时，报告具体限制。
 
 ## 绑定到 Buddy 应用
+
+在源码项目根目录生成 MCP 提交包：
 
 ```bash
 rtk proxy python3 scripts/package-workbuddy-mcp.py
 ```
 
-该命令在 **a2a-connector** 根目录执行，生成 `dist/chuanbota-a2a-mcp-VERSION.zip`。这是提交 **连接器** 的 MCP+Skill 包，包含根目录 connector-meta.json、mcp.json、icon.svg 和 skills。不要传到 Buddy 应用的“静态资源包”。
+生成 `dist/chuanbota-a2a-mcp-VERSION.zip`，包含平台要求的 `connector-meta.json`、`mcp.json`、图标和主控 Skill。
 
-开放平台的「发布管理 → 连接器 → 创建」是连接器入口。按页面要求提交，审核通过后，在 Buddy 应用中：
+1. 在开放平台「发布管理 → 连接器 → 创建」提交 MCP 包。该包应提交到连接器入口。
+2. 审核并发布后，在 Buddy 应用「市场配置 → 连接器」选择“传播塔任务协作”。
+3. 在「首页配置 → 内置连接器」选择同一个支持 OAuth 的 MCP 连接器。
+4. 预览中完成用户连接和授权，确认实际工具出现、目标权限生效后，再提交应用配置审核。
 
-1. 「市场配置 → 连接器」选择真正的“传播塔任务协作”连接器。
-2. 「首页配置 → 内置连接器」选择支持 OAuth 的这一个 MCP 连接器。
-3. 预览中完成用户绑定，验证实际工具出现，之后再提交应用配置审核。模式和胶囊可调用这些工具，但提示词本身不代替安装/授权。
+模式和胶囊是行为预设，工具能力来自实际连接与授权。生成 ZIP、连接器发布和应用审核分别验证；退出应用编辑前导出配置，避免未提交编辑丢失。
 
-连接器审核和应用配置审核是平台的两个外部环节，生成 ZIP 不代表已通过。不能把市场里的 GitHub 等其他连接器当成我们自己的接入已经完成。退出应用编辑前导出应用配置 ZIP，避免未提交编辑丢失。
+## 服务端公开检查
 
-## 验证与完成条件
-
-在 **a2a-relay** 根目录运行：
+在 Relay 项目根目录运行只读检查：
 
 ```bash
-rtk proxy go test ./...
-rtk proxy go test -race ./...
 rtk proxy python3 scripts/check-workbuddy-deployment.py --base https://dsh-relay.chuanbota.com
 ```
 
-跨仓库测试 `TestMCPRealWorkBuddyCloudChain` 会启动真实 Go Relay、官方 MCP SDK、Redis 测试服务、Node Connector 和云端适配器，完成两个 OAuth 流程、ACL、A2A journal 和 ACP SSE 到结果返回。只有 WorkBuddy 远端服务使用模拟接口，不会访问真实账户或消耗平台额度。单独检出 Relay、没有相邻 a2a-connector 或没有 Node 时，该跨仓库测试会明确跳过；发布验收要求本地联仓运行并确认它实际通过。
+公开检查验证 OAuth 发现、MCP 认证入口及公开回调，不读取用户凭据或派发任务。`mcpDeploymentReady` 为真只证明接入入口就绪。真实验收还需确认：用户 MCP 连接成功、能发现明确授权的目标，并在用户授权的业务范围内取得实际执行结果。
 
-公开部署检查只检查 discovery、MCP 401 challenge 和回调响应，不证明 Secret、上游授权或受控端在线。只有以下项目全部完成，才能通知业务用户测试：服务已部署、应用真实 Secret 已配置、受控端 doctor 通过、MCP 连接并获得明确目标权限、连接器审核/应用绑定完成，并用真实账号获得实际执行结果。
+服务部署与 OAuth 发现接口的运维细节见 [Relay 服务说明](../../../a2a-relay/README.md)。
 
 规范来源：[WorkBuddy 连接器](https://open.workbuddy.cn/docs/connector)、[Buddy 应用内置连接器](https://open.workbuddy.cn/docs/buddy-app)、[MCP 授权规范](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization)。

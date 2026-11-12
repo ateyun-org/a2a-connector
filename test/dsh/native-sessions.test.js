@@ -176,7 +176,7 @@ test('native Stop aborts the remote wait without starting another request', asyn
   assert.equal(transcript(agent).filter(event => event.type === 'assistant/message').length, 0);
 });
 
-test('workspace blanks inherit the remote target in their own native Sessions and keep isolated history after restart', async t => {
+test('remote chats inherit cwd without adopting native workspace blanks and keep isolated history after restart', async t => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-workspace-target-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const { a2a, sends } = remote();
@@ -185,27 +185,33 @@ test('workspace blanks inherit the remote target in their own native Sessions an
     meta: { cwd }, agentOptions: { provider: 'local', model: 'default' } })).agent;
   const first = await createBlank('workspace-a', root);
   const a = await host.sessions.open({ agentId: 'one', sessionId: first.id });
-  assert.equal(a.sessionId, first.id);
-  assert.equal(first.session.header.cwd, root);
-  assert.equal(first.model.current().provider, REMOTE_AGENT_PROVIDER);
-  assert.deepEqual(await prompt(first, '项目 A'), [{ type: 'text', text: 'one: 项目 A' }]);
+  assert.notEqual(a.sessionId, first.id);
+  assert.equal(first.model.current().provider, 'local');
+  assert.equal(await host.sessions.binding(first.id), undefined);
+  const remoteA = host.ctx.agents.get(a.sessionId);
+  assert.equal(remoteA.session.header.cwd, root);
+  assert.deepEqual(await prompt(remoteA, '项目 A'), [{ type: 'text', text: 'one: 项目 A' }]);
   const second = await createBlank('workspace-b', tmpdir());
   const b = await host.sessions.open({ agentId: 'one', sessionId: second.id });
-  assert.equal(b.sessionId, second.id);
-  assert.equal(second.session.header.cwd, tmpdir());
-  assert.deepEqual(await prompt(second, '项目 B'), [{ type: 'text', text: 'one: 项目 B' }]);
+  assert.notEqual(b.sessionId, second.id);
+  assert.equal(second.model.current().provider, 'local');
+  const remoteB = host.ctx.agents.get(b.sessionId);
+  assert.equal(remoteB.session.header.cwd, tmpdir());
+  assert.deepEqual(await prompt(remoteB, '项目 B'), [{ type: 'text', text: 'one: 项目 B' }]);
   const third = await createBlank('workspace-b-new', tmpdir());
-  const c = await host.sessions.open({ agentId: 'one', sessionId: third.id });
-  assert.equal(c.sessionId, third.id, 'New Session reused a previous remote transcript');
-  assert.deepEqual(await prompt(third, 'B 的新聊天'), [{ type: 'text', text: 'one: B 的新聊天' }]);
+  const c = await host.sessions.open({ agentId: 'one', sessionId: third.id, newSession: true });
+  assert.notEqual(c.sessionId, third.id);
+  assert.notEqual(c.sessionId, b.sessionId);
+  assert.equal(third.model.current().provider, 'local');
+  assert.deepEqual(await prompt(host.ctx.agents.get(c.sessionId), 'B 的新聊天'), [{ type: 'text', text: 'one: B 的新聊天' }]);
   assert.equal(sends[1].conversationId, undefined);
   assert.equal(sends[2].conversationId, undefined);
   assert.equal(new Set(sends.map(send => send.parentId)).size, 3);
   await host.close(); host = await nativeHost(root, a2a);
   const restored = await host.sessions.open({ agentId: 'one', sessionId: a.sessionId });
-  assert.equal(restored.sessionId, first.id);
-  assert.equal(transcript(host.ctx.agents.get(first.id)).filter(event => event.type === 'assistant/message').length, 1);
-  assert.deepEqual(await prompt(host.ctx.agents.get(first.id), '继续项目 A'), [{ type: 'text', text: 'one: 继续项目 A' }]);
+  assert.equal(restored.sessionId, a.sessionId);
+  assert.equal(transcript(host.ctx.agents.get(a.sessionId)).filter(event => event.type === 'assistant/message').length, 1);
+  assert.deepEqual(await prompt(host.ctx.agents.get(a.sessionId), '继续项目 A'), [{ type: 'text', text: 'one: 继续项目 A' }]);
   assert.equal(sends.at(-1).conversationId, 'conversation-0');
   assert.deepEqual(new Set((await host.sessions.targets())[0].sessionIds), new Set([a.sessionId, b.sessionId, c.sessionId]));
 });
@@ -232,6 +238,8 @@ test('selecting a remote target preserves existing history and never reassigns a
   assert.equal(local.model.current().provider, 'local');
   assert.equal(await host.sessions.binding(local.id), undefined);
   assert.equal(host.ctx.agents.get(selected.sessionId).session.header.cwd, root);
+  assert.deepEqual(attached, [], 'an empty remote chat occupied the native workspace reusable blank');
+  await prompt(host.ctx.agents.get(selected.sessionId), '远程记录进入工作区历史');
   assert.deepEqual(attached, [selected.sessionId]);
   const other = await host.sessions.open({ agentId: 'two', sessionId: selected.sessionId });
   assert.notEqual(other.sessionId, selected.sessionId);
@@ -313,6 +321,28 @@ test('native SessionController model selection cannot send a bound chat to the c
   await ctx.agents.get(local.sessionId).whenIdle();
   assert.equal(localCalls, 1, 'ordinary unbound DSH chats lost their selected model');
   assert.equal(sends.length, 1, 'ordinary local chat was redirected to a remote Agent');
+  const workspaceBlank = await ctx.sessionController.create({ cwd: root });
+  const remoteBlank = await host.sessions.open({ agentId: 'one', sessionId: workspaceBlank.sessionId, newSession: true });
+  assert.notEqual(remoteBlank.sessionId, workspaceBlank.sessionId);
+  const nativeNew = await ctx.sessionController.create({ cwd: root, sessionId: workspaceBlank.sessionId });
+  assert.equal(nativeNew.sessionId, workspaceBlank.sessionId, 'native New Session did not exercise blank reuse');
+  assert.equal(await host.sessions.binding(nativeNew.sessionId), undefined);
+  await ctx.sessionController.prompt({ sessionId: nativeNew.sessionId, requestId: 'native-new-local', mode: 'queue',
+    content: [{ type: 'text', text: '从远程切到原生新会话后发送' }] }, new AbortController().signal);
+  await ctx.agents.get(nativeNew.sessionId).whenIdle();
+  assert.equal(localCalls, 2, 'native New Session remained in remote mode');
+  assert.equal(sends.length, 1, 'native New Session dispatched a remote message');
+  await ctx.sessionController.prompt({ sessionId: local.sessionId, requestId: 'native-history-local', mode: 'queue',
+    content: [{ type: 'text', text: '打开本地历史后继续' }] }, new AbortController().signal);
+  await ctx.agents.get(local.sessionId).whenIdle();
+  assert.equal(localCalls, 3);
+  assert.equal(sends.length, 1, 'local history dispatched a remote message');
+  await ctx.sessionController.prompt({ sessionId: remoteBlank.sessionId, requestId: 'remote-new-only', mode: 'queue',
+    content: [{ type: 'text', text: '远程条目的新会话继续直聊' }] }, new AbortController().signal);
+  await ctx.agents.get(remoteBlank.sessionId).whenIdle();
+  assert.equal(localCalls, 3);
+  assert.equal(sends.length, 2);
+  assert.equal(sends.at(-1).agentId, 'one');
 });
 
 test('New Chat creates a fresh native Session and remote context, while history reopens the exact earlier chat', async t => {
@@ -382,8 +412,9 @@ test('a fresh chat after archiving the last record keeps its workspace and sends
   const blank = (await host.ctx.agents.create({ sessionId: 'workspace-before-delete', meta: { cwd: root },
     agentOptions: { provider: 'local', model: 'default' } })).agent;
   const old = await host.sessions.open({ agentId: 'one', sessionId: blank.id });
-  await prompt(blank, '将被归档的聊天');
-  const oldSeq = blank.session.seq;
+  const oldAgent = host.ctx.agents.get(old.sessionId);
+  await prompt(oldAgent, '将被归档的聊天');
+  const oldSeq = oldAgent.session.seq;
   registry.archivedSessionIds.push(old.sessionId);
   const opened = await host.sessions.open({ agentId: 'one', sessionId: old.sessionId, newSession: true });
   assert.notEqual(opened.sessionId, old.sessionId);
@@ -394,5 +425,36 @@ test('a fresh chat after archiving the last record keeps its workspace and sends
   assert.equal(sends.length, 2);
   assert.equal(sends.at(-1).conversationId, undefined, 'fresh chat reused the archived remote context');
   assert.notEqual(sends.at(-1).parentId, sends[0].parentId);
-  assert.equal(blank.session.seq, oldSeq, 'sending in the fresh chat changed the archived history');
+  assert.equal(oldAgent.session.seq, oldSeq, 'sending in the fresh chat changed the archived history');
+  assert.equal(blank.model.current().provider, 'local');
+});
+
+test('legacy empty remote workspace members stop being reusable native blanks, while local and used history remain', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-remote-workspace-blank-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const { a2a } = remote();
+  let host = await nativeHost(root, a2a); t.after(() => host.close());
+  let members = ['local-workspace-blank']; const detached = [];
+  const workspace = { get sessionIds() { return members; },
+    async attachSession(id) { if (!members.includes(id)) members.push(id); },
+    async detachSession(id) { detached.push(id); members = members.filter(value => value !== id); } };
+  const registry = { archivedSessionIds: [], resolveByPath: async () => workspace };
+  host.ctx.provide('workspaceRegistry', registry);
+  const local = (await host.ctx.agents.create({ sessionId: members[0], meta: { cwd: root },
+    agentOptions: { provider: 'local', model: 'default' } })).agent;
+  const blank = await host.sessions.open({ agentId: 'one', sessionId: local.id });
+  assert(!members.includes(blank.sessionId));
+  const used = await host.sessions.open({ agentId: 'two', sessionId: local.id });
+  await prompt(host.ctx.agents.get(used.sessionId), '保留已有远程历史');
+  assert(members.includes(used.sessionId));
+  members.push(blank.sessionId); // Existing installs had attached remote blanks.
+  await host.close(); host = await nativeHost(root, a2a);
+  host.ctx.provide('workspaceRegistry', registry);
+  await host.sessions.targets();
+  assert.deepEqual(detached, [blank.sessionId]);
+  assert.deepEqual(new Set(members), new Set([local.id, used.sessionId]));
+  assert.equal(host.ctx.agents.get(blank.sessionId), undefined, 'cleanup resumed a cold remote Session');
+  assert(await host.ctx.sessionPersistence.stat(blank.sessionId), 'cleanup removed the native transcript');
+  await host.sessions.targets();
+  assert.deepEqual(detached, [blank.sessionId], 'cleanup kept rewriting workspace membership');
 });

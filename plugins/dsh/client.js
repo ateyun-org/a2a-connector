@@ -78,13 +78,11 @@ var RemoteSelection = class {
   constructor(ctx, remote, storage) {
     this.ctx = ctx;
     this.remote = remote;
-    this.storage = storage;
-    let agentId;
     try {
-      agentId = storage?.getItem(storageKey) || null;
+      storage?.removeItem(storageKey);
     } catch {
     }
-    this.snapshot = { agentId: agentId || null, sessionId: null, pending: false, error: "" };
+    this.snapshot = { agentId: null, sessionId: null, pending: false, resolving: false, error: "" };
     this.listeners = /* @__PURE__ */ new Set();
     this.bindings = /* @__PURE__ */ new Map();
     this.generation = 0;
@@ -100,13 +98,6 @@ var RemoteSelection = class {
     this.snapshot = { ...this.snapshot, ...patch };
     this.updateBlock();
     for (const listener of this.listeners) listener();
-  }
-  remember(agentId) {
-    try {
-      if (agentId) this.storage?.setItem(storageKey, agentId);
-      else this.storage?.removeItem(storageKey);
-    } catch {
-    }
   }
   currentSession() {
     return Object.values(this.ctx.sessions.list.getSnapshot().byId).find((item) => item.retainedBy?.mainView > 0);
@@ -127,18 +118,14 @@ var RemoteSelection = class {
     for (const target of targets) {
       for (const id of target.sessionIds || (target.sessionId ? [target.sessionId] : [])) this.bindings.set(id, target.agentId);
     }
-    if (this.snapshot.agentId && !targets.some((target) => target.agentId === this.snapshot.agentId)) {
-      ++this.generation;
-      this.patch({ sessionId: null, pending: false, error: "\u6240\u9009\u8FDC\u7A0B Agent \u5DF2\u4E0D\u53EF\u8BBF\u95EE\uFF0C\u8BF7\u91CD\u65B0\u9009\u62E9\u76EE\u6807\uFF0C\u6216\u4ECE DSH \u5386\u53F2\u8BB0\u5F55\u6253\u5F00\u672C\u5730\u804A\u5929\u3002" });
-    } else {
-      this.reconcile(true);
-      this.patch({});
-    }
+    this.reconcile(true);
+    this.patch({});
   }
   reconcile(discovered = false) {
     const row = this.currentSession(), id = row?.id;
     const route = row?.projectionValues?.modelSelection?.next;
-    const overridden = this.snapshot.agentId && this.snapshot.sessionId === id && route && (route.provider !== REMOTE_AGENT_PROVIDER || route.model !== REMOTE_AGENT_MODEL);
+    const bound = this.bindings.get(id);
+    const overridden = bound && route && (route.provider !== REMOTE_AGENT_PROVIDER || route.model !== REMOTE_AGENT_MODEL);
     if (id === this.current && !discovered && !overridden) return;
     const changed = id !== this.current;
     if (changed) {
@@ -150,35 +137,43 @@ var RemoteSelection = class {
         this.stopBlock = this.blockStore.subscribe(() => this.updateBlock());
       }
     }
+    if (!changed && this.snapshot.pending && !this.snapshot.resolving) return;
+    if (!changed && !bound && this.snapshot.agentId && this.snapshot.error) {
+      if (this.discovered && !this.targets.has(this.snapshot.agentId)) this.patch({
+        error: "\u6240\u9009\u8FDC\u7A0B Agent \u5DF2\u4E0D\u53EF\u8BBF\u95EE\uFF0C\u8BF7\u91CD\u65B0\u9009\u62E9\u76EE\u6807\uFF0C\u6216\u6253\u5F00\u672C\u5730\u804A\u5929\u3002"
+      });
+      else this.updateBlock();
+      return;
+    }
     if (!id) {
-      this.patch({ sessionId: null, pending: false });
+      this.patch({ agentId: null, sessionId: null, pending: false, resolving: false, error: "" });
       return;
     }
-    if (!changed && this.snapshot.pending) return;
-    const bound = this.bindings.get(id);
-    if (row.blank === false && !this.discovered) {
-      this.updateBlock();
+    if (bound) {
+      if (this.discovered && !this.targets.has(bound)) {
+        this.patch({
+          agentId: bound,
+          sessionId: null,
+          pending: false,
+          resolving: false,
+          error: "\u6240\u9009\u8FDC\u7A0B Agent \u5DF2\u4E0D\u53EF\u8BBF\u95EE\uFF0C\u8BF7\u91CD\u65B0\u9009\u62E9\u76EE\u6807\uFF0C\u6216\u6253\u5F00\u672C\u5730\u804A\u5929\u3002"
+        });
+      } else if (overridden) {
+        void this.select(bound, { sessionId: id });
+      } else this.patch({ agentId: bound, sessionId: id, pending: false, resolving: false, error: "" });
       return;
     }
-    if (bound && (!this.snapshot.agentId || changed && row.blank === false)) {
-      this.remember(bound);
-      this.patch({ agentId: bound, sessionId: id, pending: false, error: "" });
+    if (route?.provider === REMOTE_AGENT_PROVIDER) {
+      this.patch({
+        agentId: null,
+        sessionId: null,
+        pending: !this.discovered,
+        resolving: true,
+        error: this.discovered ? "\u6B64\u8FDC\u7A0B\u804A\u5929\u7684\u76EE\u6807\u5DF2\u4E0D\u53EF\u8BBF\u95EE\uFF0C\u8BF7\u6253\u5F00\u672C\u5730\u804A\u5929\u6216\u91CD\u65B0\u9009\u62E9 Agent\u3002" : ""
+      });
       return;
     }
-    if (changed && row.blank === false && !bound) {
-      this.remember(null);
-      this.patch({ agentId: null, sessionId: null, pending: false, error: "" });
-      return;
-    }
-    if (!this.snapshot.agentId) {
-      this.updateBlock();
-      return;
-    }
-    if (this.snapshot.sessionId === id && bound === this.snapshot.agentId && !overridden) {
-      this.updateBlock();
-      return;
-    }
-    void this.select(this.snapshot.agentId);
+    this.patch({ agentId: null, sessionId: null, pending: false, resolving: false, error: "" });
   }
   newChat(agentId = this.snapshot.agentId, sessionId) {
     if (!agentId) return;
@@ -188,7 +183,7 @@ var RemoteSelection = class {
     const agentId = this.bindings.get(sessionId), version = this.generation;
     const active = this.currentSession()?.id === sessionId && this.snapshot.agentId === agentId;
     await this.ctx.uiWorkspace.archiveSession(sessionId);
-    if (!active || !agentId || this.snapshot.agentId !== agentId || this.snapshot.pending) return false;
+    if (!active || !agentId || !this.targets.has(agentId) || this.snapshot.pending) return false;
     const current = this.currentSession()?.id;
     if (current && current !== sessionId || this.generation !== version + (current === sessionId ? 0 : 1)) return false;
     await this.newChat(agentId, sessionId);
@@ -198,8 +193,14 @@ var RemoteSelection = class {
     const version = ++this.generation, current = options.sessionId || this.currentSession()?.id;
     const newSession = options.newSession || !options.sessionId && this.ctx.workspaces.list.getSnapshot().archivedSessionIds.includes(current);
     const signal = this.ctx.layout.beginNavigation();
-    this.remember(agentId);
-    this.patch({ agentId, sessionId: null, pending: true, error: "" });
+    const cancel = () => {
+      if (version !== this.generation || !this.snapshot.pending) return;
+      ++this.generation;
+      this.patch({ agentId: null, sessionId: null, pending: false, resolving: false, error: "" });
+      this.reconcile(true);
+    };
+    signal.addEventListener("abort", cancel, { once: true });
+    this.patch({ agentId, sessionId: null, pending: true, resolving: false, error: "" });
     try {
       const result = await this.remote.open({ agentId, ...current ? { sessionId: current } : {}, ...newSession ? { newSession: true } : {} });
       if (!result.ok) throw new Error(result.error?.message || "\u8FDC\u7A0B\u4F1A\u8BDD\u8FDE\u63A5\u5931\u8D25\uFF0C\u8BF7\u91CD\u8BD5\u3002");
@@ -213,21 +214,23 @@ var RemoteSelection = class {
     } catch (error) {
       if (version === this.generation) this.patch({ pending: false, error: error.message });
     } finally {
+      signal.removeEventListener("abort", cancel);
       if (version === this.generation && this.snapshot.pending) this.patch({ pending: false });
     }
   }
   updateBlock() {
     if (!this.blockStore || !this.current) return;
     const value = this.blockStore.getSnapshot();
-    const blocked = this.snapshot.agentId && (this.snapshot.pending || this.snapshot.sessionId !== this.current);
+    const blocked = (this.snapshot.agentId || this.snapshot.resolving) && (this.snapshot.pending || this.snapshot.resolving || this.snapshot.sessionId !== this.current);
+    const reason = this.snapshot.error || (this.snapshot.resolving ? "\u6B63\u5728\u8BFB\u53D6\u5F53\u524D\u804A\u5929\u7684\u8FDC\u7A0B Agent\uFF0C\u8BF7\u7A0D\u5019\u2026" : "\u6B63\u5728\u8FDE\u63A5\u6240\u9009\u8FDC\u7A0B Agent\uFF0C\u8BF7\u7A0D\u5019\u2026");
     if (blocked && !value) {
-      this.ownBlock = { reason: this.snapshot.error || "\u6B63\u5728\u8FDE\u63A5\u6240\u9009\u8FDC\u7A0B Agent\uFF0C\u8BF7\u7A0D\u5019\u2026" };
+      this.ownBlock = { reason };
       this.ctx.conversation.blocks.set(this.current, this.ownBlock);
     } else if (!blocked && this.ownBlock && value === this.ownBlock) {
       this.ctx.conversation.blocks.set(this.current, void 0);
       this.ownBlock = void 0;
-    } else if (blocked && value === this.ownBlock && value.reason !== (this.snapshot.error || "\u6B63\u5728\u8FDE\u63A5\u6240\u9009\u8FDC\u7A0B Agent\uFF0C\u8BF7\u7A0D\u5019\u2026")) {
-      this.ownBlock = { reason: this.snapshot.error || "\u6B63\u5728\u8FDE\u63A5\u6240\u9009\u8FDC\u7A0B Agent\uFF0C\u8BF7\u7A0D\u5019\u2026" };
+    } else if (blocked && value === this.ownBlock && value.reason !== reason) {
+      this.ownBlock = { reason };
       this.ctx.conversation.blocks.set(this.current, this.ownBlock);
     }
   }

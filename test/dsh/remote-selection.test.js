@@ -62,7 +62,7 @@ function host() {
 }
 const settled = () => new Promise(resolve => setImmediate(resolve));
 
-test('remote default survives workspace changes, New Session and reload, while native composer waits for its binding', async t => {
+test('native workspace, New Session and history navigation exit remote mode; reload restores only the current Session binding', async t => {
   const h = host(); h.show('a');
   let selection = new RemoteSelection(h.ctx, h.remote, h.memory), stop = selection.start();
   t.after(() => stop());
@@ -70,41 +70,75 @@ test('remote default survives workspace changes, New Session and reload, while n
   await selection.select('one');
   assert.equal(selection.snapshot.agentId, 'one'); assert.equal(selection.snapshot.sessionId, 'a');
   h.show('b', { cwd: '/workspace/b' });
-  assert.equal(selection.snapshot.agentId, 'one');
-  assert(h.block('b').getSnapshot(), 'native input was enabled before the remote binding');
   await settled();
-  assert.equal(selection.snapshot.sessionId, 'b'); assert.equal(h.block('b').getSnapshot(), undefined);
+  assert.equal(selection.snapshot.agentId, null);
+  assert.equal(selection.snapshot.sessionId, null); assert.equal(h.block('b').getSnapshot(), undefined);
   h.show('b-new', { cwd: '/workspace/b' }); await settled();
-  assert.deepEqual(h.calls.map(call => call.sessionId), ['a','b','b-new']);
-  assert.equal(selection.snapshot.agentId, 'one');
+  assert.deepEqual(h.calls.map(call => call.sessionId), ['a']);
+  assert.equal(selection.snapshot.agentId, null);
+  h.memory.setItem('dsh.a2a.remote-agent', 'one');
   stop();
   selection = new RemoteSelection(h.ctx, h.remote, h.memory); stop = selection.start();
   selection.setTargets(h.targets()); await settled();
-  assert.equal(selection.snapshot.agentId, 'one'); assert.equal(selection.snapshot.sessionId, 'b-new');
-  h.show('local-history', { blank: false });
-  assert.equal(selection.snapshot.agentId, null);
-  assert.equal(selection.snapshot.sessionId, null);
+  assert.equal(selection.snapshot.agentId, null); assert.equal(selection.snapshot.sessionId, null);
   assert.equal(h.memory.getItem('dsh.a2a.remote-agent'), undefined);
+  h.show('a');
+  assert.equal(selection.snapshot.agentId, 'one'); assert.equal(selection.snapshot.sessionId, 'a');
+  stop();
+  selection = new RemoteSelection(h.ctx, h.remote, h.memory); stop = selection.start();
+  assert(h.block('a').getSnapshot(), 'remote history was enabled before binding discovery');
+  selection.setTargets(h.targets()); await settled();
+  assert.equal(selection.snapshot.agentId, 'one'); assert.equal(selection.snapshot.sessionId, 'a');
+  assert.equal(h.block('a').getSnapshot(), undefined);
   const count = h.calls.length;
-  h.show('local-workspace', { cwd: '/workspace/c' }); await settled();
-  assert.equal(h.calls.length, count, 'opening local history retained the remote default');
+  for (const [id, blank] of [['local-history', false], ['local-blank', true], ['local-stale-metadata', null]]) {
+    h.show(id, { blank, cwd: '/workspace/c' });
+    selection.setTargets(h.targets()); await settled();
+    assert.equal(selection.snapshot.agentId, null);
+    assert.equal(selection.snapshot.pending, false);
+    assert.equal(h.block(id).getSnapshot(), undefined);
+    assert.equal(h.calls.length, count, 'native navigation rebound a local chat to a remote Agent');
+  }
 });
 
-test('a slower workspace binding cannot steal newer navigation or Agent selection', async t => {
+test('a slower explicit remote selection cannot steal newer native navigation or Agent selection', async t => {
   const h = host(); h.show('a');
   const selection = new RemoteSelection(h.ctx, h.remote, h.memory); t.after(selection.start());
   selection.setTargets(h.targets()); await selection.select('one');
   let release;
   const slow = new Promise(resolve => { release = resolve; });
-  h.delay(input => input.sessionId === 'slow' ? slow : undefined);
   h.show('slow', { cwd: '/workspace/slow' });
+  h.delay(input => input.sessionId === 'slow' ? slow : undefined);
+  const pending = selection.select('one');
   h.show('fast', { cwd: '/workspace/fast' }); await settled();
-  assert.equal(selection.snapshot.sessionId, 'fast');
+  assert.equal(selection.snapshot.agentId, null);
+  assert.equal(selection.currentSession().id, 'fast');
   await selection.select('two');
   const current = selection.snapshot.sessionId;
-  release(); await settled();
+  release(); await pending; await settled();
   assert.equal(selection.snapshot.agentId, 'two'); assert.equal(selection.snapshot.sessionId, current);
   assert.equal(h.navigations.at(-1), current);
+});
+
+test('native New Session reusing the same local blank cancels an unfinished remote selection immediately', async t => {
+  for (const action of ['select', 'newChat']) await t.test(action, async t => {
+    const h = host(); h.show('local-blank');
+    const selection = new RemoteSelection(h.ctx, h.remote, h.memory); t.after(selection.start());
+    selection.setTargets(h.targets());
+    let release;
+    h.delay(() => new Promise(resolve => { release = resolve; }));
+    const connection = selection[action]('one');
+    assert.equal(selection.snapshot.pending, true);
+    assert(h.block('local-blank').getSnapshot());
+    h.show('local-blank'); // Native New Session can retain the same Session id.
+    assert.equal(selection.snapshot.agentId, null);
+    assert.equal(selection.snapshot.pending, false);
+    assert.equal(h.block('local-blank').getSnapshot(), undefined);
+    release(); await connection;
+    assert.equal(selection.snapshot.agentId, null);
+    assert.equal(selection.currentSession().id, 'local-blank');
+    assert.equal(h.navigations.length, 0, 'late remote reply stole the native selection');
+  });
 });
 
 test('binding failures retain the selected target and block local fallback without overwriting other composer blocks', async t => {

@@ -104,9 +104,10 @@ export class RemoteAgentSessions {
   }
   async prepareLocalBlank(workspace) {
     const controller = this.ctx.get('sessionController');
-    if (!controller) return;
+    const registry = this.ctx.get('workspaceRegistry');
+    if (!controller || !registry) return;
     const { items } = await controller.list({}, new AbortController().signal);
-    const archived = this.ctx.workspaceRegistry.archivedSessionIds;
+    const archived = registry.archivedSessionIds;
     const first = items.find(row => row.blank && !row.running && row.cwd === workspace.path &&
       workspace.sessionIds.includes(row.sessionId) && !archived.includes(row.sessionId));
     if (!first || !this.known.has(first.sessionId)) return;

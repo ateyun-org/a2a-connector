@@ -9,7 +9,7 @@ import { REMOTE_AGENT_PROVIDER, REMOTE_AGENT_MODEL, RemoteSessionAdapter } from 
 export class RemoteAgentSessions {
   constructor(ctx, a2a, path) {
     this.ctx = ctx; this.a2a = a2a; this.index = new ConversationStore(path); this.opening = new Map(); this.tail = Promise.resolve();
-    this.known = new Map(); this.workspaceChecked = new Set();
+    this.known = new Map(); this.workspaceReady = new Set();
     this.ready = this.index.list().then(bindings => { for (const binding of bindings) this.known.set(binding.sessionId, binding); });
     // Native selectModel can replace a Session's route. Re-pin synchronously
     // before AgentLoop captures it, then reject any remaining mismatch.
@@ -25,16 +25,12 @@ export class RemoteAgentSessions {
       if (this.known.has(agent.id) && (modelSelection.provider !== REMOTE_AGENT_PROVIDER || modelSelection.model !== REMOTE_AGENT_MODEL)) {
         throw new Error('此会话已绑定远程 Agent，请从左侧重新打开；消息不会改发给主控模型。');
       }
-      if (this.known.has(agent.id)) {
-        const workspace = await ctx.get('workspaceRegistry')?.resolveByPath(agent.session.header.cwd);
-        if (workspace) await workspace.attachSession(agent.id);
-      }
       return next();
     });
   }
   async targets() {
     const [targets, bindings] = await Promise.all([this.a2a.syncRelayTargets(), this.index.list()]);
-    await this.detachBlankWorkspaces(bindings);
+    await this.ensureWorkspaces(bindings);
     return targets.map(target => {
       const owned = bindings.filter(item => item.agentId === target.agentId).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
       return { ...target, ...(owned.length ? { sessionId: owned[0].sessionId, sessionIds: owned.map(item => item.sessionId) } : {}) };
@@ -87,33 +83,37 @@ export class RemoteAgentSessions {
     }
     return true;
   }
-  async detachBlankWorkspaces(bindings) {
+  async ensureWorkspaces(bindings, force = false) {
     const registry = this.ctx.get('workspaceRegistry');
     if (!registry) return;
     const workspaces = new Map();
     for (const binding of bindings) {
-      if (!binding.cwd || this.workspaceChecked.has(binding.sessionId)) continue;
-      if (!workspaces.has(binding.cwd)) workspaces.set(binding.cwd, await registry.resolveByPath(binding.cwd));
-      const workspace = workspaces.get(binding.cwd);
-      if (workspace?.sessionIds?.includes(binding.sessionId)) {
-        const live = this.ctx.agents.get(binding.sessionId);
-        let blank = live ? this.blank(live) : false;
-        const persistence = this.ctx.get('sessionPersistence');
-        if (!live && persistence) {
-          const handle = await persistence.open(binding.sessionId, 'read');
-          try {
-            blank = true;
-            for (let offset = 0; blank; offset += 64) {
-              const { events } = await handle.read(offset, 64);
-              blank = !events.some(event => ['turn/start', 'user/message'].includes(event.type));
-              if (events.length < 64) break;
-            }
-          } finally { await handle.close(); }
-        }
-        if (blank) await workspace.detachSession(binding.sessionId);
+      if (!binding.cwd || (!force && this.workspaceReady.has(binding.sessionId))) continue;
+      if (!this.ctx.sessions.get(binding.sessionId) &&
+        !await this.ctx.get('sessionPersistence')?.stat(binding.sessionId)) continue;
+      if (!workspaces.has(binding.cwd)) {
+        const workspace = await registry.resolveByPath(binding.cwd) || await registry.create?.(binding.cwd);
+        workspaces.set(binding.cwd, workspace);
       }
-      this.workspaceChecked.add(binding.sessionId);
+      const workspace = workspaces.get(binding.cwd);
+      if (!workspace) continue;
+      if (!workspace.sessionIds?.includes(binding.sessionId)) await workspace.attachSession(binding.sessionId);
+      this.workspaceReady.add(binding.sessionId);
     }
+    for (const workspace of workspaces.values()) if (workspace) await this.prepareLocalBlank(workspace);
+  }
+  async prepareLocalBlank(workspace) {
+    const controller = this.ctx.get('sessionController');
+    if (!controller) return;
+    const { items } = await controller.list({}, new AbortController().signal);
+    const archived = this.ctx.workspaceRegistry.archivedSessionIds;
+    const first = items.find(row => row.blank && !row.running && row.cwd === workspace.path &&
+      workspace.sessionIds.includes(row.sessionId) && !archived.includes(row.sessionId));
+    if (!first || !this.known.has(first.sessionId)) return;
+    // Native New Session reuses the newest workspace blank. Keep that blank
+    // local while the selected remote blank stays attached and editable.
+    await new Promise(resolve => setTimeout(resolve, 1));
+    await controller.create({ workspaceId: workspace.id });
   }
   async openNative({ agentId, sessionId, newSession = false }) {
     await this.ready;
@@ -154,8 +154,8 @@ export class RemoteAgentSessions {
       if (agent.status === 'running') throw new Error('此会话正在执行，请结束当前请求后再切回远程 Agent。');
       agent.model.select(selection);
     }
-    await this.detachBlankWorkspaces([binding]);
     await this.ctx.sessions.flush(agent.session);
+    await this.ensureWorkspaces([binding], true);
     return { agentId, sessionId: agent.session.id };
   }
 }

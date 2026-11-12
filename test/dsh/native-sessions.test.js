@@ -16,6 +16,7 @@ import * as persistence from '../../plugins/dsh/node_modules/@deepseek-ai/dsh-se
 import { RemoteAgentSessions } from '../../plugins/dsh/remote-sessions.js';
 import { REMOTE_AGENT_PROVIDER, REMOTE_AGENT_MODEL, RemoteSessionAdapter } from '../../plugins/dsh/remote-session-adapter.js';
 import { SessionController } from '../../plugins/dsh/node_modules/@deepseek-ai/dsh-api-session-controller/lib/index.js';
+import SessionQueryEngine from '../../plugins/dsh/node_modules/@deepseek-ai/dsh-session-query/lib/index.js';
 import { TypertRegistry } from '../../plugins/dsh/node_modules/@deepseek-ai/dsh-typert-registry/lib/index.js';
 import { TypertGatewayService } from '../../plugins/dsh/node_modules/@deepseek-ai/dsh-api-gateway/lib/index.js';
 
@@ -238,7 +239,7 @@ test('selecting a remote target preserves existing history and never reassigns a
   assert.equal(local.model.current().provider, 'local');
   assert.equal(await host.sessions.binding(local.id), undefined);
   assert.equal(host.ctx.agents.get(selected.sessionId).session.header.cwd, root);
-  assert.deepEqual(attached, [], 'an empty remote chat occupied the native workspace reusable blank');
+  assert.deepEqual(attached, [selected.sessionId], 'remote composer had no workspace before its first message');
   await prompt(host.ctx.agents.get(selected.sessionId), '远程记录进入工作区历史');
   assert.deepEqual(attached, [selected.sessionId]);
   const other = await host.sessions.open({ agentId: 'two', sessionId: selected.sessionId });
@@ -287,12 +288,20 @@ test('native SessionController model selection cannot send a bound chat to the c
     maxImageBytes: 1024, maxImagesPerMessage: 1, maxMessageImageBytes: 1024, maxImagePixels: 1024, maxImageDimension: 1024, mediaTypes: ['image/png'],
   } });
   ctx.provide('fileUploads', { registerAgentResolver: () => () => {}, bindPrompt: () => ({ commit() {}, [Symbol.dispose]() {} }) });
-  ctx.provide('fs', {}); ctx.provide('sessionQuery', {});
-  ctx.provide('workspaceRegistry', { archivedSessionIds: [], list: () => [], resolveByPath: async () => undefined });
+  ctx.provide('fs', {});
+  const query = ctx.plugin(SessionQueryEngine); forks.push(query); await query;
+  const workspaceMembers = [];
+  const workspace = { id: 'workspace-native-roundtrip', path: root, get sessionIds() { return workspaceMembers; },
+    async attachSession(id) { if (!workspaceMembers.includes(id)) workspaceMembers.unshift(id); } };
+  ctx.provide('workspaceRegistry', { archivedSessionIds: [], list: () => [workspace],
+    get: id => id === workspace.id ? workspace : undefined,
+    resolveByPath: async cwd => cwd === root ? workspace : undefined });
   const registry = ctx.plugin(TypertRegistry); forks.push(registry); await registry;
   const gateway = ctx.plugin(TypertGatewayService, {}); forks.push(gateway); await gateway;
   const controller = ctx.plugin(SessionController, { nativeOpen: false }); forks.push(controller); await controller;
-  const { sessionId } = await host.sessions.open({ agentId: 'one' });
+  const initialLocal = await ctx.sessionController.create({ workspaceId: workspace.id });
+  const { sessionId } = await host.sessions.open({ agentId: 'one', sessionId: initialLocal.sessionId });
+  assert(workspaceMembers.includes(sessionId), 'first remote composer was detached from the workspace');
   const agent = ctx.agents.get(sessionId);
   const catalog = await ctx.sessionController.modelCatalog();
   const group = catalog.groups.find(group => group.id === REMOTE_AGENT_PROVIDER);
@@ -321,11 +330,16 @@ test('native SessionController model selection cannot send a bound chat to the c
   await ctx.agents.get(local.sessionId).whenIdle();
   assert.equal(localCalls, 1, 'ordinary unbound DSH chats lost their selected model');
   assert.equal(sends.length, 1, 'ordinary local chat was redirected to a remote Agent');
-  const workspaceBlank = await ctx.sessionController.create({ cwd: root });
+  const workspaceBlank = await ctx.sessionController.create({ workspaceId: workspace.id });
   const remoteBlank = await host.sessions.open({ agentId: 'one', sessionId: workspaceBlank.sessionId, newSession: true });
   assert.notEqual(remoteBlank.sessionId, workspaceBlank.sessionId);
-  const nativeNew = await ctx.sessionController.create({ cwd: root, sessionId: workspaceBlank.sessionId });
-  assert.equal(nativeNew.sessionId, workspaceBlank.sessionId, 'native New Session did not exercise blank reuse');
+  assert(workspaceMembers.includes(remoteBlank.sessionId));
+  const { items } = await ctx.sessionController.list({}, new AbortController().signal);
+  const firstBlank = items.find(row => row.blank && workspaceMembers.includes(row.sessionId));
+  assert(firstBlank);
+  assert.equal(await host.sessions.binding(firstBlank.sessionId), undefined, 'native New Session would reuse a remote blank');
+  const nativeNew = await ctx.sessionController.create({ workspaceId: workspace.id, sessionId: firstBlank.sessionId });
+  assert.equal(nativeNew.sessionId, firstBlank.sessionId, 'native New Session did not exercise blank reuse');
   assert.equal(await host.sessions.binding(nativeNew.sessionId), undefined);
   await ctx.sessionController.prompt({ sessionId: nativeNew.sessionId, requestId: 'native-new-local', mode: 'queue',
     content: [{ type: 'text', text: '从远程切到原生新会话后发送' }] }, new AbortController().signal);
@@ -343,6 +357,21 @@ test('native SessionController model selection cannot send a bound chat to the c
   assert.equal(localCalls, 3);
   assert.equal(sends.length, 2);
   assert.equal(sends.at(-1).agentId, 'one');
+  for (let round = 0; round < 3; round++) {
+    const nextLocal = await ctx.sessionController.create({ workspaceId: workspace.id });
+    await ctx.sessionController.prompt({ sessionId: nextLocal.sessionId, requestId: `roundtrip-local-${round}`, mode: 'queue',
+      content: [{ type: 'text', text: `普通聊天 ${round}` }] }, new AbortController().signal);
+    await ctx.agents.get(nextLocal.sessionId).whenIdle();
+    const before = localCalls;
+    const reopened = await host.sessions.open({ agentId: 'one', sessionId: nextLocal.sessionId });
+    assert.equal(reopened.sessionId, remoteBlank.sessionId);
+    assert(workspaceMembers.includes(reopened.sessionId), 'returning to remote chat lost workspace membership');
+    await ctx.sessionController.prompt({ sessionId: reopened.sessionId, requestId: `roundtrip-remote-${round}`, mode: 'queue',
+      content: [{ type: 'text', text: `切回远程继续 ${round}` }] }, new AbortController().signal);
+    await ctx.agents.get(reopened.sessionId).whenIdle();
+    assert.equal(localCalls, before, 'remote roundtrip fell back to the local model');
+    assert.equal(sends.length, 3 + round);
+  }
 });
 
 test('New Chat creates a fresh native Session and remote context, while history reopens the exact earlier chat', async t => {
@@ -429,7 +458,7 @@ test('a fresh chat after archiving the last record keeps its workspace and sends
   assert.equal(blank.model.current().provider, 'local');
 });
 
-test('legacy empty remote workspace members stop being reusable native blanks, while local and used history remain', async t => {
+test('remote workspace membership exists before the first message and is repaired after returning from local chat', async t => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-remote-workspace-blank-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const { a2a } = remote();
@@ -443,18 +472,24 @@ test('legacy empty remote workspace members stop being reusable native blanks, w
   const local = (await host.ctx.agents.create({ sessionId: members[0], meta: { cwd: root },
     agentOptions: { provider: 'local', model: 'default' } })).agent;
   const blank = await host.sessions.open({ agentId: 'one', sessionId: local.id });
-  assert(!members.includes(blank.sessionId));
+  assert(members.includes(blank.sessionId), 'DSH cannot show its composer without remote workspace membership');
   const used = await host.sessions.open({ agentId: 'two', sessionId: local.id });
   await prompt(host.ctx.agents.get(used.sessionId), '保留已有远程历史');
   assert(members.includes(used.sessionId));
-  members.push(blank.sessionId); // Existing installs had attached remote blanks.
+  members = members.filter(id => id !== blank.sessionId); // Previous builds detached remote blanks.
+  await host.ctx.sessions.flush(local.session);
   await host.close(); host = await nativeHost(root, a2a);
   host.ctx.provide('workspaceRegistry', registry);
   await host.sessions.targets();
-  assert.deepEqual(detached, [blank.sessionId]);
-  assert.deepEqual(new Set(members), new Set([local.id, used.sessionId]));
+  assert.deepEqual(detached, []);
+  assert.deepEqual(new Set(members), new Set([local.id, used.sessionId, blank.sessionId]));
   assert.equal(host.ctx.agents.get(blank.sessionId), undefined, 'cleanup resumed a cold remote Session');
   assert(await host.ctx.sessionPersistence.stat(blank.sessionId), 'cleanup removed the native transcript');
   await host.sessions.targets();
-  assert.deepEqual(detached, [blank.sessionId], 'cleanup kept rewriting workspace membership');
+  assert.deepEqual(detached, [], 'repair detached an active remote chat again');
+  const resumed = await host.sessions.open({ agentId: 'one', sessionId: local.id });
+  assert.equal(resumed.sessionId, blank.sessionId);
+  assert(members.includes(resumed.sessionId));
+  assert.deepEqual(await prompt(host.ctx.agents.get(resumed.sessionId), '切回远程后发送第一条消息'),
+    [{ type: 'text', text: 'one: 切回远程后发送第一条消息' }]);
 });
